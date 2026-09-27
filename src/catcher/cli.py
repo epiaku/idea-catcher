@@ -12,6 +12,7 @@ from catcher.modules.llm.service import LlmError, LlmRequest, reason
 from catcher.modules.pipeline.inputs import prompt_input
 from catcher.modules.pipeline.process import ProcessOptions, default_services, process_note
 from catcher.modules.pipeline.publish import write_page
+from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.pipeline.staging import load_staged_note, stage_inbox
 from catcher.modules.pipeline.tags import load_tags
 
@@ -110,3 +111,38 @@ def render(
     typer.echo(f"wrote   {touched[0]}")
     for old in touched[1:]:
         typer.echo(f"removed {old}")
+
+
+run_app = typer.Typer(no_args_is_help=True, help="Run a whole flow.")
+app.add_typer(run_app, name="run")
+
+
+@run_app.callback()
+def run_group() -> None:
+    """Run a whole flow."""
+
+
+@run_app.command("pipeline")
+def run_pipeline_cmd(
+    ideas: IdeasOpt = None,
+    docs: DocsOpt = None,
+    profile: ProfileOpt = None,
+    no_review: Annotated[bool, typer.Option("--no-review", help="skip the YouTube reviewer")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="change no files, commit nothing")] = False,
+    push: Annotated[bool, typer.Option("--push", help="push both repos (off by default)")] = False,
+    limit: Annotated[int | None, typer.Option("--limit", help="process at most N staged notes")] = None,
+) -> None:
+    """Stage the inbox, summarize, publish pages, archive and commit."""
+    settings = Settings()
+    opts = RunOptions(profile=profile, review=not no_review, dry_run=dry_run, push=push, limit=limit)
+    report = run_pipeline(
+        ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
+    )
+    for item in report.items:
+        detail = " ".join(part for part in (item.page or "", item.message) if part)
+        typer.echo(f"{item.status:<14} {item.doc_class:<15} {item.doc_id:<24} {detail}")
+    for rel, error in report.staging_errors.items():
+        typer.echo(f"{'stage-error':<14} {rel}: {error}")
+    typer.echo(f"summary: {report.counts()} committed={report.committed} pushed={report.pushed}")
+    failed = bool(report.staging_errors) or report.counts().get("failed", 0) > 0
+    raise typer.Exit(1 if failed else 0)
