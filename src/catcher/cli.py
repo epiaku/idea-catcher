@@ -10,6 +10,8 @@ from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
 from catcher.modules.pipeline.inputs import prompt_input
+from catcher.modules.pipeline.process import ProcessOptions, default_services, process_note
+from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.staging import load_staged_note, stage_inbox
 from catcher.modules.pipeline.tags import load_tags
 
@@ -81,3 +83,30 @@ def reason_cmd(staged_note: Path, profile: ProfileOpt = None) -> None:
         f"tokens_in={result.usage.tokens_in} tokens_out={result.usage.tokens_out}",
         err=True,
     )
+
+
+@app.command()
+def render(
+    staged_note: Path,
+    docs: DocsOpt = None,
+    profile: ProfileOpt = None,
+    no_review: Annotated[bool, typer.Option("--no-review", help="skip the YouTube reviewer")] = False,
+) -> None:
+    """Summarize one staged note and write its page into the docs checkout (no archive, no git)."""
+    settings = Settings()
+    docs_repo = docs or settings.docs_repo
+    note = load_staged_note(staged_note)
+    opts = ProcessOptions(profile=profile, review=not no_review, docs_repo=docs_repo)
+    try:
+        processed = process_note(note, default_services(settings), opts)
+    except LlmError as e:
+        typer.echo(f"LLM step failed: {e}", err=True)
+        raise typer.Exit(2) from e
+    for problem in processed.problems:
+        typer.echo(f"problem: {problem}", err=True)
+    if processed.problems:
+        raise typer.Exit(1)
+    touched = write_page(docs_repo, note.doctype, note.doc_id, processed.filename, processed.page)
+    typer.echo(f"wrote   {touched[0]}")
+    for old in touched[1:]:
+        typer.echo(f"removed {old}")
