@@ -1,3 +1,15 @@
+{% if review.status == "needs_attention" %}
+{% raw %}{{% alert title="Review: needs attention" color="warning" %}}{% endraw %}
+
+The automatic review found problems it could not fix. Check this page before relying on it.
+
+{% for issue in review.high_issues() %}
+- **{{ issue.kind }}**: {{ issue.excerpt | md_cell }} → {{ issue.fix | md_cell }}
+{% endfor %}
+
+{% raw %}{{% /alert %}}{% endraw %}
+
+{% endif %}
 **{{ s.title }}** by _{{ s.creator }}_
 
 {% if not facts.transcript %}

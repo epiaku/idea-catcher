@@ -15,6 +15,7 @@ from catcher.modules.pipeline.staging import StagedNote, facts_sidecar
 from catcher.modules.pipeline.tags import TagList, load_tags, normalize_tags
 from catcher.modules.pipeline.validate import validate_page
 from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, YoutubeFacts, fetch_facts
+from catcher.modules.youtube.review import ReviewOutcome, not_reviewed, review_summary
 from catcher.modules.youtube.urls import video_id
 
 YOUTUBE_CLASSES = ("youtube", "youtube-gemini")
@@ -48,6 +49,7 @@ class ProcessedPage:
     llm: LlmResult
     dropped_tags: list[str]
     written: list[Path] = field(default_factory=list)
+    review: ReviewOutcome | None = None
 
 
 def default_services(settings: Settings) -> Services:
@@ -64,6 +66,12 @@ def default_services(settings: Settings) -> Services:
 def check_not_blocked(profile: Profile, opts: ProcessOptions) -> None:
     if profile.backend in opts.blocked_backends:
         raise UsageLimitReached("usage limit was reached earlier in this run", backend=profile.backend)
+
+
+def review_profile(svc: Services, opts: ProcessOptions) -> tuple[str, Profile]:
+    return resolve_profile(
+        svc.profiles, requested=opts.review_profile, class_default=svc.profiles.review_profile
+    )
 
 
 def youtube_video_id(note: StagedNote) -> str:
@@ -132,21 +140,40 @@ def _process_text(note: StagedNote, svc: Services, profile_name: str) -> Process
 def _process_youtube(
     note: StagedNote, svc: Services, opts: ProcessOptions, profile_name: str
 ) -> ProcessedPage:
+    review_name: str | None = None
+    if opts.review:
+        review_name, review_prof = review_profile(svc, opts)
+        check_not_blocked(review_prof, opts)
     vid = youtube_video_id(note)
     facts, written = facts_for(note, vid, svc, opts)
-    result = _reason(note, svc, profile_name, facts)
-    summary = cast(YoutubeSummary, result.output)
+
+    def run_review(text: str) -> ReviewOutcome:
+        assert review_name is not None
+        return review_summary(
+            text, facts, profile=review_name, profiles=svc.profiles, backends=svc.backends, tags=svc.tags
+        )
+
+    if note.doctype.name == "youtube-gemini" and review_name:
+        outcome = run_review(note.doc.body)
+        result = cast(LlmResult, outcome.llm)
+    else:
+        result = _reason(note, svc, profile_name, facts)
+        first = cast(YoutubeSummary, result.output)
+        outcome = run_review(first.model_dump_json(indent=2)) if review_name else not_reviewed(first)
+
+    summary = outcome.summary
     tag_result = normalize_tags([*summary.tags, *capture_tags(note)], svc.tags)
     ctx = PageContext(note=note, summary=summary, tags=tag_result.tags, llm=result)
     page = render_page(
         ctx,
-        extra_fm={"video_id": vid},
+        extra_fm={"video_id": vid, "review": outcome.frontmatter()},
         facts=facts,
+        review=outcome,
         embed=youtube_embed(vid, facts.title or summary.title),
         **sibling_link(note, vid, opts),
     )
     problems = validate_page(page, svc.tags)
-    return ProcessedPage(note, page_name(ctx), page, problems, result, tag_result.dropped, written)
+    return ProcessedPage(note, page_name(ctx), page, problems, result, tag_result.dropped, written, outcome)
 
 
 def process_note(note: StagedNote, svc: Services, opts: ProcessOptions) -> ProcessedPage:
