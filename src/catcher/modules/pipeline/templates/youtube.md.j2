@@ -1,0 +1,68 @@
+**{{ s.title }}** by _{{ s.creator }}_
+
+{% if not facts.transcript %}
+> ⚠️ No transcript was available for this video, so this summary is based on the title and description only.
+
+{% endif %}
+## 📝 Summary
+
+{{ s.summary | trim }}
+
+## 📊 Metrics
+
+| Metric              | Value |
+| ------------------- | ----- |
+| Metrics As Of       | {{ facts.fetched_at }} |
+| Views               | {{ facts.views | num }} |
+| Likes               | {{ facts.likes | num }} |
+| Channel Subscribers | {{ facts.subscribers | num }} |
+
+## 🎯 Main Purpose
+
+{{ s.main_purpose | trim }}
+
+## 💡 Key Examples
+
+{% for item in s.key_examples %}
+- {{ item }}
+{% else %}
+Not available.
+{% endfor %}
+
+## ✅ Action Plan
+
+{% for item in s.action_plan %}
+- {{ item }}
+{% else %}
+Not available.
+{% endfor %}
+
+## 🛠️ Tools and Services
+
+{% for item in s.tools %}
+- {{ item }}
+{% else %}
+Not available.
+{% endfor %}
+{% if s.tips %}
+
+## 💬 Tips
+
+| Tip | Explanation | How to Apply |
+| --- | ----------- | ------------ |
+{% for t in s.tips %}
+| {{ t.tip | md_cell }} | {{ t.explanation | md_cell }} | {{ t.how_to_apply | md_cell }} |
+{% endfor %}
+{% endif %}
+
+## 📺 Channel Application
+
+{{ s.channel_application | trim }}
+{% if sibling %}
+
+> 🔁 This video was also summarized {{ sibling_label }}: [compare the two summaries]({{ sibling }}).
+{% endif %}
+
+## 📄 YouTube Source
+
+{{ embed }}

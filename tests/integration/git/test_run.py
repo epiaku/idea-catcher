@@ -136,3 +136,21 @@ def test_cli_run_pipeline(repos, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "published" in result.output
     assert "summary:" in result.output
+
+
+YT_CLIP = (
+    '---\nsource : "https://www.youtube.com/watch?v=MBPHU7aaklM&list=PL1&t=1s"\n'
+    "created: 2026-09-25\n---\nclip\n"
+)
+
+
+def test_youtube_without_facts_is_deferred_then_published(repos, make_services, yt_facts):
+    (repos.ideas / "inbox/clippings/yt.md").write_text(YT_CLIP)
+    first = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert {i.doc_id: i.status for i in first.items}["MBPHU7aaklM"] == "deferred"
+    assert (repos.ideas / "staging/MBPHU7aaklM.md").exists()
+
+    second = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(facts=lambda vid: yt_facts))
+    assert {i.doc_id: i.status for i in second.items}["MBPHU7aaklM"] == "published"
+    assert (repos.ideas / "archive/youtube/MBPHU7aaklM.youtube.json").exists()
+    assert list((repos.docs / "hugo/content/en/docs/idea-bucket/youtube").glob("20260925_MBPHU7aaklM_*.md"))

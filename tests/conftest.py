@@ -13,6 +13,9 @@ from catcher.modules.pipeline.doctypes import DOC_TYPES
 from catcher.modules.pipeline.process import Services
 from catcher.modules.pipeline.staging import StagedNote
 from catcher.modules.pipeline.tags import load_tags
+from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, YoutubeFacts
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture
@@ -84,9 +87,17 @@ def _profiles_for_tests() -> ProfilesConfig:
     )
 
 
+def _no_network(vid: str) -> YoutubeFacts:
+    raise FactsUnavailable(f"tests must not fetch facts for {vid}")
+
+
 @pytest.fixture
 def make_services():
-    def _make(note_backend: FakeBackend | None = None, chat_backend: FakeBackend | None = None) -> Services:
+    def _make(
+        note_backend: FakeBackend | None = None,
+        chat_backend: FakeBackend | None = None,
+        facts: FactsFetcher | None = None,
+    ) -> Services:
         notes = note_backend or FakeBackend()
         chats = chat_backend or FakeBackend()
         return Services(
@@ -94,6 +105,12 @@ def make_services():
             profiles=_profiles_for_tests(),
             backends=lambda p: chats if p.backend == "claude-code" else notes,
             tags=load_tags(),
+            facts=facts or _no_network,
         )
 
     return _make
+
+
+@pytest.fixture
+def yt_facts() -> YoutubeFacts:
+    return YoutubeFacts.model_validate_json((FIXTURES / "youtube" / "MBPHU7aaklM.json").read_text())

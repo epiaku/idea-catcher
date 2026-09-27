@@ -8,6 +8,7 @@ from catcher.modules.llm.service import BackendUnavailable, InvalidOutput, Usage
 from catcher.modules.pipeline.process import ProcessOptions, Services, process_note
 from catcher.modules.pipeline.publish import archive_staged, write_page
 from catcher.modules.pipeline.staging import load_staged, stage_inbox
+from catcher.modules.youtube.facts import FactsUnavailable
 
 Status = Literal["published", "would_publish", "deferred", "failed", "skipped"]
 
@@ -87,6 +88,9 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             continue
         except InvalidOutput as e:
             item.status, item.message = "failed", str(e)
+            continue
+        except FactsUnavailable as e:
+            item.status, item.message = "deferred", str(e)
             continue
 
         touched_ideas += processed.written
