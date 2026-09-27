@@ -337,7 +337,8 @@ A run is up to four kinds of jobs: one `pipeline.run`, one `llm.reason` per note
  pipeline.run  (default queue)
    1. pull idea-bucket
    2. per note in inbox/: add id, detect class, clean frontmatter
-      • youtube / youtube-gemini → yt-dlp counts + transcript (with fetch date)
+      • youtube / youtube-gemini → yt-dlp counts + transcript (with fetch date),
+        stored in staging/<id>.youtube.json next to the note and archived alongside it
       • youtube-gemini → also extract the video URL and Gemini's answer
       • no transcript → mark "no transcript", use title + description
    3. write to staging/ (replacing a staged copy with the same id), push
