@@ -5,7 +5,7 @@ description = "Turns idea-bucket captures into epiaku-docs pages"
 requires-python = ">=3.12"
 dependencies = [
   "jinja2>=3.1",
-  "openai>=1.40",
+  "openai>=1.40,<2",
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
   "python-dotenv>=1.0",
