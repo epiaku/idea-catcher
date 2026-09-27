@@ -1,0 +1,64 @@
+# serializer version: 1
+# name: test_chat_page_sections_and_canonical_source
+  '''
+  ---
+  title: Selling course bundles on systeme.io
+  description: Sell a full course before every part exists.
+  date: '2026-09-27'
+  weight: 100
+  type: docs
+  id: cf81e40b020519ef
+  tags:
+  - digital-product-idea
+  - online-courses
+  source: https://gemini.google.com/app/cf81e40b020519ef
+  llm:
+    profile: fake
+    backend: fake
+    model: fake
+    prompt_version: note-1
+  ---
+  ## 📝 Summary
+  
+  - You can sell a bundle before all parts exist.
+  
+  ## ✅ Decisions
+  
+  - Sell the full course now
+  
+  ## ❓ Open Questions
+  
+  - How are updates delivered?
+  
+  ## 🧩 Details
+  
+  Use one product with drip content.
+  
+  ---
+  
+  Source: <https://gemini.google.com/app/cf81e40b020519ef>
+  
+  '''
+# ---
+# name: test_note_page
+  '''
+  ---
+  title: Walk-and-talk videos
+  description: Film career stories while walking.
+  date: '2026-09-27'
+  weight: 100
+  type: docs
+  id: a7b2c9
+  tags:
+  - youtube-idea
+  - content-creation
+  llm:
+    profile: fake
+    backend: fake
+    model: fake
+    prompt_version: note-1
+  ---
+  Record videos while walking and talk about your career.
+  
+  '''
+# ---

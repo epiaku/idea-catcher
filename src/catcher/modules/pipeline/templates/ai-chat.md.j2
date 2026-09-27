@@ -1,0 +1,39 @@
+## 📝 Summary
+
+{% for item in s.summary %}
+- {{ item }}
+{% endfor %}
+{% if s.decisions %}
+
+## ✅ Decisions
+
+{% for item in s.decisions %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% if s.options %}
+
+## 🔀 Options
+
+{% for item in s.options %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% if s.open_questions %}
+
+## ❓ Open Questions
+
+{% for item in s.open_questions %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% if s.body.strip() %}
+
+{{ s.body | trim }}
+{% endif %}
+{% if source %}
+
+---
+
+Source: <{{ source }}>
+{% endif %}
