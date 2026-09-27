@@ -15,6 +15,8 @@ from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.pipeline.staging import load_staged_note, stage_inbox
 from catcher.modules.pipeline.tags import load_tags
+from catcher.modules.youtube.facts import FactsUnavailable, fetch_facts
+from catcher.modules.youtube.urls import video_id
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -146,3 +148,24 @@ def run_pipeline_cmd(
     typer.echo(f"summary: {report.counts()} committed={report.committed} pushed={report.pushed}")
     failed = bool(report.staging_errors) or report.counts().get("failed", 0) > 0
     raise typer.Exit(1 if failed else 0)
+
+
+youtube_app = typer.Typer(no_args_is_help=True, help="YouTube helpers.")
+app.add_typer(youtube_app, name="youtube")
+
+
+@youtube_app.callback()
+def youtube_group() -> None:
+    """YouTube helpers."""
+
+
+@youtube_app.command("facts")
+def youtube_facts(url: str) -> None:
+    """Print the facts (counts, description, transcript) for one video as JSON."""
+    vid = video_id(url) or url
+    try:
+        facts = fetch_facts(vid, languages=Settings().transcript_language_list)
+    except FactsUnavailable as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(2) from e
+    typer.echo(facts.model_dump_json(indent=2))

@@ -1,0 +1,19 @@
+{
+  "video_id": "MBPHU7aaklM",
+  "url": "https://www.youtube.com/watch?v=MBPHU7aaklM",
+  "title": "Success Is Hard Until You Build Systems Like This",
+  "channel": "Example Channel",
+  "subscribers": 2260000,
+  "views": 1400000,
+  "likes": 46000,
+  "upload_date": "2026-09-20",
+  "duration_s": 1260,
+  "description": "In this video I share the 4-part system I use every week.",
+  "chapters": [{"start_s": 0, "title": "Intro"}, {"start_s": 95, "title": "Define productivity"}],
+  "transcript": [
+    {"start_s": 0, "text": "Productivity is hard until you build systems."},
+    {"start_s": 95, "text": "First, define productivity by your own goals."},
+    {"start_s": 410, "text": "I plan my week in Obsidian every Sunday."}
+  ],
+  "fetched_at": "2026-09-27"
+}
