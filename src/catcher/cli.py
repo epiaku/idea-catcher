@@ -6,7 +6,12 @@ from dotenv import load_dotenv
 
 from catcher import __version__
 from catcher.core.config import Settings
-from catcher.modules.pipeline.staging import stage_inbox
+from catcher.modules.llm.backends import make_backend
+from catcher.modules.llm.profiles import load_profiles, resolve_profile
+from catcher.modules.llm.service import LlmError, LlmRequest, reason
+from catcher.modules.pipeline.inputs import prompt_input
+from catcher.modules.pipeline.staging import load_staged_note, stage_inbox
+from catcher.modules.pipeline.tags import load_tags
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -46,3 +51,33 @@ def stage(
     for rel, error in result.errors.items():
         typer.echo(f"{'error':<12} {rel}: {error}", err=True)
     raise typer.Exit(1 if result.errors else 0)
+
+
+@app.command("reason")
+def reason_cmd(staged_note: Path, profile: ProfileOpt = None) -> None:
+    """Run the LLM step on one staged note and print the validated JSON."""
+    settings = Settings()
+    note = load_staged_note(staged_note)
+    if note.doctype.name in ("youtube", "youtube-gemini"):
+        typer.echo("YouTube notes need facts first: use `catcher render` for them.")
+        raise typer.Exit(2)
+    profiles = load_profiles(settings.profiles_file)
+    name, _ = resolve_profile(profiles, requested=profile, class_default=note.doctype.llm_profile)
+    request = LlmRequest(
+        task=note.doctype.task,
+        input=prompt_input(note, load_tags()),
+        schema_name=note.doctype.schema_name,
+        profile=name,
+    )
+    try:
+        result = reason(request, profiles=profiles, backends=lambda p: make_backend(p, settings))
+    except LlmError as e:
+        typer.echo(f"LLM step failed: {e}", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(result.output.model_dump_json(indent=2))
+    typer.echo(
+        f"profile={result.profile} backend={result.backend} model={result.model} "
+        f"prompt={result.prompt_version} attempts={result.attempts} "
+        f"tokens_in={result.usage.tokens_in} tokens_out={result.usage.tokens_out}",
+        err=True,
+    )
