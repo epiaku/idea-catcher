@@ -5885,11 +5885,11 @@ Expected: no lint or type errors, and all tests pass.
 - [ ] **Step 4: Prove it on a copy with the fake profile**
 
 ```bash
-rm -rf /tmp/ic-test && mkdir -p /tmp/ic-test
-git clone --no-hardlinks ~/Documents/dev/epiaku/idea-bucket /tmp/ic-test/idea-bucket
-git clone --no-hardlinks ~/Documents/dev/epiaku/epiaku-docs /tmp/ic-test/epiaku-docs
-git -C /tmp/ic-test/idea-bucket remote remove origin && git -C /tmp/ic-test/epiaku-docs remote remove origin
-uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --profile fake --no-review
+rm -rf tmp/ic-test && mkdir -p tmp/ic-test
+git clone --no-hardlinks ~/Documents/dev/epiaku/idea-bucket tmp/ic-test/idea-bucket
+git clone --no-hardlinks ~/Documents/dev/epiaku/epiaku-docs tmp/ic-test/epiaku-docs
+git -C tmp/ic-test/idea-bucket remote remove origin && git -C tmp/ic-test/epiaku-docs remote remove origin
+uv run catcher run pipeline --ideas tmp/ic-test/idea-bucket --docs tmp/ic-test/epiaku-docs --profile fake --no-review
 ```
 
 Expected: `inbox/` is empty; `archive/`, `output/` and (only if something failed) `failed/` mirror the old inbox names; every `output/` file is a final page without `stage`; the log shows one line per file and step, with `(i/N)` progress and a final `processed X/N` line. The 5 clips of `2446cd9c762c9cc9` are all present in `archive/` and `output/`, and the docs repo has **one** page for that id.
@@ -6184,65 +6184,65 @@ Expected: no lint or type errors, and all tests pass.
 - [ ] **Step 2: Make isolated copies with no remote**
 
 ```bash
-rm -rf /tmp/ic-test && mkdir -p /tmp/ic-test
-git clone --no-hardlinks ~/Documents/dev/epiaku/idea-bucket /tmp/ic-test/idea-bucket
-git clone --no-hardlinks ~/Documents/dev/epiaku/epiaku-docs /tmp/ic-test/epiaku-docs
-git -C /tmp/ic-test/idea-bucket remote remove origin
-git -C /tmp/ic-test/epiaku-docs remote remove origin
+rm -rf tmp/ic-test && mkdir -p tmp/ic-test
+git clone --no-hardlinks ~/Documents/dev/epiaku/idea-bucket tmp/ic-test/idea-bucket
+git clone --no-hardlinks ~/Documents/dev/epiaku/epiaku-docs tmp/ic-test/epiaku-docs
+git -C tmp/ic-test/idea-bucket remote remove origin
+git -C tmp/ic-test/epiaku-docs remote remove origin
 ```
 
-Expected: both copies exist, and `git -C /tmp/ic-test/idea-bucket remote` prints nothing. Without a remote, `pull` and `push` do nothing, so the copies can never reach GitHub.
+Expected: both copies exist, and `git -C tmp/ic-test/idea-bucket remote` prints nothing. Without a remote, `pull` and `push` do nothing, so the copies can never reach GitHub.
 
 - [ ] **Step 3: Dry run with the fake profile**
 
-Run: `uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --profile fake --no-review --dry-run`
+Run: `uv run catcher run pipeline --ideas tmp/ic-test/idea-bucket --docs tmp/ic-test/epiaku-docs --profile fake --no-review --dry-run`
 Expected:
 - There is one line per **inbox file**, so `2446cd9c762c9cc9` appears **five times** (it was clipped 5 times). The docs repo will still get one page for it, because each page overwrites the previous one by id.
 - The YouTube-summary Gemini chats are shown as `youtube-gemini` with ID `<video-id>-gemini`.
 - The Web Clipper YouTube clips are shown as `youtube`, and the phone notes as `note` with 6-hex IDs.
 - YouTube items show `deferred` (the fake profile does not stop the facts fetch, so it will try the network: that is expected here) or `would_publish`.
-- No files change: `git -C /tmp/ic-test/idea-bucket status --porcelain` prints nothing.
+- No files change: `git -C tmp/ic-test/idea-bucket status --porcelain` prints nothing.
 
 - [ ] **Step 4: Stage the copy for real and inspect it**
 
-Run: `uv run catcher ingest --ideas /tmp/ic-test/idea-bucket && ls -R /tmp/ic-test/idea-bucket/archive /tmp/ic-test/idea-bucket/output`
+Run: `uv run catcher ingest --ideas tmp/ic-test/idea-bucket && ls -R tmp/ic-test/idea-bucket/archive tmp/ic-test/idea-bucket/output`
 Expected: `inbox/` is empty, and `archive/` and `output/` hold the same file names in the same `notes/` and `clippings/` subfolders. Every `output/` file has `stage: analyzed`, and `diff` of an `archive/` file against the original in `git show HEAD:inbox/...` is empty. Any unreadable file is in `failed/` with an `.error.txt`.
 
 - [ ] **Step 5: One note and one chat through the real APIs**
 
 Put `OPENAI_API_KEY`, `OPENAI_MODEL_CLIPPINGS`, `OPENAI_MODEL_YOUTUBE` and `FREELLMAPI_URL` (the H4 FreeLLMApi LXC) in `.env`.
 
-Run: `uv run catcher reason "/tmp/ic-test/idea-bucket/output/notes/<a-note-name>.md" --profile notes`
+Run: `uv run catcher reason "tmp/ic-test/idea-bucket/output/notes/<a-note-name>.md" --profile notes`
 Expected: validated JSON, plus a stderr line showing `backend=freellmapi` and a token count.
 
-Run: `uv run catcher reason "/tmp/ic-test/idea-bucket/output/clippings/<a-chat-name>.md" --profile clippings`
+Run: `uv run catcher reason "tmp/ic-test/idea-bucket/output/clippings/<a-chat-name>.md" --profile clippings`
 Expected: validated JSON, plus a stderr line showing `backend=openai model=<your model>` and a token count.
 
-Run: `uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --limit 3`
-Expected: up to 3 `published` lines, with the notes on `freellmapi` and the chats on `openai`. `git -C /tmp/ic-test/epiaku-docs log --stat -1` shows only new files under `hugo/content/en/docs/idea-bucket/`. Every step is in the log with the file name and an `(i/N)` counter.
+Run: `uv run catcher run pipeline --ideas tmp/ic-test/idea-bucket --docs tmp/ic-test/epiaku-docs --limit 3`
+Expected: up to 3 `published` lines, with the notes on `freellmapi` and the chats on `openai`. `git -C tmp/ic-test/epiaku-docs log --stat -1` shows only new files under `hugo/content/en/docs/idea-bucket/`. Every step is in the log with the file name and an `(i/N)` counter.
 
 - [ ] **Step 6: One YouTube clip and one Gemini video chat, with the reviewer**
 
 Pick the file names from the Step 3 output, then run:
-`uv run catcher render "/tmp/ic-test/idea-bucket/output/clippings/<the-youtube-clip>.md" --docs /tmp/ic-test/epiaku-docs`
-`uv run catcher render "/tmp/ic-test/idea-bucket/output/clippings/<the-gemini-chat>.md" --docs /tmp/ic-test/epiaku-docs`
+`uv run catcher render "tmp/ic-test/idea-bucket/output/clippings/<the-youtube-clip>.md" --docs tmp/ic-test/epiaku-docs`
+`uv run catcher render "tmp/ic-test/idea-bucket/output/clippings/<the-gemini-chat>.md" --docs tmp/ic-test/epiaku-docs`
 Expected: both use the `youtube` profile, the log shows two OpenAI calls each (summary and review, or review only for the Gemini chat), and there are two pages in `idea-bucket/youtube/` with real metrics and a `review:` block in the frontmatter. The second page links to the first.
 
 - [ ] **Step 7: Build the copy with Hugo and look at the pages**
 
 ```bash
-cd /tmp/ic-test/epiaku-docs/hugo
-hugo --gc --source . --config hugo.yaml --destination /tmp/ic-test/public
+cd tmp/ic-test/epiaku-docs/hugo
+hugo --gc --source . --config hugo.yaml --destination ../../public   # = tmp/ic-test/public
 ```
 
-If the build fails on PostCSS or missing modules, run `ln -s ~/Documents/dev/epiaku/epiaku-docs/node_modules /tmp/ic-test/epiaku-docs/node_modules` and build again.
+If the build fails on PostCSS or missing modules, run `ln -s ~/Documents/dev/epiaku/epiaku-docs/node_modules tmp/ic-test/epiaku-docs/node_modules` and build again.
 
 Expected: the build succeeds with no errors. Then run `hugo server --source . --config hugo.yaml` and open the Notes, Clippings and YouTube cards. Check that the titles are good, the tags link to tag pages, the `youtube-lite` embed plays, and the Tips tables render.
 
 - [ ] **Step 8: Provider failures and a used-up budget are deferrals, not failures**
 
 Run once with `FREELLMAPI_URL` pointing at a closed port, and once with `OPENAI_API_KEY=sk-wrong`:
-`uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --limit 2`
+`uv run catcher run pipeline --ideas tmp/ic-test/idea-bucket --docs tmp/ic-test/epiaku-docs --limit 2`
 Expected: the affected notes show `deferred` and stay in `output/` with `stage: analyzed` (nothing in `failed/`). With the wrong key the log has one `ERROR authentication failed: check OPENAI_API_KEY` and no further OpenAI calls in that run. Notes on the other provider are still published.
 
 Then make the budget run out on purpose, on a **throw-away key with a tiny budget** (for example $0.01): run the pipeline until it reaches the cap. Expected: one `ERROR openai budget reached: N note(s) waiting …`, the waiting notes stay in `output/` with `stage: analyzed` (nothing in `failed/`), the FreeLLMApi notes are published, and after the budget is raised, the next run publishes the waiting notes. Note the exact error code the API returned and fix the classifier in Task 20 if it differs.
@@ -6354,8 +6354,8 @@ Expected: `pushed=True`. GitHub shows one `idea-catcher: publish N page(s)` comm
 **Rules:**
 
 1. **Only the needed folders** are copied into `tests/data/` (1.2 MB): `idea-bucket/inbox/` (47 markdown captures, plus one tiny fake `sample-report.pdf` to try artifacts) and `epiaku-docs/hugo/content/en/docs/idea-bucket/` (the already published pages), plus the empty folder `epiaku-docs/idea-bucket/artifacts/` (a `.gitkeep`) where artifacts are sent. The pipeline reads and writes nothing else. Hidden files (`.DS_Store`, `.trash`) are left out, and the data was scanned for secrets before it was committed (none found).
-2. **`reset_test_repos(target=/tmp/ic, source=tests/data)`** deletes the target, copies the data, and makes two git repos (one commit, **no remote**). It only deletes a target that has the marker file `.catcher-testdata` (written when it made it) and refuses anything else, so a wrong `--target` cannot delete real work.
-3. **`catcher testdata reset [--target] [--source]`** calls it and prints the run command. Exit code 2 when it refuses.
+2. **`reset_test_repos(target=<project>/tmp/ic, source=tests/data)`** deletes the target, copies the data, and makes two git repos (one commit, **no remote**). It only deletes a target that has the marker file `.catcher-testdata` (written when it made it) and refuses anything else, so a wrong `--target` cannot delete real work.
+3. **`catcher testdata reset [--target] [--source]`** calls it and prints the run command. The default target is `tmp/ic` in the project root (the project's own `tmp/` folder, which Git ignores), not the system temp folder. Exit code 2 when it refuses.
 4. **The suite uses the data too:** `tests/component/test_testdata.py` (what the data holds, fresh every time, no remote, refusal to delete a foreign folder, the command) and `tests/integration/git/test_testdata_run.py` (the whole pipeline on the data with the fake LLM: no failures, one artifact, duplicates found, YouTube clips stalled because facts cannot be fetched in tests, both repos clean afterwards). The assertions are deliberately loose, so refreshing the data does not break them.
 5. **The how-to page** has the new commands, what the data is, and how to refresh it.
 

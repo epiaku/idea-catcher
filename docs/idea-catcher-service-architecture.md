@@ -613,7 +613,7 @@ tests/
 ```
 
 - **Recorded, not generated:** fixtures are captured once from real runs (a `catcher fixtures record` helper) and then committed, so tests reflect real formats.
-- **Test data from the real repos:** `tests/data/` holds a committed copy of only the folders the Idea Catcher uses (`idea-bucket/inbox/` and the Hugo `idea-bucket` pages of `epiaku-docs`). `catcher testdata reset` turns it into fresh git repos without a remote in `/tmp/ic`, for manual tries, and the test suite runs the whole pipeline on the same data.
+- **Test data from the real repos:** `tests/data/` holds a committed copy of only the folders the Idea Catcher uses (`idea-bucket/inbox/` and the Hugo `idea-bucket` pages of `epiaku-docs`). `catcher testdata reset` turns it into fresh git repos without a remote in `tmp/ic`, for manual tries, and the test suite runs the whole pipeline on the same data.
 - **Snapshots** of rendered pages make template changes visible in the diff. Update them on purpose with `pytest --snapshot-update`.
 - **Postgres for tests:** a session-scoped fixture starts the `pgvector/pgvector:pg17` container (with `testcontainers`, or the `db` service from `compose.test.yaml`). It runs the Alembic migrations once, and gives each test a clean database (truncate between tests).
 

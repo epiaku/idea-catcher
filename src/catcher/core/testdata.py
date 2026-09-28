@@ -3,9 +3,10 @@ import subprocess
 from pathlib import Path
 
 MARKER = ".catcher-testdata"
-DEFAULT_TARGET = Path("/tmp/ic")
-# tests/data sits in the repo root, next to src/ (this file is src/catcher/core/testdata.py)
-DEFAULT_SOURCE = Path(__file__).resolve().parents[3] / "tests" / "data"
+# this file is src/catcher/core/testdata.py, so the project root is three levels up
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_TARGET = PROJECT_ROOT / "tmp" / "ic"  # tmp/ is in .gitignore
+DEFAULT_SOURCE = PROJECT_ROOT / "tests" / "data"
 REPOS = ("idea-bucket", "epiaku-docs")
 
 

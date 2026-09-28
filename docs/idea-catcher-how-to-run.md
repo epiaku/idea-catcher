@@ -13,16 +13,20 @@ This page shows how to **run** the Idea Catcher (Stage A, the local CLI). The se
 - Work from the `idea-catcher` repo root, with the virtual environment active or with `uv run` in front of every command.
 - Copy `.env.example` to `.env` and fill it in. See the [configuration page](../idea-catcher-configuration/).
 - Make sure `IDEAS_REPO` and `DOCS_REPO` point to your local checkouts of `idea-bucket` and `epiaku-docs`.
+- **To try things without any risk, first make test repos:** `uv run catcher testdata reset` (see [Test on clean copies of the test data](#test-on-clean-copies-of-the-test-data)). It makes fresh copies in `tmp/ic`, from test data that is committed in this repo, and you run the Idea Catcher on them.
 - Every command below starts with `uv run catcher`. `uv run catcher --help` lists all commands.
 
 ## The usual order
 
+0. **Try it on the test data** (whenever you change something, or just want to see it work). Reset the test repos in `tmp/ic`, then run on them. Your real repos are not touched.
 1. **Free check.** See what would happen, with no LLM call and no change.
 2. **Small real run.** Process three notes for real, and look at the result.
 3. **Full run.** Process everything, then push when you are happy.
 
 ```bash
-uv run catcher run pipeline --profile fake --no-review --dry-run     # 1. free check
+uv run catcher testdata reset                                        # 0. fresh test repos in tmp/ic
+uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs --profile fake   # 0. run on them
+uv run catcher run pipeline --profile fake --no-review --dry-run     # 1. free check (real repos)
 uv run catcher run pipeline --limit 3                                # 2. small real run
 uv run catcher run pipeline --push                                   # 3. full run and push
 ```
@@ -107,7 +111,7 @@ What one run does, in order:
 - **`--docs PATH`**: use another `epiaku-docs` checkout than `DOCS_REPO`.
 
   ```bash
-  uv run catcher run pipeline --ideas /tmp/copy/idea-bucket --docs /tmp/copy/epiaku-docs --profile fake
+  uv run catcher run pipeline --ideas tmp/copy/idea-bucket --docs tmp/copy/epiaku-docs --profile fake
   ```
 
 - **`--log-level LEVEL`**: how much to log. It goes **before** the command name.
@@ -213,6 +217,8 @@ The last line shows the counts, and whether both repos were committed and pushed
 
 ## Recipes
 
+The recipes use your real repos (`../idea-bucket`). To try one on the test data, run `uv run catcher testdata reset` and set `IDEAS_REPO=tmp/ic/idea-bucket` and `DOCS_REPO=tmp/ic/epiaku-docs` first, and use `tmp/ic/idea-bucket` in place of `../idea-bucket` in the paths. See [the shortcut](#test-on-clean-copies-of-the-test-data).
+
 ### Check the setup for free
 
 ```bash
@@ -248,20 +254,33 @@ uv run catcher run pipeline --push                # process the rest and push
 
 ### Test on clean copies of the test data
 
-This makes **fresh test repos on this laptop**, in `/tmp/ic`, from test data that is committed in this repo. You run the Idea Catcher on those test repos, so your real `idea-bucket` and `epiaku-docs` are never touched, and the test data is always the same, even when your real repos change.
+This makes **fresh test repos in the `tmp/ic` folder of this project**, from test data that is committed in this repo. You run the Idea Catcher on those test repos, so your real `idea-bucket` and `epiaku-docs` are never touched, and the test data is always the same, even when your real repos change.
 
 ```bash
 uv run catcher testdata reset
-uv run catcher run pipeline --ideas /tmp/ic/idea-bucket --docs /tmp/ic/epiaku-docs --profile fake
+uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs --profile fake
 ```
 
 The first command:
 
-1. Deletes `/tmp/ic` if it is there. It only deletes a folder that a previous `testdata reset` made. If `/tmp/ic` came from somewhere else (for example an old `git clone`), it stops and tells you to remove it yourself: `rm -rf /tmp/ic`.
-2. Copies the test data into `/tmp/ic/idea-bucket` and `/tmp/ic/epiaku-docs`.
+1. Deletes `tmp/ic` if it is there. It only deletes a folder that a previous `testdata reset` made. If `tmp/ic` came from somewhere else (for example an old `git clone`), it stops and tells you to remove it yourself: `rm -rf tmp/ic`.
+2. Copies the test data into `tmp/ic/idea-bucket` and `tmp/ic/epiaku-docs`.
 3. Turns each into a git repo with one commit and **no remote**, so nothing can be pulled or pushed by mistake.
 
-Run it again whenever you want to start over. Options: `--target PATH` to make the repos somewhere else.
+Run it again whenever you want to start over. Options: `--target PATH` to make the repos somewhere else. The default, `tmp/ic`, is in the project root whatever folder you run the command from, and `tmp/` is not tracked by Git.
+
+**A shortcut for a whole terminal session.** Instead of adding `--ideas` and `--docs` to every command, set two environment variables. They win over `.env`, so every command in that terminal uses the test repos:
+
+```bash
+uv run catcher testdata reset
+export IDEAS_REPO=tmp/ic/idea-bucket
+export DOCS_REPO=tmp/ic/epiaku-docs
+uv run catcher scan                                       # lists the test inbox
+uv run catcher run pipeline --profile fake                # runs on the test repos
+unset IDEAS_REPO DOCS_REPO                                # back to your real repos
+```
+
+Every recipe on this page then works on the test data. Reset again to start over, and close the terminal (or `unset`) when you are done, so you don't run on the test repos by accident.
 
 **What the test data is.** It lives in `tests/data/` in the idea-catcher repo and holds only the folders the Idea Catcher reads and writes, not the full repos:
 
@@ -273,16 +292,39 @@ Nothing else from the real repos is needed: no Hugo theme or site config, no `RE
 
 **The test suite uses the same data.** `test_testdata_run.py` runs the whole pipeline on it with the fake LLM, so a change that breaks the flow on real-looking captures is caught.
 
-**Refresh the test data** (rarely, for example to add a new kind of capture). Copy the folders from your real repos, look at the result, and commit it:
+### Fill `tmp/ic` from your real repos instead (more or newer data)
+
+The committed test data is a fixed snapshot. When your real `idea-bucket` and `epiaku-docs` hold more data that you want to test with, you can fill `tmp/ic` with clean clones of the real repos instead. Both ways give you the same folders (`tmp/ic/idea-bucket` and `tmp/ic/epiaku-docs`), so every command on this page works the same on either:
 
 ```bash
-rsync -a --delete --exclude='.DS_Store' --exclude='.*/' ../idea-bucket/inbox/ tests/data/idea-bucket/inbox/
-rsync -a --delete --exclude='.DS_Store' ../epiaku-docs/hugo/content/en/docs/idea-bucket/ \
-  tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/
-git status tests/data          # check what changed
+# 1. Remove the earlier test repos (only this folder, nothing else)
+rm -rf tmp/ic
+
+# 2. Get the latest from GitHub into your real repos
+git -C ../idea-bucket pull
+git -C ../epiaku-docs pull
+
+# 3. Make clean clones of the full repos
+git clone --no-hardlinks ../idea-bucket tmp/ic/idea-bucket
+git clone --no-hardlinks ../epiaku-docs tmp/ic/epiaku-docs
+
+# 4. Cut the clones off from GitHub, so nothing can be pulled or pushed by mistake
+git -C tmp/ic/idea-bucket remote remove origin
+git -C tmp/ic/epiaku-docs remote remove origin
+
+# 5. Run on them
+uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs --profile fake
 ```
 
-The data contains real notes, so read it before you commit, and never put secrets in it. The numbers in `test_testdata_run.py` are loose on purpose (there must be duplicates, one artifact and no failures), so refreshing the data does not break it.
+Good to know:
+
+- **Which one to use.** Use the test data (`testdata reset`) for everyday tries: it is small, always the same, and needs no `pull`. Use the clones when you need what is in your real repos today.
+- **Only committed files are cloned.** A note that Obsidian created but Git has not committed yet is missing. Commit it first, or copy it into `tmp/ic/idea-bucket/inbox/` by hand.
+- **The `pull` in step 2 matters.** The clones come from your local folders, not from GitHub.
+- **Step 4 is what makes it safe.** Without a remote, nothing can be pushed by mistake.
+- **Switching between the two.** `testdata reset` only replaces a folder it made itself. A folder made with `git clone` is not recognised, so the command stops and tells you to run `rm -rf tmp/ic` first. That is step 1 above, so switching in either direction is one `rm -rf tmp/ic` followed by the other set of commands.
+- **Everything in the real repos is copied**, including any results of earlier real runs (`archive/`, `output/` and so on). Look in `tmp/ic/idea-bucket/inbox/` to see what will be processed.
+- **To keep a set of real data for later:** copy the folders you need into `tests/data/` as described under "Refresh the test data" above, and commit it.
 
 ### Send a PDF or an image to epiaku-docs
 

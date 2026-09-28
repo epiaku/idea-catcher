@@ -1,3 +1,4 @@
+import os
 import secrets
 from pathlib import Path
 from typing import Annotated
@@ -245,7 +246,5 @@ def testdata_reset(
         raise typer.Exit(2) from e
     for path in repos.values():
         typer.echo(f"made {path}")
-    typer.echo(
-        f"run on them: uv run catcher run pipeline --ideas {repos['idea-bucket']} "
-        f"--docs {repos['epiaku-docs']} --profile fake"
-    )
+    ideas, docs = (os.path.relpath(repos[name]) for name in ("idea-bucket", "epiaku-docs"))
+    typer.echo(f"run on them: uv run catcher run pipeline --ideas {ideas} --docs {docs} --profile fake")
