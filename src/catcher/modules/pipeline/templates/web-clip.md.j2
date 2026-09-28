@@ -1,0 +1,31 @@
+## 📝 Summary
+
+{% for item in s.summary %}
+- {{ item }}
+{% endfor %}
+{% if s.key_points %}
+
+## 🔑 Key Points
+
+{% for item in s.key_points %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% if s.ideas_to_use %}
+
+## 💡 Ideas to Use It
+
+{% for item in s.ideas_to_use %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% if s.body.strip() %}
+
+{{ s.body | trim }}
+{% endif %}
+{% if source %}
+
+---
+
+Source: <{{ source }}>
+{% endif %}

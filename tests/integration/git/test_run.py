@@ -14,7 +14,7 @@ from catcher.modules.pipeline.run import RunOptions, run_pipeline
 
 REPO = Path(__file__).parents[3]
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
-CLIPPING = "hugo/content/en/docs/idea-bucket/clipping"
+CLIPPING = "hugo/content/en/docs/idea-bucket/clippings"
 
 
 def find(ideas: Path, folder: str, sub: str, original: str) -> Path:

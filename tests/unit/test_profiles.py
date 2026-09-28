@@ -25,7 +25,6 @@ def test_repo_profiles_file_loads_the_three_profiles():
     env = {"OPENAI_MODEL_CLIPPINGS": "gpt-a", "OPENAI_MODEL_YOUTUBE": "gpt-b"}
     cfg = load_profiles(REPO / "profiles.yaml", env=env)
     assert cfg.default == "notes"
-    assert cfg.review_profile == "youtube"
     assert cfg.profiles["notes"] == Profile(backend="freellmapi", model="auto")
     assert cfg.profiles["clippings"] == Profile(backend="openai", model="gpt-a")
     assert cfg.profiles["youtube"] == Profile(backend="openai", model="gpt-b")

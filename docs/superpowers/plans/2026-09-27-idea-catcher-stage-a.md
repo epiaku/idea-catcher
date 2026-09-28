@@ -31,7 +31,7 @@
 - The pipeline commits **only the files it wrote or removed** (`git commit --only`). Other changes in either working tree are never committed.
 - **Stage A scope:** no Postgres, no queue, no API, no Docker. There is no `when` option: every profile is an API and runs immediately. In this stage, "deferred" means the working copy stalls in `output/` with `stage: deferred` until you move the file back into `inbox/`. **No document state is stored** (that is Stage B's Postgres): the folders, the `stage` field and the **Python log** show what happened, so every step logs one line per file.
 - **Deviations from the spec, decided while planning against the real data** (to be recorded in the docs in Task 21):
-  - AI chats publish to the existing site folder `idea-bucket/clipping/`, not `gemini/` + `claude/`. There is one `ai-chat` class for both.
+  - AI chats publish to the existing site folder `idea-bucket/clippings/`, not `gemini/` + `claude/`. There is one `ai-chat` class for both.
   - YouTube facts are stored in a sidecar file `output/<sub>/<name>.youtube.json` instead of in the note's frontmatter, so the Obsidian properties panel stays readable. The sidecar stays next to the final page.
   - `reason()` is synchronous; Stage B can call it through `asyncio.to_thread`.
   - `YoutubeSummary` gains a `description` field, because every page needs one.
@@ -698,7 +698,7 @@ def test_first_user_turn_stops_at_the_first_answer():
 
 
 def test_output_and_archive_folders():
-    assert AI_CHAT.out_dir == "hugo/content/en/docs/idea-bucket/clipping"
+    assert AI_CHAT.out_dir == "hugo/content/en/docs/idea-bucket/clippings"
     assert AI_CHAT.archive_dir == "archive/clippings"
     assert YOUTUBE_GEMINI.out_dir == YOUTUBE.out_dir == "hugo/content/en/docs/idea-bucket/youtube"
     assert YOUTUBE.archive_dir == "archive/youtube"
@@ -787,7 +787,7 @@ AI_CHAT = DocType(
     "ai-chat",
     "ChatSummary",
     "ai-chat.md.j2",
-    f"{DOCS_ROOT}/clipping",
+    f"{DOCS_ROOT}/clippings",
     "archive/clippings",
     "claude-sub-evening",
 )
@@ -3694,9 +3694,9 @@ AUTHOR = ("idea-catcher", "bot@example.com")
 
 def test_commit_paths_leaves_unrelated_changes_alone(make_repo, sh):
     _, work = make_repo(
-        "docs", {"hugo/content/en/docs/idea-bucket/clipping/old.md": "old\n", "other.md": "x\n"}
+        "docs", {"hugo/content/en/docs/idea-bucket/clippings/old.md": "old\n", "other.md": "x\n"}
     )
-    (work / "hugo/content/en/docs/idea-bucket/clipping/old.md").unlink()
+    (work / "hugo/content/en/docs/idea-bucket/clippings/old.md").unlink()
     (work / "other.md").write_text("changed\n")
     (work / "staged-by-user.md").write_text("u\n")
     sh(work, "add", "staged-by-user.md")
@@ -3710,7 +3710,7 @@ def test_commit_paths_leaves_unrelated_changes_alone(make_repo, sh):
         "hugo/content/en/docs/idea-bucket/notes/20260927_a7b2c9_x.md"
     ]
     status = sh(work, "status", "--porcelain").splitlines()
-    assert " D hugo/content/en/docs/idea-bucket/clipping/old.md" in status
+    assert " D hugo/content/en/docs/idea-bucket/clippings/old.md" in status
     assert " M other.md" in status
     assert "A  staged-by-user.md" in status
     assert sh(work, "log", "-1", "--format=%an <%ae>").strip() == "idea-catcher <bot@example.com>"
@@ -3899,7 +3899,7 @@ from catcher.modules.pipeline.run import RunOptions, run_pipeline
 
 REPO = Path(__file__).parents[3]
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
-CLIPPING = "hugo/content/en/docs/idea-bucket/clipping"
+CLIPPING = "hugo/content/en/docs/idea-bucket/clippings"
 
 
 def chat(chat_id: str, body: str = "**You**\n\nsell bundles?\n\n---\n\n**Gemini**\n\nYes.\n") -> str:
@@ -6249,7 +6249,7 @@ Then make the budget run out on purpose, on a **throw-away key with a tiny budge
 
 - [ ] **Step 9: Check that the docs match the code**
 
-The deviations (AI chats publish to `idea-bucket/clipping/`, the facts sidecar, the four-folder layout, no deduplication, `failed/` and the `stage` field, no state store in Stage A, API-key profiles instead of `claude -p`) are recorded in `docs/idea-catcher-pipeline.md` and `docs/idea-catcher-service-architecture.md`. Read them once against what the copy run just did, fix anything that differs, and commit:
+The deviations (AI chats publish to `idea-bucket/clippings/`, the facts sidecar, the four-folder layout, no deduplication, `failed/` and the `stage` field, no state store in Stage A, API-key profiles instead of `claude -p`) are recorded in `docs/idea-catcher-pipeline.md` and `docs/idea-catcher-service-architecture.md`. Read them once against what the copy run just did, fix anything that differs, and commit:
 
 ```bash
 git add docs
@@ -6260,7 +6260,7 @@ git commit -m "docs: match the docs to the four-folder run"
 
 Show the results from Steps 5–8 and ask: "Run against the real idea-bucket and epiaku-docs and push to GitHub `main`?" Mention two things:
 - All current inbox captures will move to `archive/` (untouched copy) and `output/` on GitHub, which clears the phone's inbox on the next pull. The five clips of `2446cd9c762c9cc9` all go through the LLM, so use `--limit` sensibly, or move four of them out of the inbox first.
-- The two uncommitted deletions in `epiaku-docs/hugo/content/en/docs/idea-bucket/clipping/` will stay uncommitted.
+- The two uncommitted deletions in `epiaku-docs/hugo/content/en/docs/idea-bucket/clippings/` will stay uncommitted.
 
 Only after an explicit yes, run:
 `uv run catcher run pipeline --limit 3 --push`
@@ -6353,10 +6353,26 @@ Expected: `pushed=True`. GitHub shows one `idea-catcher: publish N page(s)` comm
 
 **Rules:**
 
-1. **Only the needed folders** are copied into `tests/data/` (1.2 MB): `idea-bucket/inbox/` (47 markdown captures, plus one tiny fake `sample-report.pdf` to try artifacts) and `epiaku-docs/hugo/content/en/docs/idea-bucket/` (the already published pages), plus the empty folder `epiaku-docs/idea-bucket/artifacts/` (a `.gitkeep`) where artifacts are sent. The pipeline reads and writes nothing else. Hidden files (`.DS_Store`, `.trash`) are left out, and the data was scanned for secrets before it was committed (none found).
+1. **Only the needed folders** are copied into `tests/data/` (1.2 MB): `idea-bucket/inbox/` (48 markdown captures including one web clip, plus one tiny fake `sample-report.pdf` to try artifacts) and `epiaku-docs/hugo/content/en/docs/idea-bucket/` (the already published pages), plus the empty folder `epiaku-docs/idea-bucket/artifacts/` (a `.gitkeep`) where artifacts are sent. The pipeline reads and writes nothing else. Hidden files (`.DS_Store`, `.trash`) are left out, and the data was scanned for secrets before it was committed (none found).
 2. **`reset_test_repos(target=<project>/tmp/ic, source=tests/data)`** deletes the target, copies the data, and makes two git repos (one commit, **no remote**). It only deletes a target that has the marker file `.catcher-testdata` (written when it made it) and refuses anything else, so a wrong `--target` cannot delete real work.
 3. **`catcher testdata reset [--target] [--source]`** calls it and prints the run command. The default target is `tmp/ic` in the project root (the project's own `tmp/` folder, which Git ignores), not the system temp folder. Exit code 2 when it refuses.
 4. **The suite uses the data too:** `tests/component/test_testdata.py` (what the data holds, fresh every time, no remote, refusal to delete a foreign folder, the command) and `tests/integration/git/test_testdata_run.py` (the whole pipeline on the data with the fake LLM: no failures, one artifact, duplicates found, YouTube clips stalled because facts cannot be fetched in tests, both repos clean afterwards). The assertions are deliberately loose, so refreshing the data does not break them.
 5. **The how-to page** has the new commands, what the data is, and how to refresh it.
 
 **Files:** `src/catcher/core/testdata.py`, `src/catcher/cli.py` (`testdata reset`), `tests/data/**`, the two test files above. Docs: how-to-run and architecture pages.
+
+---
+
+### Task 27: The `web-clip` class (clippings that are not chats or videos)
+
+> **Status: implemented (2026-09-28), not yet committed.** 245 tests pass. Reason: a page clipped from any other site was treated as a note, which got the short-idea prompt, the `notes` profile and the `notes/` folder.
+
+**Rules:**
+
+1. **Detection:** after the explicit `type`, YouTube (with a video) and the chat hosts, a `source` that is an `http(s)` address with a host is a `web-clip`. No `source` (or one that is not a web address) is still a `note`. A YouTube address without a video (a channel) is now a `web-clip` too, not a note.
+2. **Id:** an `id` in the frontmatter wins. Otherwise 12 hex characters of the SHA-1 of the normalised address: lower-case host without `www.`, path without a trailing slash, query sorted, tracking parameters (`utm_*`, `gclid`, `fbclid`, `igshid`, `mc_cid`, `mc_eid`) and the fragment dropped. So the same page clipped again gets the same id and replaces its page. The page's `source` is the address without tracking parameters and fragment (`clean_url`).
+3. **Its own prompt** `prompts/web-clip.md` (`version: web-clip-1`), **schema** `WebClipSummary` (title, description, summary, key_points, ideas_to_use, body, tags), **template** `web-clip.md.j2` (Summary, Key Points, Ideas to Use It, details, source; empty sections left out) and page folder `hugo/content/en/docs/idea-bucket/web-clips/` (which needs an `_index.md` in the epiaku-docs repo).
+4. **Profile:** `clippings` (OpenAI). No new profile. The archive name uses the clip title, else the file name.
+5. **Tests:** detection and ids (`tests/unit/test_doctypes.py`), the schema, the prompt, the page (`test_render.py`), processing (`test_process.py`), and the test data has a sample article clip and the `web-clips/_index.md`, so the whole-pipeline test publishes a web-clip page.
+
+**Files:** `doctypes.py` (`WEB_CLIP`, `clean_url`, detection, id, canonical source), `llm/schemas.py`, `llm/prompts/web-clip.md`, `pipeline/templates/web-clip.md.j2`, `llm/backends/fake.py` (canned output), tests, `tests/data/`. Docs: the pipeline page (class table, detection order, registry sketch, a "Web clips" section), configuration and architecture pages.

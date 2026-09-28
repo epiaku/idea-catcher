@@ -140,14 +140,13 @@ def render(
     document: Path,
     docs: DocsOpt = None,
     profile: ProfileOpt = None,
-    no_review: Annotated[bool, typer.Option("--no-review", help="skip the YouTube reviewer")] = False,
 ) -> None:
     """Summarize one document and write its page into the docs checkout (no inbox change, no git)."""
     settings = Settings()
     docs_repo = docs or settings.docs_repo
     note = read_note(document)
     note.name = f"{calculated_stem(str(note.doc.fm['captured']), secrets.token_hex(3), name_title(note))}.md"
-    opts = ProcessOptions(profile=profile, review=not no_review, docs_repo=docs_repo)
+    opts = ProcessOptions(profile=profile, docs_repo=docs_repo)
     try:
         processed = process_note(note, default_services(settings), opts)
     except (LlmError, UnknownProfile) as e:
@@ -177,7 +176,6 @@ def run_pipeline_cmd(
     ideas: IdeasOpt = None,
     docs: DocsOpt = None,
     profile: ProfileOpt = None,
-    no_review: Annotated[bool, typer.Option("--no-review", help="skip the YouTube reviewer")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="change no files, commit nothing")] = False,
     push: Annotated[bool, typer.Option("--push", help="push both repos (off by default)")] = False,
     limit: Annotated[int | None, typer.Option("--limit", help="process at most N notes")] = None,
@@ -185,9 +183,7 @@ def run_pipeline_cmd(
 ) -> None:
     """Process the documents in inbox/: publish pages, file failures and duplicates, and commit."""
     settings = Settings()
-    opts = RunOptions(
-        profile=profile, review=not no_review, dry_run=dry_run, push=push, limit=limit, only=file
-    )
+    opts = RunOptions(profile=profile, dry_run=dry_run, push=push, limit=limit, only=file)
     report = run_pipeline(
         ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
     )

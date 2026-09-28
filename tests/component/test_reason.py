@@ -101,3 +101,19 @@ def test_ai_chat_prompt_renders(prompt_tags):
 def test_extract_json_without_object():
     with pytest.raises(ValueError):
         extract_json("no braces")
+
+
+def test_web_clip_prompt_renders(prompt_tags):
+    text, version = render_prompt(
+        "web-clip",
+        {
+            "title_hint": "Hugo shortcodes explained",
+            "body": "Shortcodes are snippets you call from Markdown.",
+            "source": "https://example.com/blog/hugo",
+            "tags": prompt_tags,
+            "capture_tags": ["hugo"],
+        },
+    )
+    assert version == "web-clip-1"
+    assert "Shortcodes are snippets" in text and "https://example.com/blog/hugo" in text
+    assert "menus, cookie notices" in text and "Do not copy long passages" in text

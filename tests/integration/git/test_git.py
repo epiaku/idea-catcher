@@ -5,9 +5,9 @@ AUTHOR = ("idea-catcher", "bot@example.com")
 
 def test_commit_paths_leaves_unrelated_changes_alone(make_repo, sh):
     _, work = make_repo(
-        "docs", {"hugo/content/en/docs/idea-bucket/clipping/old.md": "old\n", "other.md": "x\n"}
+        "docs", {"hugo/content/en/docs/idea-bucket/clippings/old.md": "old\n", "other.md": "x\n"}
     )
-    (work / "hugo/content/en/docs/idea-bucket/clipping/old.md").unlink()
+    (work / "hugo/content/en/docs/idea-bucket/clippings/old.md").unlink()
     (work / "other.md").write_text("changed\n")
     (work / "staged-by-user.md").write_text("u\n")
     sh(work, "add", "staged-by-user.md")
@@ -21,7 +21,7 @@ def test_commit_paths_leaves_unrelated_changes_alone(make_repo, sh):
         "hugo/content/en/docs/idea-bucket/notes/20260927_a7b2c9_x.md"
     ]
     status = sh(work, "status", "--porcelain").splitlines()
-    assert " D hugo/content/en/docs/idea-bucket/clipping/old.md" in status
+    assert " D hugo/content/en/docs/idea-bucket/clippings/old.md" in status
     assert " M other.md" in status
     assert "A  staged-by-user.md" in status
     assert sh(work, "log", "-1", "--format=%an <%ae>").strip() == "idea-catcher <bot@example.com>"

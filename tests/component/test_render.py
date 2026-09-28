@@ -1,5 +1,5 @@
 from catcher.core.frontmatter import parse
-from catcher.modules.llm.schemas import ChatSummary, NoteSummary
+from catcher.modules.llm.schemas import ChatSummary, NoteSummary, WebClipSummary
 from catcher.modules.pipeline.render import (
     PageContext,
     fmt_count,
@@ -102,3 +102,37 @@ def test_extra_frontmatter_is_added_before_llm(make_note, make_result):
     page = render_page(PageContext(note, summary, ["todo"], make_result(summary)), extra_fm={"video_id": "x"})
     keys = list(parse(page).fm)
     assert keys.index("video_id") < keys.index("llm")
+
+
+def test_web_clip_page_sections_and_clean_source(make_note, make_result):
+    note = make_note(
+        "web-clip",
+        doc_id="a1b2c3d4e5f6",
+        body="The article text.\n",
+        source="https://example.com/blog/hugo?utm_source=news#intro",
+    )
+    summary = WebClipSummary(
+        title="Hugo shortcodes explained",
+        description="How to call a snippet from Markdown.",
+        summary=["A shortcode is a snippet."],
+        key_points=["Use {{< name >}} in Markdown"],
+        ideas_to_use=["Add a card shortcode to the docs"],
+        body="## 🧩 Details\n\nMore detail.",
+        tags=["hugo"],
+    )
+    page = render_page(PageContext(note, summary, ["tech-note", "hugo"], make_result(summary)))
+    doc = parse(page)
+    assert doc.fm["source"] == "https://example.com/blog/hugo"
+    assert doc.body.startswith("## 📝 Summary\n\n- A shortcode is a snippet.\n")
+    assert "## 🔑 Key Points\n\n- Use {{< name >}} in Markdown\n" in doc.body
+    assert "## 💡 Ideas to Use It\n\n- Add a card shortcode to the docs\n" in doc.body
+    assert doc.body.endswith("Source: <https://example.com/blog/hugo>\n")
+
+
+def test_web_clip_sections_without_content_are_left_out(make_note, make_result):
+    note = make_note("web-clip", doc_id="a1b2c3d4e5f6", source="https://example.com/x")
+    summary = WebClipSummary(
+        title="T", description="D", summary=["S"], key_points=[], ideas_to_use=[], body="", tags=[]
+    )
+    body = parse(render_page(PageContext(note, summary, ["todo"], make_result(summary)))).body
+    assert "Key Points" not in body and "Ideas to Use It" not in body

@@ -33,9 +33,17 @@ CANNED: dict[str, dict] = {
         "body": "## 🧩 Details\n\nMore detail.",
         "tags": ["tech-note", "ai-agents"],
     },
+    "web-clip": {
+        "title": "Fake Web Clip",
+        "description": "A canned web clip summary used in tests.",
+        "summary": ["Point one"],
+        "key_points": ["A fact"],
+        "ideas_to_use": [],
+        "body": "## 🧩 Details\n\nMore detail.",
+        "tags": ["tech-note", "hugo"],
+    },
     "youtube": _YOUTUBE,
-    "youtube-from-gemini": _YOUTUBE,
-    "review": {"verdict": "ok", "issues": [], "revised": _YOUTUBE},
+    "youtube-gemini": _YOUTUBE,
 }
 
 

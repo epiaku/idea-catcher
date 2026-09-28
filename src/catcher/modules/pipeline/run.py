@@ -44,8 +44,6 @@ class ItemReport:
 @dataclass
 class RunOptions:
     profile: str | None = None
-    review: bool = True
-    review_profile: str | None = None
     dry_run: bool = False
     push: bool = False
     limit: int | None = None
@@ -116,11 +114,10 @@ def copy_artifacts(
 def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     report = RunReport()
     log.info(
-        "run started: ideas=%s docs=%s profile=%s review=%s dry_run=%s push=%s limit=%s",
+        "run started: ideas=%s docs=%s profile=%s dry_run=%s push=%s limit=%s",
         ideas,
         docs,
         opts.profile or "class default",
-        opts.review,
         opts.dry_run,
         opts.push,
         opts.limit,
@@ -214,8 +211,6 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             touched_ideas += start_work(ideas, note)  # out of inbox/: archive + working copy in output/
         popts = ProcessOptions(
             profile=opts.profile,
-            review=opts.review,
-            review_profile=opts.review_profile,
             dry_run=opts.dry_run,
             docs_repo=docs,
             blocked_backends=frozenset(blocked),

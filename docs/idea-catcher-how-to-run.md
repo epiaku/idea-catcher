@@ -85,7 +85,7 @@ What one run does, in order:
 
   ```bash
   uv run catcher run pipeline --file "New chat 2"
-  uv run catcher run pipeline --file "clippings/New chat.md" --file "Hello world" --profile fake
+  uv run catcher run pipeline --file "clippings/New chat.md" --file "YouTube walks" --profile fake
   ```
 
   - The name can be the file name (`New chat.md`), the name without `.md` (`New chat`), or the path with the subfolder (`clippings/New chat.md`). Upper and lower case do not matter. A file you moved back from `archive/` is found by its calculated name **or** by the name it was captured under.
@@ -158,7 +158,7 @@ uv run catcher reason DOCUMENT [--profile NAME]
 Sends one document to the LLM and prints the answer as JSON, plus one line with the profile, model and token counts. It writes nothing and moves nothing. It does not handle YouTube documents: use `render` for those.
 
 ```bash
-uv run catcher reason "../idea-bucket/inbox/notes/Hello world.md" --profile notes
+uv run catcher reason "../idea-bucket/inbox/notes/YouTube walks.md" --profile notes
 ```
 
 This is the best first real test of a profile, because it is one small call.
@@ -234,14 +234,14 @@ uv run catcher scan
 ### Try one note for real
 
 ```bash
-uv run catcher reason "../idea-bucket/inbox/notes/Hello world.md" --profile notes
+uv run catcher reason "../idea-bucket/inbox/notes/YouTube walks.md" --profile notes
 ```
 
 ### Test one specific document
 
 ```bash
-uv run catcher run pipeline --file "Hello world" --profile fake --dry-run     # free
-uv run catcher run pipeline --file "Hello world"                              # for real
+uv run catcher run pipeline --file "YouTube walks" --profile fake --dry-run     # free
+uv run catcher run pipeline --file "YouTube walks"                              # for real
 ```
 
 ### A small first run, then publish
@@ -284,8 +284,8 @@ Every recipe on this page then works on the test data. Reset again to start over
 
 **What the test data is.** It lives in `tests/data/` in the idea-catcher repo and holds only the folders the Idea Catcher reads and writes, not the full repos:
 
-- `tests/data/idea-bucket/inbox/`: the captures (47 markdown files, including a chat that was clipped several times as it grew, Gemini video chats and dictated notes) and one tiny fake PDF (`sample-report.pdf`) to try artifacts.
-- `tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/`: the pages that were already published, so overwrite-by-id and the sibling links can be tried.
+- `tests/data/idea-bucket/inbox/`: the captures (48 markdown files, including a chat that was clipped several times as it grew, Gemini video chats, one clipped web article and dictated notes) and one tiny fake PDF (`sample-report.pdf`) to try artifacts.
+- `tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/`: the pages that were already published (including the empty `web-clips/` section page), so overwrite-by-id and the sibling links can be tried.
 - `tests/data/epiaku-docs/idea-bucket/artifacts/`: the folder in the root of epiaku-docs where artifacts (files that are not markdown) are sent. It is empty apart from a `.gitkeep` file, because Git does not keep empty folders.
 
 Nothing else from the real repos is needed: no Hugo theme or site config, no `README`, no templates, no `.obsidian`, and none of the result folders (`archive/`, `output/`, `failed/`, `duplicates/`), which the run creates.
@@ -356,7 +356,7 @@ uv run catcher run pipeline
 Copy its file from `archive/` into `inbox/`, then run with the profile you want.
 
 ```bash
-cp "../idea-bucket/archive/notes/20260928-51bcb0-hello-world.md" "../idea-bucket/inbox/notes/"
+cp "../idea-bucket/archive/notes/20260928-51bcb0-youtube-walks.md" "../idea-bucket/inbox/notes/"
 uv run catcher run pipeline --profile notes
 ```
 

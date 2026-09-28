@@ -22,6 +22,7 @@ def test_the_committed_test_data_holds_only_what_the_idea_catcher_needs():
         DEFAULT_SOURCE / "idea-bucket/inbox/clippings"
     ).is_dir()
     assert (DEFAULT_SOURCE / "epiaku-docs/hugo/content/en/docs/idea-bucket/_index.md").is_file()
+    assert (DEFAULT_SOURCE / "epiaku-docs/hugo/content/en/docs/idea-bucket/web-clips/_index.md").is_file()
     assert (DEFAULT_SOURCE / "idea-bucket/inbox/sample-report.pdf").is_file()  # a file to try artifacts with
 
 

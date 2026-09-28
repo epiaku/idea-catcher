@@ -1,7 +1,8 @@
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from catcher.modules.youtube.urls import YOUTUBE_HOSTS, find_youtube_url, host_of, video_id
 
@@ -17,7 +18,6 @@ class DocType:
     template: str
     out_dir: str
     llm_profile: str
-    reviewed: bool = False
 
 
 NOTE = DocType("note", "note", "NoteSummary", "note.md.j2", f"{DOCS_ROOT}/notes", "notes")
@@ -26,7 +26,15 @@ AI_CHAT = DocType(
     "ai-chat",
     "ChatSummary",
     "ai-chat.md.j2",
-    f"{DOCS_ROOT}/clipping",
+    f"{DOCS_ROOT}/clippings",
+    "clippings",
+)
+WEB_CLIP = DocType(
+    "web-clip",
+    "web-clip",
+    "WebClipSummary",
+    "web-clip.md.j2",
+    f"{DOCS_ROOT}/web-clips",
     "clippings",
 )
 YOUTUBE = DocType(
@@ -36,18 +44,16 @@ YOUTUBE = DocType(
     "youtube.md.j2",
     f"{DOCS_ROOT}/youtube",
     "youtube",
-    reviewed=True,
 )
 YOUTUBE_GEMINI = DocType(
     "youtube-gemini",
-    "youtube-from-gemini",
+    "youtube-gemini",
     "YoutubeSummary",
     "youtube.md.j2",
     f"{DOCS_ROOT}/youtube",
     "youtube",
-    reviewed=True,
 )
-DOC_TYPES: dict[str, DocType] = {t.name: t for t in (NOTE, AI_CHAT, YOUTUBE, YOUTUBE_GEMINI)}
+DOC_TYPES: dict[str, DocType] = {t.name: t for t in (NOTE, AI_CHAT, WEB_CLIP, YOUTUBE, YOUTUBE_GEMINI)}
 
 _UNSAFE_ID = re.compile(r"[^A-Za-z0-9_-]+")
 _TURN_END = {"**Gemini**", "**Claude**", "---"}
@@ -85,6 +91,8 @@ def detect(fm: dict[str, Any], body: str) -> DocType:
         if host == "gemini.google.com" and gemini_video_id(body):
             return YOUTUBE_GEMINI
         return AI_CHAT
+    if source.startswith(("http://", "https://")) and host:
+        return WEB_CLIP  # any other page clipped with the Web Clipper
     return NOTE
 
 
@@ -100,6 +108,28 @@ def _last_path_segment(url: str) -> str | None:
     return parts[-1] if parts else None
 
 
+_TRACKING_PARAM = re.compile(r"^(utm_.*|gclid|fbclid|igshid|mc_cid|mc_eid)$", re.IGNORECASE)
+
+
+def clean_url(url: str) -> str:
+    """The link without tracking parameters and without a fragment."""
+    parsed = urlparse(url.strip())
+    query = [
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if not _TRACKING_PARAM.match(k)
+    ]
+    return urlunparse(parsed._replace(query=urlencode(query), fragment=""))
+
+
+def _web_clip_id(source: str) -> str | None:
+    parsed = urlparse(clean_url(source))
+    if not parsed.netloc:
+        return None
+    host = parsed.netloc.lower().removeprefix("www.")
+    query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
+    normalized = f"{parsed.scheme.lower()}://{host}{parsed.path.rstrip('/')}" + (f"?{query}" if query else "")
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+
+
 def derive_id(doctype: DocType, fm: dict[str, Any], body: str) -> str | None:
     if fm.get("id") not in (None, ""):
         return safe_id(str(fm["id"]).strip())
@@ -111,6 +141,8 @@ def derive_id(doctype: DocType, fm: dict[str, Any], body: str) -> str | None:
         return f"{vid}-gemini" if vid else None
     if doctype is AI_CHAT:
         return safe_id(_last_path_segment(source))
+    if doctype is WEB_CLIP:
+        return _web_clip_id(source)  # the same page clipped again gets the same id
     return None
 
 
@@ -124,4 +156,6 @@ def canonical_source(doctype: DocType, fm: dict[str, Any]) -> str | None:
     if doctype in (AI_CHAT, YOUTUBE_GEMINI):
         parsed = urlparse(source)
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}" if parsed.netloc else None
+    if doctype is WEB_CLIP:
+        return clean_url(source)
     return source

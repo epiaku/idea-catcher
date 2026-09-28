@@ -144,7 +144,7 @@ The phone only ever writes to `inbox/`. Because the pipeline moves files out of 
 | Gemini chat                  | Obsidian Web Clipper, default template           | Detected from `source` (gemini.google.com)      | Now    |
 | Claude chat                  | Obsidian Web Clipper, default template           | Detected from `source` (claude.ai)              | Now    |
 | YouTube video                | Obsidian Web Clipper, default template           | Detected from `source` (youtube.com / youtu.be) | Now    |
-| Web article / blog post      | Obsidian Web Clipper                             | `web-clip`                                      | Later  |
+| Web article / blog post      | Obsidian Web Clipper                             | `web-clip`                                      | **MVP** |
 
 ### Capture tool options
 
@@ -191,8 +191,9 @@ Subscribe to my newsletter → …            ← the full video description is 
 **How the pipeline picks the class** (first match wins):
 
 1. An explicit `type` in the frontmatter (from an Obsidian template), if present.
-2. The domain of `source`: youtube.com or youtu.be → `youtube`; gemini.google.com → `ai-chat` (Gemini); claude.ai → `ai-chat` (Claude).
-3. Anything else → `note`.
+2. The domain of `source`: youtube.com or youtu.be with a video → `youtube`; gemini.google.com → `ai-chat` (Gemini); claude.ai → `ai-chat` (Claude).
+3. Any other web address in `source` → `web-clip` (an article, blog post or tutorial clipped with the Web Clipper).
+4. No `source` → `note`.
 
 Only phone notes need a template. It sets `type: note` and an `id`:
 
@@ -493,17 +494,43 @@ Captures fall into a few clear classes. Each gets its own prompt, target folder 
 | Class                | `type`                                                     | What it is                                                                                  | Processing                                                                                                                                                                                                                                                                             | Default profile      | Target in epiaku-docs                          | Folder in `inbox/` `archive/` `output/` `failed/` |
 | -------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------- | -------------------- |
 | **Notes**            | `note`                                                     | Dictated on the phone. Very short: a reminder or an idea captured before it's forgotten.    | Clean up speech fillers, keep the tone, add a title and tags. Don't pad a two-line idea into a long page.                                                                                                                                                                              | `notes`          | `idea-bucket/notes/`                           | `notes/` |
-| **AI chats**         | `ai-chat` (from a gemini.google.com or claude.ai `source`) | Web-clipped Gemini or Claude conversations. Can be very large (100+ messages, ~50K tokens). | Condense: drop fluff and detours, keep decisions and options, keep only the latest version of any code. Output a structured page like this one.                                                                                                                                        | `clippings` | `idea-bucket/clipping/` | `clippings/` |
-| **YouTube**          | `youtube`                                                  | A link to a video.                                                                          | Analyse with the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise): purpose, examples, action plan, tools, tips and how to apply it to the channel. See [YouTube videos](#youtube-videos). Reviewed by default. | `youtube` | `idea-bucket/youtube/`                         | `clippings/` |
-| **YouTube (Gemini)** | `youtube-gemini`                                           | A Gemini web chat that ran the YouTube summary prompt, clipped in Obsidian.                 | Python fetches the transcript and counts. The **reviewer** checks Gemini's answer against them and returns it in the YouTube page format ([Reviewer](../idea-catcher-service-architecture/#mvp-review)).                                                                               | `youtube` | `idea-bucket/youtube/`                         | `clippings/` |
+| **AI chats**         | `ai-chat` (from a gemini.google.com or claude.ai `source`) | Web-clipped Gemini or Claude conversations. Can be very large (100+ messages, ~50K tokens). | Condense: drop fluff and detours, keep decisions and options, keep only the latest version of any code. Output a structured page like this one.                                                                                                                                        | `clippings` | `idea-bucket/clippings/` | `clippings/` |
+| **YouTube**          | `youtube`                                                  | A link to a video.                                                                          | Analyse with the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise): purpose, examples, action plan, tools, tips and how to apply it to the channel. See [YouTube videos](#youtube-videos). One call, on Python's fetched transcript and facts. | `youtube` | `idea-bucket/youtube/`                         | `clippings/` |
+| **YouTube (Gemini)** | `youtube-gemini`                                           | A Gemini web chat that ran the YouTube summary prompt, clipped in Obsidian.                 | One call, on its own prompt: checks Gemini's answer against the transcript and facts Python fetched, and returns it in the YouTube page format.                                                                               | `youtube` | `idea-bucket/youtube/`                         | `clippings/` |
 | _(missing)_          | –                                                          | A note without a template                                                                   | Treated as a short note, so nothing is dropped.                                                                                                                                                                                                                                        | `notes`          | `idea-bucket/notes/`                           | `notes/` |
-| Later: web articles  | `web-clip`                                                 | Web Clipper                                                                                 | Own prompt                                                                                                                                                                                                                                                                             | tbd                  | new folder                                     | `clippings/` |
+| **Web clips** | `web-clip` (any other `source` address) | An article, blog post, documentation page or tutorial clipped with the Web Clipper. | Condense: ignore menus, cookie notices and ads, keep the facts and steps, give key points and ideas to use it. Output: summary, key points, ideas to use it, details. | `clippings` | `idea-bucket/web-clips/` | `clippings/` |
 
 The volume is small: a few short notes a day and a few chats and videos a week. Processing them is a bit like a code review of the new files in a repo, which is what a single API call per note handles well.
 
+### One class, one prompt, one call {#one-prompt-per-class}
+
+Every class works the same way: one detection rule picks the class, the class names its own prompt file and its own profile, and `reason()` makes exactly **one** LLM call. There is no separate "reviewer" step and no second call for any class — the design used to run a second check call for `youtube`, but that call was checking a summary already built from the real transcript, so it added cost without adding a source of truth.
+
+| Class            | Detected from                                    | Prompt              | Provider/model (profile) | LLM calls |
+| ---------------- | ------------------------------------------------- | -------------------- | ------------------------- | --------- |
+| `note`           | no `source`, or an unrecognised one                | `note.md`             | `notes` (FreeLLMApi)       | 1         |
+| `ai-chat`        | Gemini/Claude chat, not about a video              | `ai-chat.md`          | `clippings` (OpenAI)       | 1         |
+| `web-clip`       | any other clipped web page                         | `web-clip.md`         | `clippings` (OpenAI)       | 1         |
+| `youtube`        | a direct YouTube clip                              | `youtube.md`, given Python's transcript, title, counts | `youtube` (OpenAI) | 1         |
+| `youtube-gemini` | a Gemini chat that summarized a video              | `youtube-gemini.md`, given Gemini's answer plus Python's transcript and facts (checks and reformats in one call) | `youtube` (OpenAI) | 1         |
+
+**Free checks stay, without a second LLM call.** For either YouTube class, Python checks the finished summary against the facts it was given — a timestamp later than the end of the video, or a tool named that isn't in the transcript, title or description — and reports them as warnings in the page's frontmatter. Nothing is "fixed" by a second model call; the warning just tells you where to look.
+
+### Web clips {#web-clips}
+
+A page clipped with the Web Clipper from a site that is not a chat and not a YouTube video is a `web-clip`.
+
+- **Prompt:** its own, [`web-clip.md`](../../src/catcher/modules/llm/prompts/web-clip.md). It ignores page furniture (menus, cookie notices, ads, comments), keeps facts and steps, and does not copy long passages.
+- **Output:** a `WebClipSummary`: title, description, summary bullets, key points, ideas to use it, and a detailed body. The page has the sections *Summary*, *Key Points* and *Ideas to Use It* (empty ones are left out), the details, and a link to the source.
+- **Profile:** `clippings` (the OpenAI profile), like AI chats.
+- **Where the page goes:** `hugo/content/en/docs/idea-bucket/web-clips/`. That folder needs an `_index.md` (a section page, like the other folders have) in the epiaku-docs repo.
+- **Id:** the same page clipped again gets the same `id`, so its page is replaced. The id is a short hash of the address without tracking parameters (`utm_*`, `gclid`, `fbclid` and so on), without the fragment, `www.` or a trailing slash. A query that names the page (`?id=42`) is part of it.
+- **The link on the page** is the address without the tracking parameters and the fragment.
+- **A channel or playlist page on YouTube** (a YouTube address without a video) is also a web clip.
+
 ### YouTube videos {#youtube-videos}
 
-The video doesn't need to be watched. **Python fetches the video's data as text**, and the `youtube` profile's model runs the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise) on that text. The Gemini chat app does this with Google's own internal access to YouTube.
+The video doesn't need to be watched. **Python fetches the video's data as text**, and the `youtube` profile's model runs the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise) on that text. The Gemini chat app does something equivalent with a YouTube link, but Google has not published exactly how, so we treat it as unverified rather than assume it works the same way.
 
 **The clip already contains part of the data**, so Python only has to fetch the rest:
 
@@ -579,7 +606,7 @@ The pipeline above is designed, not running yet. Until it is, a YouTube summary 
 | **2. Automate the Gemini web chat via browser**     | Browser automation, a signed-in Gemini session.                                                                                                                                                                                                        | Not recommended: fragile against UI changes, likely against Gemini's consumer ToS for automated use, and no real speed win over calling the API directly.                                                                                                                                                                                                                                                                                                                                                                          |
 | **3. Paste Gemini's output, have Claude format it** | Nothing new — works today.                                                                                                                                                                                                                             | Run the prompt in Gemini web chat yourself (fast), paste the markdown output to Claude Code, which saves it to the right file with correct frontmatter and rebuilds the site to verify. Useful right now, but redundant with the capture flow below once that's the habit.                                                                                                                                                                                                                                                         |
 
-**The Obsidian route we can already use today**, without waiting for the pipeline or a Gemini API integration: run the video through Gemini's web chat with the YouTube summary prompt, then clip that Gemini chat page with the **Obsidian Web Clipper** into `inbox/clippings/`, like any other AI-chat capture. The service detects it as a **`youtube-gemini`** doc (a Gemini `source` whose first message contains a YouTube URL): it fetches the real transcript and counts, and the **reviewer** checks Gemini's answer against them before publishing (see [Reviewer](../idea-catcher-service-architecture/#mvp-review)). This gets the summary into the idea-bucket vault immediately, using infrastructure that's already set up, even though nothing will _process_ it into a docs page until Stage 3/4 actually runs. It also means the manual step (option 3) is only needed for a summary you want published on the site **right now**, before the pipeline exists — otherwise, clip and let it sit in the inbox for the pipeline to catch up to later.
+**The Obsidian route we can already use today**, without waiting for the pipeline or a Gemini API integration: run the video through Gemini's web chat with the YouTube summary prompt, then clip that Gemini chat page with the **Obsidian Web Clipper** into `inbox/clippings/`, like any other AI-chat capture. The service detects it as a **`youtube-gemini`** doc (a Gemini `source` whose first message contains a YouTube URL): it fetches the real transcript and counts, and its own `youtube-gemini.md` prompt checks Gemini's answer against them in one call before publishing (see [One class, one prompt, one call](../idea-catcher-service-architecture/#mvp-one-prompt-per-class)). This gets the summary into the idea-bucket vault immediately, using infrastructure that's already set up, even though nothing will _process_ it into a docs page until Stage 3/4 actually runs. It also means the manual step (option 3) is only needed for a summary you want published on the site **right now**, before the pipeline exists — otherwise, clip and let it sit in the inbox for the pipeline to catch up to later.
 
 #### Gemini API video understanding, verified {#gemini-video-api}
 
@@ -626,7 +653,7 @@ These solve different parts of the job, and mixing them up is the mistake to avo
 | Need                                | `yt-dlp` + `youtube-transcript-api` (chosen, [above](#youtube-videos))                                                                                                       | Gemini video-understanding API                                                                                                                                                                                                                       |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Views, likes, subscribers           | **Deterministic.** Exact numbers straight from YouTube's page/API, same input → same output.                                                                                 | **Cannot get these at all.** The model only sees the video stream (audio + frames), never the surrounding webpage — no amount of prompting recovers a subscriber count that isn't in the video itself.                                               |
-| Transcript                          | **Deterministic.** Pulls YouTube's own stored captions file verbatim — the exact same text every run.                                                                        | **Non-deterministic.** Regenerates speech-to-text from the audio itself on each call; wording, punctuation and minor details can vary run to run, and it can hallucinate on unclear audio. Useful as a fallback when a video has no captions at all. |
+| Transcript                          | **Deterministic.** Pulls YouTube's own stored captions file verbatim — the exact same text every run.                                                                        | **Unverified.** Google has not published how Gemini reads a YouTube link internally, so we don't know whether it reads the same captions file or something else, and whether it varies run to run. Useful as a fallback when a video has no captions at all. |
 | Summary, purpose, tips, action plan | Needs a **separate LLM call** on top of the fetched transcript/description (Claude, Gemini text, FreeLLMApi — any of the already-compared [LLM options](#claude-vs-openai)). | **One call does it all** — video in, structured summary out. Fewer moving parts, but the summary's factual grounding is only as good as the model's own video understanding, not a checkable source text.                                            |
 
 **Conclusion: keep the already-decided design** — `yt-dlp` for metrics (the only reliable source for those, full stop) and `youtube-transcript-api` for the transcript (exact, reproducible, and lets a human or a test suite check the summary against the real source text) — and only fall back to Gemini's video understanding for videos that have **no captions available**, where there's no deterministic transcript to fall back on anyway. Gemini (or any other LLM) still does the actual summarizing step in both cases, per [Document classes](#doc-classes).
@@ -944,7 +971,7 @@ src/catcher/modules/
 
 ### Document-type registry
 
-The class comes from the domain of the Web Clipper's `source` URL, or from an explicit `type` set by an Obsidian template. No folder or filename guessing is needed.
+The class comes from the domain of the Web Clipper's `source` URL (a page on any other site is a `web-clip`), or from an explicit `type` set by an Obsidian template. No folder or filename guessing is needed.
 
 ```python
 # doctypes.py
@@ -1008,7 +1035,17 @@ DOC_TYPES = [
         ChatSummary,
         "ai-chat.md",
         "ai-chat.md.j2",
-        f"{DOCS}/clipping",
+        f"{DOCS}/clippings",
+        llm_profile="clippings",
+    ),
+    DocType(
+        "web-clip",
+        "web-clip",
+        (),  # any other http(s) `source`, detected in detect()
+        WebClipSummary,
+        "web-clip.md",
+        "web-clip.md.j2",
+        f"{DOCS}/web-clips",
         llm_profile="clippings",
     ),
     DocType(
@@ -1050,10 +1087,12 @@ def detect(fm: dict) -> DocType:
     for t in DOC_TYPES:  # 2. domain of the Web Clipper `source` URL
         if host and host in t.hosts:
             return t
-    return DOC_TYPES[0]  # 3. fallback: treat as a note
+    if host:  # 3. any other web address: a page clipped with the Web Clipper
+        return by_name("web-clip")
+    return DOC_TYPES[0]  # 4. no source: treat as a note
 ```
 
-Adding a type later (web clips) = one entry here, one prompt, one template. `prompt_version` (not shown) is stored with every result, so replays are traceable. For `youtube`, Python first fetches the transcript and the counts; title, author and description come from the clip.
+Adding a type (like `web-clip`, added later) = one entry here, one prompt, one template, one output schema. `prompt_version` (not shown) is stored with every result, so replays are traceable. For `youtube`, Python first fetches the transcript and the counts; title, author and description come from the clip.
 
 ### LLM backends {#llm-backends}
 

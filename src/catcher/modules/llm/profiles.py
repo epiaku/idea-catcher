@@ -21,7 +21,6 @@ class ProfilesConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     default: str
-    review_profile: str = "youtube"
     profiles: dict[str, Profile]
 
 
@@ -39,9 +38,8 @@ def expand_env(text: str, env: Mapping[str, str]) -> str:
 def load_profiles(path: Path, env: Mapping[str, str] | None = None) -> ProfilesConfig:
     raw = expand_env(path.read_text(encoding="utf-8"), os.environ if env is None else env)
     cfg = ProfilesConfig.model_validate(yaml.safe_load(raw))
-    for name in (cfg.default, cfg.review_profile):
-        if name not in cfg.profiles:
-            raise UnknownProfile(f"profile {name!r} is not defined in {path}")
+    if cfg.default not in cfg.profiles:
+        raise UnknownProfile(f"profile {cfg.default!r} is not defined in {path}")
     return cfg
 
 

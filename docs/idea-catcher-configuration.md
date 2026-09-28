@@ -88,7 +88,7 @@ profiles:
 ### What each profile is for
 
 - **`notes`**: short dictated notes. Provider: FreeLLMApi. Uses `FREELLMAPI_URL`, `FREELLMAPI_MODEL` and `FREELLMAPI_API_KEY`.
-- **`clippings`**: AI chats (Gemini and Claude clips that are not YouTube). Provider: OpenAI. Uses `OPENAI_API_KEY` and `OPENAI_MODEL_CLIPPINGS`.
+- **`clippings`**: AI chats (Gemini and Claude clips that are not YouTube) **and web clips** (articles and other pages). Provider: OpenAI. Uses `OPENAI_API_KEY` and `OPENAI_MODEL_CLIPPINGS`.
 - **`youtube`**: YouTube clips, Gemini video chats and the **reviewer**. Provider: OpenAI. Uses `OPENAI_API_KEY` and `OPENAI_MODEL_YOUTUBE`.
 - **`fake`**: returns canned JSON and calls nothing. Use it for free dry runs and tests.
 
@@ -97,7 +97,7 @@ profiles:
 - **`backend`** is `freellmapi`, `openai` or `fake`. The two real backends speak the same OpenAI-style protocol. They differ only in base URL, key and model.
 - **`model`** may use `${NAME}` or `${NAME:-default}`. It is filled from the environment, so from `.env`.
 - **To change the provider** of one kind of capture, edit its line. Chats and videos can use different models because they are separate profiles.
-- **The document class picks the default profile:** `note` uses `notes`, `ai-chat` uses `clippings`, and the YouTube classes use `youtube`. The flag `--profile` overrides it for a whole run.
+- **The document class picks the default profile:** `note` uses `notes`, `ai-chat` and `web-clip` use `clippings`, and the YouTube classes use `youtube`. The flag `--profile` overrides it for a whole run.
 - **Unknown fields are rejected.** An old file with `when:` or `backend: claude-code` fails loudly.
 - **There is no fallback between providers.** If a provider is down or its budget is used up, its documents stall in `output/`. Change the profile's provider, or raise the budget, to continue.
 

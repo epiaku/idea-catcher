@@ -35,7 +35,7 @@ def prompt_tags() -> dict[str, list[str]]:
 
 @pytest.fixture
 def fake_profiles() -> ProfilesConfig:
-    return ProfilesConfig(default="fake", review_profile="fake", profiles={"fake": Profile(backend="fake")})
+    return ProfilesConfig(default="fake", profiles={"fake": Profile(backend="fake")})
 
 
 @pytest.fixture
@@ -82,7 +82,6 @@ def make_result():
 def _profiles_for_tests() -> ProfilesConfig:
     return ProfilesConfig(
         default="notes",
-        review_profile="youtube",
         profiles={
             "notes": Profile(backend="fake"),
             "fake": Profile(backend="fake"),

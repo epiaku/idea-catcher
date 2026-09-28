@@ -1,6 +1,6 @@
 ---
-title: "YouTube"
-linkTitle: "YouTube Clips"
+title: "Web Clips"
+linkTitle: "Web Clips"
 toc_hide: true
 no_list: true
 ---

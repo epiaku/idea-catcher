@@ -1,10 +1,10 @@
-{% if review.status == "needs_attention" %}
-{% raw %}{{% alert title="Review: needs attention" color="warning" %}}{% endraw %}
+{% if warnings %}
+{% raw %}{{% alert title="Check this page" color="warning" %}}{% endraw %}
 
-The automatic review found problems it could not fix. Check this page before relying on it.
+A free, automatic check found something worth a look:
 
-{% for issue in review.high_issues() %}
-- **{{ issue.kind }}**: {{ issue.excerpt | md_cell }} → {{ issue.fix | md_cell }}
+{% for w in warnings %}
+- **{{ w.kind }}**: {{ w.excerpt | md_cell }} → {{ w.fix | md_cell }}
 {% endfor %}
 
 {% raw %}{{% /alert %}}{% endraw %}
