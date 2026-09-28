@@ -1,8 +1,16 @@
 ---
-title: "Idea Bucket: Folder Structure & Processing Pipeline"
-linkTitle: "Idea Bucket Pipeline"
-description: "How idea-bucket organizes notes from inbox to archive, and how each pipeline stage transforms them."
+title: "Idea Bucket: Folder Structure & Processing Pipeline (OBSOLETE)"
+linkTitle: "Idea Bucket Pipeline (obsolete)"
+description: "⚠️ OBSOLETE — NOT IMPLEMENTED. Reference only. The folder structure and flow described here is not being used."
 ---
+
+{{% alert title="⚠️ OBSOLETE — NOT IMPLEMENTED" color="warning" %}}
+
+**This document describes a folder structure and processing flow that is NOT being used.** It was created as a design exploration but has been superseded by a different approach. The content below is kept for reference only — do not implement anything from it without reviewing the current design.
+
+The current layout (`inbox/`, `archive/`, `output/`, `failed/`) is described in [Idea Catcher: Ingest & Stage](../idea-catcher-pipeline/#repo-layout).
+
+{{% /alert %}}
 
 This page explains how the `idea-bucket` GitHub repo is structured and how a capture moves through the pipeline from the phone inbox to the final docs page. It covers every folder the pipeline touches, what happens in each stage, and how IDs and paths are computed.
 
@@ -26,6 +34,25 @@ idea-bucket/
 │       ├── <video_id>-gemini.md  ← Gemini chat about that video
 │       └── <video_id>-gemini.youtube.json
 └── <doctype>/archive/superseded/  ← older versions of the same capture
+```
+
+Simplified
+
+```text
+idea-bucket/
+├── inbox/                   ← Phone / Mac writes here
+│   ├── notes/               ← Obsidian's "Default location for new notes"
+│   └── clippings/           ← Web Clipper's default — everything it captures, gemini, claude, youtube
+├── archive                  ← copy of original
+│   ├── notes/
+│   └── clippings/
+├── output/                  ← In progress or final result
+│   ├── notes/
+│   └── clippings/
+├── failed/                  ← failed processing
+│   ├── notes/
+│   └── clippings/
+
 ```
 
 Staging is **flat** — no subfolders — because a unique `id` makes every capture findable. Archive mirrors the capture class (not the input subfolder), keeping the vault tidy while grouping related content together.

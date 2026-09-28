@@ -9,15 +9,15 @@ A structured summary of a long Gemini brainstorm (137 messages, September 2026) 
 ## 📝 Summary {#summary}
 
 - **Problem:** Ideas for apps, SaaS products and YouTube videos come up on the go and get lost. They need to be captured with near-zero friction and then end up as structured, searchable pages.
-- **Chosen workflow:** Capture in **Obsidian** (phone or Mac) → **Obsidian Git** plugin pushes notes to the **idea-bucket** GitHub repo → the **Idea Catcher Service** on Proxmox picks up new notes and summarizes them with an LLM **profile per class** (FreeLLMApi for short notes, Claude Sonnet via `claude -p` in the evening for AI chats and YouTube), with a **reviewer** checking YouTube summaries → writes Hugo pages straight to `main` of `epiaku-docs`, into `hugo/content/en/docs/idea-bucket/<type>/` → you deploy the site to the home Proxmox web server with `deploy.sh`.
+- **Chosen workflow:** Capture in **Obsidian** (phone or Mac) → **Obsidian Git** plugin pushes notes to the **idea-bucket** GitHub repo → the **Idea Catcher Service** on Proxmox picks up new notes and summarizes them through an LLM **API with an API key**, using one of three **profiles**: `notes` (FreeLLMApi), `clippings` (OpenAI API, for AI chats) and `youtube` (OpenAI API, for both YouTube classes), with a **reviewer** checking YouTube summaries → writes Hugo pages straight to `main` of `epiaku-docs`, into `hugo/content/en/docs/idea-bucket/<type>/` → you deploy the site to the home Proxmox web server with `deploy.sh`.
 - **Key design principles:**
-  - **Raw first, process later.** The captured text is never changed. Staging only adds metadata and context around it, so the pipeline can be replayed, tested and improved later.
+  - **Raw first, process later.** The captured text is never changed. The pipeline only adds metadata and context around it, and an untouched copy of every capture stays in `archive/`, so the pipeline can be replayed, tested and improved later.
   - **One stable ID per capture.** Every note carries an `id` in its frontmatter. The output page is named after it, so re-processing a note **overwrites** its page instead of creating a duplicate.
   - **Asynchronous, no real-time need.** A few notes a day, so an hourly or a few-times-a-day batch is enough. This keeps the design simple and robust.
   - **Metadata steers the pipeline.** A `type` field in the note frontmatter, set by Obsidian templates, decides the prompt, the target folder and the archive folder.
   - **Tags automated, links by hand.** The pipeline tags every summary from a fixed tag list. Hugo builds a page per tag. Curated pages link to the tag pages, and to individual ideas that matter.
   - **Python first, AI last.** Deterministic code handles files, names, frontmatter and paths. The LLM only does what needs language understanding: titles, tags, summaries and structure.
-- **Chosen build strategy: the Idea Catcher Service, MVP first.** A small Python service on Proxmox (Docker Compose in one LXC) with a Postgres job queue, a worker and a minimal API. The scheduler or an API call starts a run. Notes go from `inbox/` to `staging/`, then each note gets an **LLM job** whose options (a named profile) set the backend and the timing: FreeLLMApi now for short notes, `claude -p` on the subscription in the evening for AI chats and YouTube. Failed LLM jobs retry the next day, with no fallback to a paid API. Every run and note is stored as metrics. See [Idea Catcher Service: Architecture](../idea-catcher-service-architecture/). This replaces the earlier two-stage rocket with a GitHub Action (see [Strategies](#strategies)).
+- **Chosen build strategy: the Idea Catcher Service, MVP first.** A small Python service on Proxmox (Docker Compose in one LXC) with a Postgres job queue, a worker and a minimal API. The scheduler or an API call starts a run. A run only looks at `inbox/`: a document leaves it when work starts (untouched copy to `archive/`, working copy to `output/`), and each note gets an **LLM job** whose options (a named profile) set the API provider and the model: `notes` on FreeLLMApi, `clippings` and `youtube` on the OpenAI API. Every call goes to an API with a key, so the service can run 24/7, on the Mac, on Proxmox or in the cloud. Failed LLM jobs retry on the next run, with no fallback to another provider. Every run and note is stored as metrics. See [Idea Catcher Service: Architecture](../idea-catcher-service-architecture/). This replaces the earlier two-stage rocket with a GitHub Action (see [Strategies](#strategies)).
 - **Related page:** hosting FreeLLMApi itself (home LXC, cloud options, persistence) is covered in [FreeLLMApi Hosting](../../claude/freellmapi-hosting/). This page covers the whole docs pipeline.
 - **Future:** the same pipeline could grow into a cloud-hosted and later a multi-tenant SaaS offering (see [Growth Path](#growth-path)).
 
@@ -70,7 +70,7 @@ The ideas are not sensitive, so sending them to a cloud LLM is fine.
 | Input types                   | **Notes**: short notes (dictated on the phone), **AI chats** from Gemini or Claude (Web Clipper) and **YouTube links** (share sheet). Web articles later.                                                                                                                                                                                                                            |
 | Existing pages                | **Only create new pages or overwrite a page** generated from the same capture. No appending to curated pages.                                                                                                                                                                                                                                                                        |
 | Matching a page to its source | A stable `id` in the note frontmatter, reused in the output filename and frontmatter (see [ID & naming](#id-naming))                                                                                                                                                                                                                                                                 |
-| LLM                           | **Profiles per class, set per job message** ([details](../idea-catcher-service-architecture/#mvp-llm)): **FreeLLMApi** (now) for short notes, **Claude subscription** via `claude -p` (Sonnet, evening) for AI chats and YouTube. No paid API in the MVP and **no fallback from free to paid**. Failed jobs retry the next day. The [test suite](#test-suite) confirms the profiles. |
+| LLM                           | **Three profiles, one per kind of capture, set per job message** ([details](../idea-catcher-service-architecture/#mvp-llm)): `notes` → **FreeLLMApi**, `clippings` (AI chats) → **OpenAI API**, `youtube` (both YouTube classes, and the reviewer) → **OpenAI API**. Every profile is an API with a key, no CLI and no subscription (`claude -p` was unreliable and is removed). The provider of each profile is a config change. **No fallback between providers.** Failed jobs retry on the next run. The [test suite](#test-suite) confirms the profiles. |
 | Publishing                    | **Commit straight to `main`** of epiaku-docs                                                                                                                                                                                                                                                                                                                                         |
 | Promotion                     | Summaries **stay in `idea-bucket/`** in the Hugo docs. Other pages (`apps/`, `saas/`, `youtube-ideas/`, …) link to them instead of copying them.                                                                                                                                                                                                                                     |
 | Linking                       | **Both:** the pipeline adds **tags automatically** from a fixed list. Important ideas are also **linked by hand** from curated pages (see [Tags & links](#tags-links)).                                                                                                                                                                                                              |
@@ -102,7 +102,11 @@ The ideas are not sensitive, so sending them to a cloud LLM is fine.
  │ Python job pulls idea-bucket             │
  │  • inbox empty → stop                    │
  │  • make sure every note has an `id`      │
- │  • move /inbox/ → /staging/              │
+ │  • a run only looks at /inbox/           │
+ │  • a document leaves /inbox/ when work   │
+ │      starts: original → /archive/,       │
+ │      working copy → /output/             │
+ │  • earlier snapshots → /duplicates/      │
  └───────────────────┬─────────────────────┘
                      ▼
  ┌─────────────────────────────────────────┐
@@ -118,7 +122,9 @@ The ideas are not sensitive, so sending them to a cloud LLM is fine.
  │      epiaku-docs (main)                  │
  │      hugo/content/en/docs/idea-bucket/   │
  │      <type>/                             │
- │  • move /staging/ → /archive/<type>/     │
+ │  • the page → /output/ (over the working │
+ │      copy); failures → /failed/;         │
+ │      errors stall it in /output/         │
  │  • push both repos                       │
  │  • rebuild + deploy Hugo site            │
  └─────────────────────────────────────────┘
@@ -313,37 +319,130 @@ Keep `_templates/` and the `.obsidian/` settings folder in the idea-bucket repo 
 
 ## 📥 Stage 3: Ingest & Stage {#ingest}
 
-This is the first part of the `pipeline.run` job in the [Idea Catcher Service](../idea-catcher-service-architecture/#mvp-flow), running on Proxmox. It turns loose inbox files into uniquely identified, cleaned records with context added, in `staging/`, before any AI runs.
+This is the first part of the `pipeline.run` job in the [Idea Catcher Service](../idea-catcher-service-architecture/#mvp-flow), running on Proxmox. It reads the documents in `inbox/`, works out each one's class and unique `id`, and hands them to the LLM step.
 
-### Repo layout (latest version)
+**One rule: a run only looks at `inbox/` to find work.** As soon as a document is worked on, it **leaves `inbox/`**: the original goes to `archive/` (renamed, see [File names](#file-names)) and a working copy goes to `output/`. So a document can never be started twice, and what is still in `inbox/` is exactly what still has to be done. The pipeline never scans `output/` for work. If something goes wrong, the working copy stays in `output/` with a status in its frontmatter. **To retry, move the file from `archive/` back into `inbox/`.** The next run archives it again and overwrites the stalled copy in `output/`.
+
+### Repo layout (latest version) {#repo-layout}
+
+The layout has **five top-level folders and one rule**: the `notes/` and `clippings/` subfolders of `inbox/` are repeated in every other folder, and a document gets **one calculated file name** that it keeps in every folder from then on (see [File names](#file-names)).
 
 ```text
 idea-bucket/
 ├── README.md
 ├── _templates/            ← Obsidian templates
-├── inbox/                 ← phone / Mac write here, in one of two subfolders
+├── inbox/                 ← phone / Mac write here; the only place a run looks for work
 │   ├── notes/             ← dictated notes (Obsidian's default new-note location)
 │   └── clippings/         ← Web Clipper's own default folder — everything it captures:
 │                             AI chats, YouTube links, web articles (classified by `source`)
-├── staging/               ← cleaned + context added, waiting for their LLM job (flat, unique IDs)
-└── archive/
+├── archive/               ← the original, under its calculated name, for reference and replay
+│   ├── notes/
+│   └── clippings/
+├── output/                ← the working copy while it is worked on, and the final result
+│   ├── notes/
+│   └── clippings/
+├── failed/                ← documents that could not be processed, with the reason
+│   ├── notes/
+│   └── clippings/
+└── duplicates/            ← earlier snapshots of a longer clip, moved out of the pipeline
     ├── notes/
-    ├── clippings/          ← AI chats (renamed from ai-chats/ to match inbox/clippings/)
-    └── youtube/
+    └── clippings/
 ```
 
-Staging scans `inbox/` **recursively** and flattens everything into `staging/` with a unique ID, so the subfolder only organizes the vault for capture — it doesn't need to mirror the output structure.
+- **`inbox/`**: new documents. A document leaves it the moment work on it starts.
+- **`archive/`**: the original, made when work starts, under its **calculated file name**. The text is exactly as captured. The only change is two lines added to its frontmatter: `original_filename` and `calculated_filename`. Never deleted by the pipeline.
+- **`output/`**: the working copy (with a `stage` in its frontmatter) while it is worked on, and the **final page** when it is ready: identical to the page written to `epiaku-docs`. For YouTube, `<name>.youtube.json` sits next to the final page with the counts and transcript the summary was checked against.
+- **`failed/`**: the document, next to `<name>.error.txt` with the reason. See [Failures](#failed-folder).
+- **`duplicates/`**: an earlier snapshot of a longer clip, with `duplicate_of: <subfolder>/<longest file name>` in its frontmatter. See [Duplicates](#duplicates-folder).
+
+### File names {#file-names}
+
+**One name, everywhere.** When work on a document starts, it gets a **calculated file name** that never changes again:
+
+```text
+YYYYMMDD-<short guid>-<title>.md
+e.g. 20260925-a1b2c3-how-do-i-sell-digital-bundles-on-systeme-io.md
+```
+
+The **same name** is used for the copy in `archive/`, the working copy and final page in `output/`, the page in `epiaku-docs`, and, if it comes to that, the file in `failed/` or `duplicates/`. Two documents with the same original name (two different chats that were both called `New chat.md`) can therefore never overwrite each other.
+
+- **Date:** the capture date (`created` or `captured` in the frontmatter), or the day of processing when there is none.
+- **Short guid:** 6 random characters. The pipeline checks that the name is not used yet in `archive/`, `output/`, `failed/` or `duplicates/`, and picks another guid if it is.
+- **Title:** the clip's `title`. If it is missing or generic (`New chat`), an AI chat uses the **first words of your first message** (8 words, without links). Everything else uses the file name it was captured under. The title is turned into plain lower-case letters, digits and hyphens.
+- **Length:** at most **128 characters**, counted for the longest file derived from the name (`<name>.youtube.json`, so the title part is cut short when needed).
+- **Stored in the file:** the frontmatter of the archive copy and of the working copy has `original_filename` (the name it was captured under) and `calculated_filename`. The final page also has `source_file: <subfolder>/<calculated name>`, so from a published page you can find the archive file.
+- **The frontmatter is edited as text**: the two lines are inserted into the existing frontmatter and everything else stays byte for byte. A file without frontmatter gets a small block, and its text is unchanged.
+- **An unreadable file** (its frontmatter cannot be parsed) cannot be edited. It is only renamed: archived and moved to `failed/` under a calculated name with its bytes unchanged. The `.error.txt` records the original and the calculated name.
+- **The `id` is not the file name.** The `id` (from the chat or video address, or the note) identifies the *content*, so a re-clip overwrites the page. Five clips of one chat share one `id` and have five different file names.
+- **Requeue keeps the name.** A file moved from `archive/` back into `inbox/` already has `calculated_filename` in its frontmatter, so it keeps its name. It overwrites the same-named files in `archive/` and `output/` (a stalled working copy).
+- **`--file` finds a document by either name**: the calculated name or the original name.
+
+The body of a document is never changed. Only the archive copy's frontmatter gets the two lines.
+
+### The stage of a document {#file-stage}
+
+Until Postgres arrives in [Stage B](../idea-catcher-service-architecture/#mvp-stage-b), the state is **the folder the file is in, plus a `stage` field in the frontmatter of the working copy**:
+
+- **In `inbox/`**: waiting. Nothing has touched it.
+- **`output/`, `stage: analyzed`**: work has started. `id` and `class` are added. This is also what a crashed run leaves behind.
+- **`output/`, `stage: deferred`**: an error stalled it (LLM down, budget used up, YouTube facts unavailable). The frontmatter also has `deferred_reason` and `deferred_at`.
+- **`output/`, no `stage`**: **final.** The file is now exactly the page written to `epiaku-docs`.
+- **`failed/`** (with `.error.txt`): failed for good.
+- **`duplicates/`**: an earlier snapshot of a longer clip. Never processed.
+
+A run **never reads `output/`**, so `analyzed` and `deferred` copies just wait there until you retry them.
+
+### The steps of one document {#capture-steps}
+
+1. **Read.** Scan `inbox/` (or only the documents named with `--file`). Work out the class and `id` in memory. Nothing is written yet. A file that cannot be read is archived and moved to `failed/`.
+2. **Compare.** Among the documents with one `id`, only the longest goes on. Earlier snapshots of it are archived and moved to `duplicates/`. See [Duplicates](#duplicates-folder).
+3. **Start work**, right before the document's own LLM step. Give it its calculated name (or keep it, if it has one). Write the original to `archive/<sub>/<calculated name>` (with the two frontmatter lines), write the working copy to `output/<sub>/<calculated name>` (overwriting a stalled copy from an earlier run) with `stage: analyzed`, and remove the document from `inbox/`. With `--limit 3` or `--file`, only those documents leave `inbox/`.
+4. **Reason.** The LLM returns validated JSON (and, for YouTube, the reviewer checks it against the facts fetched from YouTube).
+5. **Ready.** Render and validate the page, write it to `epiaku-docs` **under the calculated name** (removing an older page with the same `id`), and write the same page over the working copy in `output/`. The `stage` is gone.
+6. **Failure.** If the LLM output is invalid twice, or the page is invalid: move the working copy to `failed/<sub>/`, with `<name>.error.txt`.
+7. **Temporary error.** The working copy stays in `output/`, and its `stage` becomes `deferred` with the reason.
+
+### Retrying {#retry}
+
+A run does not retry stalled documents by itself. To retry:
+
+- **A stalled or crashed document** (`output/`, `analyzed` or `deferred`): find its file in `archive/<sub>/` (same name as in `output/`, and `calculated_filename` in its frontmatter) and move it back into `inbox/<sub>/`. The file keeps its calculated name, so the next run overwrites the same files in `archive/` and `output/`, and the stalled copy is replaced.
+- **A failed document:** move it from `failed/<sub>/` back into `inbox/<sub>/` and delete the `.error.txt`. (If it was unreadable, fix its frontmatter first.)
+- **A finished document, with a new prompt or model:** copy it from `archive/<sub>/` into `inbox/<sub>/`. It keeps its name, and the page in `epiaku-docs` is replaced. A dictated note that had no `id` gets a **new** one on a replay, which makes a second page, so give it an `id` first.
+- **From `duplicates/`:** move the file back into `inbox/`.
+
+**Possible later:** a helper command such as `catcher requeue` that moves every stalled document (`stage: deferred` or `analyzed`) from `archive/` back into `inbox/` in one go. It is not built yet. It would be useful after a budget outage, when many documents stall at once. For now you move the files yourself.
+
+### Duplicates {#duplicates-folder}
+
+**Growing snapshots of one conversation cost one LLM call.** A Gemini chat is often clipped several times while it grows, under different file names, because Gemini renames the tab as the conversation moves on. All clips share one `id` (from the chat's address). Only the longest goes to the LLM:
+
+- A clip is an **earlier snapshot** of a longer clip when every message in it is identical to the longer clip's. Messages are compared one by one (a message starts at a `**You**` line). Its last message may differ, because it is often cut off while the conversation is still being written. Text without messages must be an exact prefix.
+- A snapshot is **kept, not deleted**. It is archived, then moved from `inbox/` to `duplicates/<sub>/<same file name>`, and gets `duplicate_of: <subfolder>/<longest file name>` in its frontmatter. It is never sent to the LLM. To undo it, move the file from `duplicates/` back into `inbox/`.
+- **Clips with one `id` but different content** are not snapshots of each other. All are processed, and the later page overwrites the earlier one in `epiaku-docs` (overwrite by `id`).
+- The comparison only looks at the documents **in `inbox/` in this run**. A longer clip that arrives in a later run is processed and overwrites the page.
+- With `--file`, only the named documents are compared. Name a short clip and not its longer copy, and the short clip is processed on its own.
+
+Example: five clips of the "Idea catcher" chat (44 to 68 messages) become one LLM call, on `obsidian github link.md`.
+
+### Failures {#failed-folder}
+
+Only **permanent** problems move a document to `failed/`. **Temporary** ones stall the working copy in `output/` (`stage: deferred`).
+
+- **Frontmatter cannot be parsed, or the file cannot be read:** archived, then moved from `inbox/` to `failed/<sub>/` with an `.error.txt`.
+- **LLM output invalid twice** (after the one immediate retry): the working copy moves to `failed/<sub>/`.
+- **The rendered page fails validation** (frontmatter, unknown shortcode, tags): the working copy moves to `failed/<sub>/`.
+- **Not a failure, the working copy stalls in `output/`:** API rate limit or **budget reached**, provider down (FreeLLMApi or OpenAI), YouTube facts unavailable, a missing model setting. These are logged as `deferred`. A used-up budget is logged as one `ERROR` per run.
+
+The original is always in `archive/`, whatever happens. See [Retrying](#retry).
+
+### What we do not track yet {#no-state}
+
+Which LLM and profile made a page, whether it was sent to `epiaku-docs`, and any error will be kept **per document in Postgres from Stage B on**. In Stage A there is no database, and that is fine: the folder a file is in and its `stage` show where it stands, and the **Python log** shows what happened: one line per file and step with a progress counter (`(2/15) note 6b4d2e: published …`), a final `processed 15/15: 13 published, 2 failed` line, and the reason for every `deferred` (WARNING) and `failed` (ERROR, with a traceback for unexpected errors). Set `LOG_LEVEL` and `LOG_FILE` in `.env`, or pass `--log-level`. There are no metrics, no `stuck` flag and no retry counter until Stage B.
 
 ### ID & naming {#id-naming}
 
-To overwrite the right page, every capture needs an ID that **never changes**, whether the note is renamed, edited, re-clipped or re-processed. The page filename follows the agreed convention:
-
-```text
-YYYYMMDD_<short-id>_<friendly-name>.md
-e.g. 20260924_a7b2c9_idea-catcher-pipeline.md
-```
-
-The **date** and **short ID** are fixed per capture. The **friendly name** comes from the LLM-generated title, so it can change on a re-run. That is why the pipeline must **find the existing page by the ID, not by the full filename**. It looks for `_<short-id>_` in the filename, or better, an `id` field in the page frontmatter. On a re-run it removes the old file and writes the new one.
+To overwrite the right page, every capture needs an ID that **never changes**, whether the note is renamed, edited, re-clipped or re-processed. The page file name is the [calculated file name](#file-names) (`YYYYMMDD-<short guid>-<title>.md`), which is **different for every clip**. That is why the pipeline **finds the existing page by the `id` in its frontmatter, not by the file name**: it removes an older page with the same `id` and writes the new file. The `id` says which content it is, and the file name says which file it came from.
 
 Where the ID comes from, per input type:
 
@@ -352,23 +451,23 @@ Where the ID comes from, per input type:
 | Short note                               | Generated at creation time and stored in the frontmatter `id`                                                                  | **Yes.** The core _Templates_ plugin can insert a timestamp such as `{{date:YYYYMMDDHHmmss}}`, which is unique enough for one person. The _Templater_ community plugin can also add a random short ID. The core _Unique note creator_ plugin names new notes with a timestamp. |
 | Gemini chat                              | The **conversation ID in the chat URL** (for example `gemini.google.com/app/2446cd9c762c9cc9`, with the query string stripped) | Not needed. The Web Clipper stores the URL in `source`, and the pipeline derives the ID from it. This is the only option that makes a **re-clipped, longer version of the same chat overwrite** its earlier page. A clip-time ID would create a new page instead.              |
 | YouTube video                            | The **video ID** in the URL (e.g. `Q0pAWZiV2GU`)                                                                               | Not needed. Derived from `source`. Clipping the same video again overwrites its page.                                                                                                                                                                                          |
-| YouTube summary made in the Gemini chat  | **`<video-id>-gemini`**, from the YouTube URL in the chat's first message                                                      | Not needed. Derived during staging. Kept **next to** the directly clipped page of the same video, so the two can be compared.                                                                                                                                                  |
-| Note without an ID (forgot the template) | The pipeline generates one during staging and writes it into the staged copy                                                   | n/a. Replays from `archive/` then keep the same ID.                                                                                                                                                                                                                            |
+| YouTube summary made in the Gemini chat  | **`<video-id>-gemini`**, from the YouTube URL in the chat's first message                                                      | Not needed. Derived during ingest. Kept **next to** the directly clipped page of the same video, so the two can be compared.                                                                                                                                                  |
+| Note without an ID (forgot the template) | The pipeline generates one when it reads the inbox (in memory: the `archive/` copy stays untouched)                                                   | n/a. A replay from `archive/` derives the same ID only if it comes from the `source`; a generated ID is new, so it would create a second page.                                                                                                                                                                                                                            |
 
 Does this always find the matching page? Yes, as long as the ID is created once and never regenerated. The remaining edge cases are:
 
 - A note that was **copied** in Obsidian keeps the same ID and will overwrite the original's page. Clear the `id` when duplicating a note.
 - A Gemini chat exported **without** a URL has no stable key, so it falls back to a generated ID and becomes a new page.
 
-Staged files in `staging/` and `archive/` use the same ID (for example `20260924-103015_a7b2c9.md`). The archive, the staged file and the published page then always match.
+The `output/` page and the `epiaku-docs` page are the same text, so they carry the same `id` in their frontmatter, while the file keeps its inbox name. The `archive/` copy has an `id` only if the note already had one.
 
 ### Processing-state options
 
-| Option                                          | Pros                                                                                | Cons                                                    |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| **Folders: inbox → staging → archive** (chosen) | Visible at a glance, clears the phone inbox, easy replay (move back to `staging/`). | More Git moves per note.                                |
-| `processed: true` flag in frontmatter           | No file moves.                                                                      | Files pile up on the phone.                             |
-| GitHub Issues (open = inbox, closed = done)     | Native state, event-driven webhooks.                                                | Needs a connection at capture time. No files to replay. |
+- **Five folders, a run only reads `inbox/`, a `stage` field on the working copy, then Postgres** (chosen). Visible at a glance, a document can never be started twice, what is left in `inbox/` is exactly what is left to do, the untouched original is always kept, and a retry is a file move.
+- **Work in place in `inbox/`, move only when done.** Tried and dropped: a document could be started twice, and there was no place to see that it stalled and why.
+- **One folder per stage** (`staging/`, `analyzed/`, `published/`). The state is the folder, but there are many Git moves per note and many folders.
+- **`processed: true` flag in frontmatter.** No file moves, but files pile up on the phone.
+- **GitHub Issues** (open = inbox, closed = done). Needs a connection at capture time and leaves no files to replay.
 
 ---
 
@@ -378,20 +477,20 @@ Staged files in `staging/` and `archive/` use the same ID (for example `20260924
 
 Captures fall into a few clear classes. Each gets its own prompt, target folder and default LLM profile (a job message can override the profile):
 
-| Class                | `type`                                                     | What it is                                                                                  | Processing                                                                                                                                                                                                                                                                             | Default profile      | Target in epiaku-docs                          | Archive              |
+| Class                | `type`                                                     | What it is                                                                                  | Processing                                                                                                                                                                                                                                                                             | Default profile      | Target in epiaku-docs                          | Folder in `inbox/` `archive/` `output/` `failed/` |
 | -------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------- | -------------------- |
-| **Notes**            | `note`                                                     | Dictated on the phone. Very short: a reminder or an idea captured before it's forgotten.    | Clean up speech fillers, keep the tone, add a title and tags. Don't pad a two-line idea into a long page.                                                                                                                                                                              | `free-fast`          | `idea-bucket/notes/`                           | `archive/notes/`     |
-| **AI chats**         | `ai-chat` (from a gemini.google.com or claude.ai `source`) | Web-clipped Gemini or Claude conversations. Can be very large (100+ messages, ~50K tokens). | Condense: drop fluff and detours, keep decisions and options, keep only the latest version of any code. Output a structured page like this one.                                                                                                                                        | `claude-sub-evening` | `idea-bucket/clipping/` | `archive/clippings/`  |
-| **YouTube**          | `youtube`                                                  | A link to a video.                                                                          | Analyse with the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise): purpose, examples, action plan, tools, tips and how to apply it to the channel. See [YouTube videos](#youtube-videos). Reviewed by default. | `claude-sub-evening` | `idea-bucket/youtube/`                         | `archive/youtube/`   |
-| **YouTube (Gemini)** | `youtube-gemini`                                           | A Gemini web chat that ran the YouTube summary prompt, clipped in Obsidian.                 | Python fetches the transcript and counts. The **reviewer** checks Gemini's answer against them and returns it in the YouTube page format ([Reviewer](../idea-catcher-service-architecture/#mvp-review)).                                                                               | `claude-sub-evening` | `idea-bucket/youtube/`                         | `archive/youtube/`   |
-| _(missing)_          | –                                                          | A note without a template                                                                   | Treated as a short note, so nothing is dropped.                                                                                                                                                                                                                                        | `free-fast`          | `idea-bucket/notes/`                           | `archive/notes/`     |
-| Later: web articles  | `web-clip`                                                 | Web Clipper                                                                                 | Own prompt                                                                                                                                                                                                                                                                             | tbd                  | new folder                                     | `archive/web-clips/` |
+| **Notes**            | `note`                                                     | Dictated on the phone. Very short: a reminder or an idea captured before it's forgotten.    | Clean up speech fillers, keep the tone, add a title and tags. Don't pad a two-line idea into a long page.                                                                                                                                                                              | `notes`          | `idea-bucket/notes/`                           | `notes/` |
+| **AI chats**         | `ai-chat` (from a gemini.google.com or claude.ai `source`) | Web-clipped Gemini or Claude conversations. Can be very large (100+ messages, ~50K tokens). | Condense: drop fluff and detours, keep decisions and options, keep only the latest version of any code. Output a structured page like this one.                                                                                                                                        | `clippings` | `idea-bucket/clipping/` | `clippings/` |
+| **YouTube**          | `youtube`                                                  | A link to a video.                                                                          | Analyse with the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise): purpose, examples, action plan, tools, tips and how to apply it to the channel. See [YouTube videos](#youtube-videos). Reviewed by default. | `youtube` | `idea-bucket/youtube/`                         | `clippings/` |
+| **YouTube (Gemini)** | `youtube-gemini`                                           | A Gemini web chat that ran the YouTube summary prompt, clipped in Obsidian.                 | Python fetches the transcript and counts. The **reviewer** checks Gemini's answer against them and returns it in the YouTube page format ([Reviewer](../idea-catcher-service-architecture/#mvp-review)).                                                                               | `youtube` | `idea-bucket/youtube/`                         | `clippings/` |
+| _(missing)_          | –                                                          | A note without a template                                                                   | Treated as a short note, so nothing is dropped.                                                                                                                                                                                                                                        | `notes`          | `idea-bucket/notes/`                           | `notes/` |
+| Later: web articles  | `web-clip`                                                 | Web Clipper                                                                                 | Own prompt                                                                                                                                                                                                                                                                             | tbd                  | new folder                                     | `clippings/` |
 
-The volume is small: a few short notes a day and a few chats and videos a week. Processing them is a bit like a code review of the new files in a repo, which is what a single `claude -p` call on the subscription handles well.
+The volume is small: a few short notes a day and a few chats and videos a week. Processing them is a bit like a code review of the new files in a repo, which is what a single API call per note handles well.
 
 ### YouTube videos {#youtube-videos}
 
-The video doesn't need to be watched. **Python fetches the video's data as text**, and Sonnet runs the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise) on that text. The Gemini chat app does this with Google's own internal access to YouTube.
+The video doesn't need to be watched. **Python fetches the video's data as text**, and the `youtube` profile's model runs the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise) on that text. The Gemini chat app does this with Google's own internal access to YouTube.
 
 **The clip already contains part of the data**, so Python only has to fetch the rest:
 
@@ -418,8 +517,9 @@ In Python, the fetched data comes from these sources:
 Tested from the home network (September 2026) on two videos, including the clip above: `yt-dlp` returned the title, channel, subscribers (1.56M), views (1.4M), likes (46K), upload date, duration and description. The transcript library returned the full English transcript (2,374 words; about 7,900 for a 37-minute video).
 
 ```python
-import yt_dlp                                   # pip install yt-dlp
-from youtube_transcript_api import YouTubeTranscriptApi   # pip install youtube-transcript-api (v1.x)
+import yt_dlp  # pip install yt-dlp
+from youtube_transcript_api import YouTubeTranscriptApi  # pip install youtube-transcript-api (v1.x)
+
 
 def fetch_youtube(video_id: str) -> dict:
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -429,7 +529,7 @@ def fetch_youtube(video_id: str) -> dict:
         snippets = YouTubeTranscriptApi().fetch(video_id, languages=["en"])
         transcript = " ".join(s.text for s in snippets)
     except Exception:
-        transcript = None                       # no transcript: summarize from the description
+        transcript = None  # no transcript: summarize from the description
     return {
         "title": info.get("title"),
         "channel": info.get("channel"),
@@ -450,7 +550,7 @@ Also:
 - **Metrics come from Python, never from the LLM.** An LLM would make up views, likes and subscriber counts. Python fills them into the template's metrics table.
 - **Embed with the site's shortcode.** Prompt step 11 asks for a thumbnail link. On this site the template renders the video with the `youtube-lite` shortcode instead, following the `epi-hugo-youtube` conventions.
 - **No transcript available:** summarize from the title and description only, and mark the page "no transcript".
-- **Where to fetch: at home.** `yt-dlp` and transcript requests work from the home network (tested), but YouTube often blocks them from cloud IPs such as GitHub Actions runners. So the worker on Proxmox fetches them during staging and writes them into the staged note (see [Processing flow](../idea-catcher-service-architecture/#mvp-flow)).
+- **Where to fetch: at home.** `yt-dlp` and transcript requests work from the home network (tested), but YouTube often blocks them from cloud IPs such as GitHub Actions runners. So the worker on Proxmox fetches them during ingest and writes them into a facts file next to the final page in `output/` (see [Processing flow](../idea-catcher-service-architecture/#mvp-flow)).
 
 ### Manual route until the pipeline runs {#manual-route}
 
@@ -487,11 +587,11 @@ Checked directly against the live docs (September 2026), since this is the optio
 
   client = genai.Client()
   interaction = client.interactions.create(
-      model='gemini-3.8-flash',
+      model="gemini-3.8-flash",
       input=[
           {"type": "text", "text": "Please summarize the video in 3 sentences."},
-          {"type": "video", "uri": ""}
-      ]
+          {"type": "video", "uri": ""},
+      ],
   )
   print(interaction.output_text)
   ```
@@ -529,16 +629,24 @@ The small local `needle` model is **no longer an option**. [cactus-compute/needl
 
 ### LLM options
 
-The ideas are not sensitive, so privacy is not a deciding factor. **Decision: start with FreeLLMApi**, which already runs on the H4. The Gemini chats are long, so the main risk is that free models lack the context window or summarizing quality. If so, move to a paid model.
+The ideas are not sensitive, so privacy is not a deciding factor. **Decision: every LLM call is an API call with an API key.** There is no CLI and no subscription route. The first setup has three profiles:
 
-| Option                                                         | How you pay                                            | Where it can run                                                                                                                        | Fit                                                                                                                                 |
-| -------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **Claude via subscription (Pro/Max)**                          | Monthly subscription, usage counts toward its limits   | **GitHub Action** (official Claude Code action, which accepts a subscription token), or Claude Code in headless mode on the Proxmox LXC | Strong at long summaries. No per-token bill. Unattended, scheduled use via `claude setup-token` is officially supported ([verified](#leftover-usage)), as long as only the official `claude` binary calls it. |
-| **Claude API** (Anthropic Console)                             | Pay per token, billed separately from any subscription | Anywhere: Python on Proxmox, GitHub Action                                                                                              | Most flexible. At a few notes a day the cost stays small. A cheaper model can handle short notes and a stronger one the long chats. |
-| OpenAI / Gemini API                                            | Pay per token                                          | Anywhere                                                                                                                                | Comparable. Gemini has very large context windows, which suits long chat exports.                                                   |
-| **FreeLLMApi** (home proxy to free tiers), **starting choice** | Free                                                   | Home LAN only                                                                                                                           | Fine for short notes. Test with real long Gemini chats: rate limits, context size and uneven quality are the risks.                 |
+| Profile     | Used for                                         | Provider                                       | Why                                                                                       |
+| ----------- | ------------------------------------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `notes`     | Short dictated notes                             | **FreeLLMApi** (home proxy to free tiers)      | Free, and short notes are easy work.                                                      |
+| `clippings` | AI chats (Gemini, Claude) that are not YouTube   | **OpenAI API**                                 | Long inputs (up to ~50K tokens) need a large context and reliable JSON. Pay per token.    |
+| `youtube`   | `youtube` and `youtube-gemini`, plus the reviewer | **OpenAI API**                                 | Long transcripts, and the reviewer must be dependable. Own profile so the model can differ. |
 
-Keep the LLM call behind one small interface in the Python code, so the provider and model can be chosen **per type** in config. Switching from FreeLLMApi to a paid API is then a config change, not a rewrite. For the paid options, see [LLM Choice: Claude API vs. OpenAI API](#claude-vs-openai). See [LLM backends](#llm-backends) for the switchable backend (`freellmapi` / `openai-api` / `anthropic-api` / `claude-code`).
+**Why the subscription route (`claude -p`) is gone:** it was unreliable (the CLI hangs, changes output and hits usage limits at unpredictable times), it only worked while a Claude login was valid, it shared the weekly limit with coding, and it could not run in the cloud. An API with a key works the same at 3 a.m. on the Mac, on Proxmox or in a cloud container. See [the removed option](#leftover-usage).
+
+| Option                                                         | How you pay                                            | Where it can run                     | Fit                                                                                                                                                   |
+| -------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **FreeLLMApi** (home proxy to free tiers), **`notes`**         | Free                                                   | Home LAN only                        | Fine for short notes. Long chats are the risk (rate limits, context size, uneven quality), so it is not used for them.                                |
+| **OpenAI API**, **`clippings` and `youtube`**                  | Pay per token, one key                                 | Anywhere                             | Same client as FreeLLMApi (OpenAI-compatible), JSON mode, 1M context. At a few chats and videos a week the bill stays small.          |
+| Claude API (Anthropic Console)                                 | Pay per token, separate from any subscription          | Anywhere                             | Later, as another `backend` for a profile. Needs its own client (the Anthropic SDK).                                                                  |
+| Gemini API                                                     | Pay per token                                          | Anywhere                             | Later. Very large context windows suit long chat exports.                                                                                             |
+
+The LLM call sits behind one small interface, so the provider and model are chosen **per profile** in `profiles.yaml`. Moving `youtube` to another provider, or `notes` to a paid one, is a config change and not a rewrite. For the paid options, see [LLM Choice: Claude API vs. OpenAI API](#claude-vs-openai). See [LLM backends](#llm-backends) for the switchable backend (`freellmapi` / `openai` now; `anthropic-api` / `gemini-api` later).
 
 ---
 
@@ -612,7 +720,7 @@ Derived from the current sections and pages of epiaku-docs.
 
 ## 🤖 LLM Choice: Claude API vs. OpenAI API {#claude-vs-openai}
 
-If FreeLLMApi is not good enough, these are the two main paid options. Prices are per 1 million tokens, standard tier, as of September 2026. Check the pricing pages before deciding.
+These are the two main paid options. **OpenAI is the first choice** for `clippings` and `youtube` (see [LLM options](#llm-options)); Claude is the alternative to test. Prices are per 1 million tokens, standard tier, as of September 2026. Check the pricing pages before deciding.
 
 ### Models that fit this use case
 
@@ -646,32 +754,16 @@ Models that "think" before answering bill that reasoning as output tokens, so re
 | Context size           | 1M tokens (Haiku 4.5: 200K). All easily fit a full Gemini export.                                                                                                        | 1M tokens on all GPT-6 models. Requests above 272K input tokens cost double, which is not a concern here.                           |
 | Structured JSON output | Yes: schema-enforced structured outputs                                                                                                                                  | Yes: schema-enforced structured outputs                                                                                             |
 | Summary quality        | Both mid-tier models are strong at long-document summarization. Quality differences depend on the task, so **test on our own exports** instead of relying on benchmarks. | Same.                                                                                                                               |
-| Fit with FreeLLMApi    | Needs its own client (the official Anthropic SDK). The pipeline needs a second backend next to the FreeLLMApi one.                                                       | FreeLLMApi is OpenAI-compatible, so the **same client works for both**. Switching is only a change of base URL, key and model name. |
-| Subscription route     | The Claude Code GitHub Action can run on a Pro/Max subscription (strategy B), so there is no per-token bill.                                                             | The ChatGPT subscription and the API are billed separately.                                                                         |
+| Fit with FreeLLMApi    | Needs its own client (the official Anthropic SDK). The pipeline would need a second client next to the OpenAI-style one.                                                       | FreeLLMApi is OpenAI-compatible, so the **same client works for both**. Switching is only a change of base URL, key and model name. |
 | House style            | Claude Code can reuse the repo's `epi-hugo-*` skills when running as an agent (strategy B).                                                                              | Style has to be in the prompt.                                                                                                      |
 
 ### Recommendation
 
-1. **Short notes:** use the cheap tier. GPT-6 Luna is almost free. Haiku 4.5 is fine too.
-2. **Long Gemini chats:** Claude Sonnet 5 and GPT-6 Sol cost the same, so pick on quality. Run the same ~10 real exports through both, next to FreeLLMApi, and compare the pages.
-3. **Easiest code path:** OpenAI, because it shares the client with FreeLLMApi.
-4. **Best route if you want to keep a Claude subscription and use the repo's skills:** Claude, through the GitHub Action (strategy B).
-5. **Try the top tier only if** the mid-tier output misses important decisions. Opus 5.5 costs about $5 a month at this volume.
-
-### Claude subscription vs. Claude API
-
-|                   | Subscription token                                     | API key                                                                                |
-| ----------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| How to get it     | `claude setup-token` (Pro/Max/Team login)              | [console.anthropic.com](https://console.anthropic.com), separate pay-as-you-go billing |
-| Works in          | **Claude Code only**: CLI, GitHub Action, routines     | Any tool: Python SDK, apps                                                             |
-| Extra cost        | $0, within the subscription's usage limits             | Per token (see the estimate above)                                                     |
-| Limits            | Shared with personal use                               | Separate                                                                               |
-| Efficiency        | Each call also carries Claude Code's own system prompt | Only your prompt and the note                                                          |
-| Structured output | Parse the JSON from the reply                          | Native structured outputs                                                              |
-| Batch discount    | No                                                     | 50%                                                                                    |
-| Owner             | One person's account and token                         | Organization key, can be rotated                                                       |
-
-Using a subscription login in third-party tools is not allowed, so a subscription only works through Claude Code (the `claude-code` backend or the GitHub Action).
+1. **Short notes:** stay on FreeLLMApi (`notes`). If it is not good enough, the cheap tier is almost free: GPT-6 Luna, or Haiku 4.5.
+2. **Long chats and YouTube (`clippings`, `youtube`):** start with **OpenAI GPT-6 Sol**. Claude Sonnet 5 costs the same, so run the same ~10 real exports through both and compare the pages before switching.
+3. **Easiest code path:** OpenAI, because it shares the client with FreeLLMApi. Both are one `openai`-style backend with a different base URL, key and model.
+4. **Try the top tier only if** the mid-tier output misses important decisions.
+5. **API keys only.** No subscription login is used anywhere: a key works in any tool, on any machine, at any hour, can be rotated and has its own limits.
 
 ### Making free models work (FreeLLMApi)
 
@@ -682,29 +774,17 @@ Free models (larger Llama, Qwen, DeepSeek, gpt-oss, Gemini Flash) are usually go
 3. **Split long documents** into chunks when a free tier's context or tokens-per-minute limit is too small for a long Gemini chat.
 4. Remember that some free tiers train on prompts. That's fine for these ideas, which are not sensitive.
 
-### Option: use leftover Claude subscription usage {#leftover-usage}
+### Removed: leftover Claude subscription usage {#leftover-usage}
 
-We already pay for a Claude subscription for daily coding. Its usage comes in **session windows that reset after a few hours**, plus a **weekly limit**. Usage left in a window just before it resets is lost. The idea: run the summaries at the **end of the coding day**, on usage that would otherwise go unused. Nothing is urgent, so a day without leftover usage just means the notes wait until the next day. Only if that happens for days in a row do we need the paid API.
+**This option was dropped.** The idea was to run summaries with `claude -p` at the end of the coding day on subscription usage that would otherwise be lost. In practice the CLI route was unreliable, depended on a valid login and on how much you coded that day, shared the weekly limit with coding, and could only run where the `claude` binary is logged in. Everything it gave us is now done by an API key:
 
-**Is it feasible? Yes, with some care:**
-
-| Point                          | How to handle it                                                                                                                                                                                                                                                                                  |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Running Claude headless        | `claude setup-token` creates a long-lived subscription token. With it, the `claude-code` backend (`claude -p`) runs on the H4 LXC or in a GitHub Action without a login screen.                                                                                                                   |
-| Knowing how much usage is left | As far as we know, remaining usage cannot be read reliably from a script. Claude Code shows it interactively (`/usage`). So don't try to measure it: **try, and stop when the limit is hit.**                                                                                                     |
-| Hitting the limit mid-run      | When `claude -p` fails with a usage-limit error, the job **stops the whole run** (the next notes would fail too), finishes what is done, and pushes. Unprocessed notes stay in `staging/` and are picked up next time. The pipeline already works this way.                                       |
-| Timing                         | Session windows start at your first message, so the reset time moves from day to day. Keep it simple: an **evening window** (for example 21:00–06:00) for `claude-sub-evening` jobs, plus `POST /pipeline/runs` with the `claude-sub-now` profile when you stop coding early with usage to spare. |
-| The weekly limit               | Summaries also count toward the weekly limit, which is shared with coding. Cap each run (e.g. at most 3 long chats), and use **Sonnet** rather than Opus. A 50K-token chat is small compared with a coding session.                                                                               |
-| Backlog alarm                  | If notes wait in `staging/` for more than a few days (e.g. 3), send a notification. In the service these notes are flagged `stuck` after 3 days. That's the signal to pick another profile for them.                                                                                              |
-| Terms                          | **Verified (September 2026):** scheduled, unattended `claude -p` via `claude setup-token` is Anthropic's documented use case for CI pipelines and background services, and headless mode explicitly shares the same Max subscription weekly limit as interactive use ([Claude Code authentication](https://code.claude.com/docs/en/authentication), [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks)). The one hard rule: only call the official `claude` binary — the OAuth token must never be extracted and used against Anthropic's API directly (blocked since January 2026). Our design already only shells out to `claude -p`, so it's compliant. The token is annual and needs manual renewal. |
-
-**Suggested routing with this option:**
-
-1. **Notes** → FreeLLMApi, every run. They're free and simple.
-2. **Long AI chats** → Claude subscription (Sonnet) in the evening run, on leftover usage.
-3. **No automatic fallback.** A job that fails is retried the next day. After 3 days the note is flagged `stuck`, and you choose another profile yourself.
-
-In the service this is the `claude-sub-evening` profile (see [Orchestration](#orchestration)). The [test suite](#test-suite) shows whether the subscription models are actually better enough than FreeLLMApi to be worth it.
+| What `claude -p` was for       | What replaces it                                                                                                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No per-token bill              | A small pay-per-token bill for `clippings` and `youtube`. The volume is a few chats and videos a week.                                                        |
+| Evening window (`when: evening`) | Not needed. An API can be called 24/7, so there is no `when` option and no evening window. Runs happen on the normal schedule.                              |
+| Stop the run at the usage limit | The same rule for **any provider's rate limit or budget**: stop calling that provider for the rest of the run, defer its notes, and finish the other providers. A **used-up budget** is reported as its own `ERROR` and retried less often (`budget_retry_delay`, 6 hours) than a rate limit (`retry_delay`, 60 minutes). |
+| `CLAUDE_CODE_OAUTH_TOKEN`, `claude setup-token`, Claude Code CLI in the container | `OPENAI_API_KEY` (and `FREELLMAPI_*`) in `.env` or the container's secrets. No CLI in the image. |
+| Backlog alarm                  | Unchanged: a note that stays stalled (`stage: deferred`) for 3 days is flagged `stuck` (Stage B).                                                        |
 
 ### Sources
 
@@ -731,10 +811,10 @@ Before choosing an LLM, build a small, fixed **test suite** and run every candid
 
 | Candidate                                                                | Route                                                   |
 | ------------------------------------------------------------------------ | ------------------------------------------------------- |
-| FreeLLMApi, 1–2 pinned models (e.g. a large Llama or Qwen, Gemini Flash) | `freellmapi` backend                                    |
-| Claude Sonnet 5                                                          | Subscription (`claude-code`, run in the evening) or API |
-| Claude Opus                                                              | Subscription, as the quality ceiling                    |
-| Optional: GPT-6 Luna / Sol                                               | `openai-api` backend, only if the others disappoint     |
+| FreeLLMApi, 1–2 pinned models (e.g. a large Llama or Qwen, Gemini Flash) | `freellmapi` backend (the `notes` profile)              |
+| GPT-6 Sol                                                                | `openai` backend (the `clippings` and `youtube` profiles) |
+| Claude Sonnet 5                                                          | Claude API, as the alternative to compare               |
+| Optional: GPT-6 Luna                                                     | `openai` backend, for cheap notes if FreeLLMApi disappoints |
 
 Use the same prompt, schema and templates for every candidate.
 
@@ -746,7 +826,7 @@ Use the same prompt, schema and templates for every candidate.
 | Schema and frontmatter valid, Hugo build passes               | **Accuracy:** nothing made up or wrongly merged                         |
 | Tags only from the allowed list                               | **Clean-up:** detours and duplicates removed, only the latest code kept |
 | Long chats handled without hitting context or rate limits     | **Readability:** structure and grammar, fits the site's style           |
-| Time per note, tokens used, cost or share of the subscription | **Usefulness:** would you link to this page from a curated section?     |
+| Time per note, tokens used, cost | **Usefulness:** would you link to this page from a curated section?     |
 
 For a fair human review, put the outputs side by side **without the model name** (blind), and score them. An LLM can pre-score against the same rubric to save time, but the final call stays with a person.
 
@@ -754,16 +834,16 @@ For a fair human review, put the outputs side by side **without the model name**
 
 Agree on these before looking at the results:
 
-- **FreeLLMApi scores ≥ 4 on average and ≥ 90% valid JSON for all types** → use FreeLLMApi for everything. No subscription or API needed.
-- **FreeLLMApi is good for short notes but not for long chats** → short notes on FreeLLMApi, long chats on [leftover Claude usage](#leftover-usage), with the paid API as backlog fallback.
-- **Sonnet is about as good as Opus** → use Sonnet, which saves subscription usage.
-- **Nothing free or subscription-based is good enough** → paid API with the best-scoring model (see [LLM Choice](#claude-vs-openai)).
+- **FreeLLMApi scores ≥ 4 on average and ≥ 90% valid JSON for short notes** → keep `notes` on FreeLLMApi.
+- **FreeLLMApi is not good enough for short notes** → point `notes` at the cheap OpenAI tier (a config change).
+- **GPT-6 Sol scores clearly below Claude Sonnet 5 on long chats or transcripts** → point `clippings` or `youtube` at the Claude API (a config change).
+- **The cheap tier is about as good as the mid tier for chats** → use the cheap tier and save money.
 
 ### Keeping it useful
 
 - Keep the test set in the pipeline repo, and re-run it whenever the prompt, template or model changes. That catches regressions.
 - Save the results (scores, token counts, a few sample outputs) in a small report, so the decision is documented.
-- Running Claude candidates on the subscription uses usage too. Run those tests in the evening as well.
+- Every candidate is an API call and costs tokens, so keep the test set small (10–15 documents).
 
 ---
 
@@ -775,16 +855,16 @@ The earlier choice was a **two-stage rocket**: Python on Proxmox prepared notes,
 
 ### Where the processing job runs
 
-**Decision: strategy F, the Idea Catcher Service on Proxmox.** It includes A (Python at home) and E (evening runs on leftover Claude usage). E is now an **option on each LLM job** rather than a separate system. The GitHub Action (B) is no longer needed.
+**Decision: strategy F, the Idea Catcher Service on Proxmox.** It is A (Python at home) grown into a service. The GitHub Action (B) and the evening run on leftover Claude usage (E) are dropped: every LLM call is an API call with a key, which needs no Claude login and no evening window.
 
 | Strategy                                | Description                                                                                                                                                                                                 | Pros                                                                                                       | Cons                                                                                                                             |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | A. Python on Proxmox                    | One Python script in a small LXC, run on a schedule. It calls the chosen LLM API.                                                                                                                           | Full control, easy to test and replay, can deploy the site directly, no inbound ports.                     | No API, no metrics, no on-demand runs.                                                                                           |
-| B. GitHub Action + Claude subscription  | A workflow in idea-bucket, triggered on a schedule. Claude Code does the summarizing and commits to epiaku-docs `main`.                                                                                     | Nothing to host. Uses the existing subscription. Logs in GitHub.                                           | Can't answer an API call within a minute. YouTube fetches are often blocked from cloud IPs. Metrics are spread over Action logs. |
+| B. GitHub Action + Claude subscription (dropped) | A workflow in idea-bucket, triggered on a schedule. Claude Code does the summarizing and commits to epiaku-docs `main`.                                                                                     | Nothing to host. Uses the existing subscription. Logs in GitHub.                                           | Can't answer an API call within a minute. YouTube fetches are often blocked from cloud IPs. Metrics are spread over Action logs. |
 | C. Hybrid                               | GitHub Action does steps 3–5 (Python + LLM API). The home server only pulls and deploys.                                                                                                                    | Clean split between processing (cloud) and hosting (home).                                                 | Two places to look when something breaks.                                                                                        |
 | D. n8n / Windmill on Proxmox            | A visual workflow tool.                                                                                                                                                                                     | Visual flows, run history in a UI.                                                                         | Heavy always-on server. The YouTube and LLM logic is still Python.                                                               |
-| E. Evening run on leftover Claude usage | The `claude-code` backend, run after coding hours. It stops when the subscription limit is hit and continues the next day (see [leftover usage](#leftover-usage)).                                          | No extra cost, good summary quality, uses usage that would otherwise go unused.                            | Processing depends on how much you coded that day. Shares the weekly limit.                                                      |
-| **F. Idea Catcher Service** (chosen)    | API + Postgres job queue + worker in one LXC with Docker Compose. Every LLM job carries its own options: backend, model, and `now` or `evening` ([details](../idea-catcher-service-architecture/#mvp-llm)). | API triggers, metrics per run and per note, E included. Later: dashboards and on-demand YouTube summaries. | More to build and run than a script.                                                                                             |
+| E. Evening run on leftover Claude usage (dropped) | The `claude -p` CLI, run after coding hours. | No extra cost. | Unreliable, tied to a login and to how much you coded that day, cannot run in the cloud. Replaced by API keys (see [the removed option](#leftover-usage)). |
+| **F. Idea Catcher Service** (chosen)    | API + Postgres job queue + worker in one LXC with Docker Compose. Every LLM job carries its own options: the profile (provider and model) ([details](../idea-catcher-service-architecture/#mvp-llm)). | API triggers, metrics per run and per note. Later: dashboards and on-demand YouTube summaries. | More to build and run than a script.                                                                                             |
 
 ### Orchestration: Proxmox, GitHub, or both {#orchestration}
 
@@ -792,21 +872,21 @@ The earlier choice was a **two-stage rocket**: Python on Proxmox prepared notes,
 | ---------------------------------- | ---------------------- | -------------------------------------- | ------------------------------------ | ------------------------------------- | --------------------------------------------------------- |
 | Cleaning, IDs, adding context      | Proxmox                | Proxmox                                | GitHub                               | Proxmox                               | **worker (Proxmox)**                                      |
 | YouTube fetch (transcript, counts) | Proxmox (works)        | Proxmox (works)                        | GitHub (often blocked for cloud IPs) | Proxmox (works)                       | **worker (works)**                                        |
-| LLM step                           | `claude -p` in the LXC | In the Action                          | In the Action                        | In the Action                         | **`llm.reason` job: profile per message, now or evening** |
+| LLM step                           | API call from the LXC  | In the Action                          | In the Action                        | In the Action                         | **`llm.reason` job: profile per message (provider + model)** |
 | Writing pages, archiving           | Proxmox                | Proxmox                                | GitHub                               | GitHub                                | **worker (`pipeline.publish`)**                           |
 | Deploy to the home web server      | Directly               | Directly                               | Cron pull at home                    | Cron pull at home                     | **Manual `deploy.sh`, as today**                          |
 | Trigger                            | Timer                  | Timer                                  | Action schedule                      | Timer + Action schedule               | **Scheduler or API: both add a job to the queue**         |
 | Metrics                            | Logs                   | Logs                                   | Action logs                          | Logs in two places                    | **Postgres, per run and per note**                        |
 
-Setup 5 is setup 1 grown into a service. Moving the LLM step home is what makes API triggers and on-demand YouTube summaries possible. The evening-subscription idea from setup 4 survives as the `when: evening` job option.
+Setup 5 is setup 1 grown into a service. Moving the LLM step home is what makes API triggers and on-demand YouTube summaries possible. The evening-subscription idea from setup 4 is dropped: the profiles use API keys, so a job can run at any hour.
 
 ### What stays from the two-stage rocket {#split-setup}
 
-- **`staging/` is still the checkpoint.** A note in `staging/` is complete: ID, class, cleaned frontmatter and added context (for YouTube, the transcript and counts with the fetch date). It waits there for its LLM job, which may be hours away for evening jobs.
-- **Every step can be re-run.** Staging only touches `inbox/`. Publishing overwrites pages by ID. **Replay** a note by moving it from `archive/` back to `staging/` (new prompt or model), or with `POST /items/{doc_id}/replay`.
-- **If the LLM is unavailable** (usage limit, FreeLLMApi down), notes simply wait in `staging/`. The LLM job is logged, becomes `deferred` and retries the **next day**. There is no fallback from free to paid. After 3 failed days the note is flagged `stuck`.
-- **Prompts are built in Python**, with a template per class. Claude Code runs as a plain `claude -p` call, without tools or skills.
-- **What is gone:** the GitHub Action, `CLAUDE_CODE_OAUTH_TOKEN` and `PIPELINE_TOKEN` as Action secrets, and pausing stage one around the evening run. There is now only one Git writer (the worker), so the two stages can no longer race each other.
+- **`inbox/` is where a run finds work, and `output/` holds what was started.** A document leaves `inbox/` when work on it starts, so nothing is started twice. The working copy in `output/` (`stage: analyzed`, or `stage: deferred` with the reason after an error) waits there, and the untouched original is in `archive/`.
+- **Every step can be re-run.** Publishing overwrites pages by ID. **Replay** a note, or retry a stalled one, by moving its `archive/` file into `inbox/`, or with `POST /items/{doc_id}/replay`. A failed note is moved from `failed/` back to `inbox/` the same way. In Stage A this is a manual file move (see [Retrying](#retry)).
+- **If the LLM is unavailable** (quota or rate limit reached, provider down), the working copy stalls in `output/` with `stage: deferred`. The LLM job is logged and becomes `deferred`. There is no fallback from one provider to another. After 3 failed days the note is flagged `stuck`. In Stage A (no database) this is a log line and the status in the file, and you retry by moving the file back into `inbox/`.
+- **Prompts are built in Python**, with a template per class. The LLM is a plain API call with a key: no tools, no skills, no CLI.
+- **What is gone:** the GitHub Action, `CLAUDE_CODE_OAUTH_TOKEN` and `PIPELINE_TOKEN` as Action secrets, the Claude Code CLI, and the evening run. There is now only one Git writer (the worker), so the two stages can no longer race each other.
 
 ### Scheduling on Proxmox {#scheduling}
 
@@ -824,7 +904,7 @@ Options that were considered: a **systemd timer** inside the LXC (earlier recomm
 
 The pipeline's Python code, based on the decisions on this page. It lives in the service's `pipeline`, `llm` and `youtube` modules. The [service page](../idea-catcher-service-architecture/) covers the queue, the API, the database and hosting.
 
-**Principle:** Python does everything that needs no judgement (staging, IDs, routing, rendering, Git, deploy). The LLM only turns one note into validated JSON, through one generic `reason()` function.
+**Principle:** Python does everything that needs no judgement (ingest, IDs, routing, rendering, Git, deploy). The LLM only turns one note into validated JSON, through one generic `reason()` function.
 
 ### Layout
 
@@ -840,7 +920,7 @@ src/catcher/modules/
 │       └── youtube.md.j2   # adds metrics table + youtube-lite embed
 ├── llm/
 │   ├── service.py          # reason(): prompt → backend → validated pydantic object + usage
-│   ├── backends/           # MVP: freellmapi, claude_code, fake (later: anthropic_api, gemini_api, openai_api)
+│   ├── backends/           # MVP: freellmapi, openai, fake (later: anthropic_api, gemini_api)
 │   └── prompts/
 │       ├── note.md
 │       ├── ai-chat.md
@@ -859,11 +939,13 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from pydantic import BaseModel
 
+
 class NoteSummary(BaseModel):
     title: str
     description: str
     body: str
     tags: list[str]
+
 
 class ChatSummary(BaseModel):
     title: str
@@ -875,7 +957,8 @@ class ChatSummary(BaseModel):
     body: str
     tags: list[str]
 
-class YoutubeSummary(BaseModel):       # sections of the YouTube summary prompt
+
+class YoutubeSummary(BaseModel):  # sections of the YouTube summary prompt
     title: str
     creator: str
     summary: str
@@ -883,90 +966,136 @@ class YoutubeSummary(BaseModel):       # sections of the YouTube summary prompt
     key_examples: list[str]
     action_plan: list[str]
     tools: list[str]
-    tips: list[dict]                   # tip, explanation, how_to_apply
+    tips: list[dict]  # tip, explanation, how_to_apply
     channel_application: str
     tags: list[str]
     # metrics and the video embed are added by Python, not by the LLM
 
+
 @dataclass
 class DocType:
     name: str
-    type: str                  # explicit frontmatter `type`
-    hosts: tuple[str, ...]     # domains of the `source` URL that map to this class
+    type: str  # explicit frontmatter `type`
+    hosts: tuple[str, ...]  # domains of the `source` URL that map to this class
     schema: type[BaseModel]
-    prompt: str                # file in prompts/
-    template: str              # file in templates/
-    out_dir: str               # folder in epiaku-docs
-    archive_dir: str           # folder in idea-bucket
-    llm_profile: str           # default LLM profile, overridable per job message
-    review: bool = False       # has a review prompt; the message's review.enabled (default true) applies
+    prompt: str  # file in prompts/
+    template: str  # file in templates/
+    out_dir: str  # folder in epiaku-docs
+    llm_profile: str  # default LLM profile, overridable per job message
+    review: bool = False  # has a review prompt; the message's review.enabled (default true) applies
+
 
 DOCS = "hugo/content/en/docs/idea-bucket"
 DOC_TYPES = [
-    DocType("note", "note", (), NoteSummary, "note.md", "note.md.j2",
-            f"{DOCS}/notes", "archive/notes", llm_profile="free-fast"),
-    DocType("ai-chat", "ai-chat", ("gemini.google.com", "claude.ai"), ChatSummary, "ai-chat.md", "ai-chat.md.j2",
-            f"{DOCS}/clipping", "archive/clippings", llm_profile="claude-sub-evening"),
-    DocType("youtube", "youtube", ("youtube.com", "youtu.be"), YoutubeSummary, "youtube.md", "youtube.md.j2",
-            f"{DOCS}/youtube", "archive/youtube", llm_profile="claude-sub-evening", review=True),
-    DocType("youtube-gemini", "youtube-gemini", (), YoutubeSummary, "youtube-from-gemini.md", "youtube.md.j2",
-            f"{DOCS}/youtube", "archive/youtube", llm_profile="claude-sub-evening", review=True),
-            # detected in detect(): gemini.google.com source + a YouTube URL in the first user message
+    DocType("note", "note", (), NoteSummary, "note.md", "note.md.j2", f"{DOCS}/notes", llm_profile="notes"),
+    DocType(
+        "ai-chat",
+        "ai-chat",
+        ("gemini.google.com", "claude.ai"),
+        ChatSummary,
+        "ai-chat.md",
+        "ai-chat.md.j2",
+        f"{DOCS}/clipping",
+        llm_profile="clippings",
+    ),
+    DocType(
+        "youtube",
+        "youtube",
+        ("youtube.com", "youtu.be"),
+        YoutubeSummary,
+        "youtube.md",
+        "youtube.md.j2",
+        f"{DOCS}/youtube",
+        llm_profile="youtube",
+        review=True,
+    ),
+    DocType(
+        "youtube-gemini",
+        "youtube-gemini",
+        (),
+        YoutubeSummary,
+        "youtube-from-gemini.md",
+        "youtube.md.j2",
+        f"{DOCS}/youtube",
+        llm_profile="youtube",
+        review=True,
+    ),
+    # detected in detect(): gemini.google.com source + a YouTube URL in the first user message
 ]
+
 
 def detect(fm: dict) -> DocType:
     host = urlparse(fm.get("source") or "").netloc.removeprefix("www.").removeprefix("m.")
     wanted = fm.get("type")
-    if wanted:                 # 1. explicit `type` from an Obsidian template
+    if wanted:  # 1. explicit `type` from an Obsidian template
         matches = [t for t in DOC_TYPES if t.type == wanted]
-        for t in matches:      #    e.g. ai-chat: pick Gemini or Claude by domain
+        for t in matches:  #    e.g. ai-chat: pick Gemini or Claude by domain
             if host in t.hosts:
                 return t
         if matches:
             return matches[0]
-    for t in DOC_TYPES:        # 2. domain of the Web Clipper `source` URL
+    for t in DOC_TYPES:  # 2. domain of the Web Clipper `source` URL
         if host and host in t.hosts:
             return t
-    return DOC_TYPES[0]        # 3. fallback: treat as a note
+    return DOC_TYPES[0]  # 3. fallback: treat as a note
 ```
 
 Adding a type later (web clips) = one entry here, one prompt, one template. `prompt_version` (not shown) is stored with every result, so replays are traceable. For `youtube`, Python first fetches the transcript and the counts; title, author and description come from the clip.
 
 ### LLM backends {#llm-backends}
 
-The generic `reason(request)` picks the backend and model from the job's **LLM options**. The job message's own options come first, then the document class default (the `llm_profile` in the registry above), then the global default. See [LLM step & profiles](../idea-catcher-service-architecture/#mvp-llm) on the service page for the profiles, the evening window and the retry rules.
+The generic `reason(request)` picks the provider and model from the job's **LLM options**. The job message's own options come first, then the document class default (the `llm_profile` in the registry above), then the global default. See [LLM step & profiles](../idea-catcher-service-architecture/#mvp-llm) on the service page for the profiles and the retry rules.
 
-| Backend                                     | Client                                           | Notes                                                                                                                  |
-| ------------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `freellmapi`                                | OpenAI client, `base_url=http://<h4-ip>:3001/v1` | **MVP.** Default for **notes** (`free-fast`, now). Prompt for JSON, validate with pydantic, retry once with the error. |
-| `claude-code`                               | `claude -p` CLI on the subscription              | **MVP.** Default for **AI chats and YouTube clips** (`claude-sub-evening`). Snippet below.                             |
-| `fake`                                      | Canned JSON per schema                           | **MVP.** Tests and local development.                                                                                  |
-| `anthropic-api`, `gemini-api`, `openai-api` | Official SDKs                                    | **Future**, selected explicitly by a profile, never as an automatic fallback.                                          |
+The three starting profiles (`profiles.yaml`):
 
-**No fallback between backends.** A failed LLM job is logged and re-queued for the **next day**. After 3 failed days the note is flagged `stuck` and keeps retrying daily.
-
-```python
-# llm/backends/claude_code.py
-import json, subprocess
-from pydantic import BaseModel
-
-def run(prompt: str, model: str, schema: type[BaseModel]) -> tuple[BaseModel, Usage]:
-    full = f"{prompt}\n\nReturn ONLY JSON matching this schema:\n{json.dumps(schema.model_json_schema())}"
-    out = subprocess.run(
-        ["claude", "-p", "--model", model, "--output-format", "json", "--max-turns", "1"],
-        input=full, capture_output=True, text=True, cwd="/tmp",
-    )
-    if is_usage_limit(out):
-        raise UsageLimitReached                     # job → deferred to the next evening window
-    out.check_returncode()
-    data = json.loads(out.stdout)
-    result = data["result"]
-    obj = schema.model_validate_json(result[result.find("{"): result.rfind("}") + 1])
-    return obj, Usage.from_claude_json(data)        # tokens for the metrics
+```yaml
+default: notes
+review_profile: youtube            # the reviewer uses this profile unless the message says otherwise
+retry_delay: 60m                   # a deferred job is tried again after this (Stage B)
+stuck_after_days: 3
+profiles:
+  notes:     { backend: freellmapi, model: "${FREELLMAPI_MODEL:-auto}" }
+  clippings: { backend: openai,     model: "${OPENAI_MODEL_CLIPPINGS}" }   # e.g. gpt-6-sol, check the exact id
+  youtube:   { backend: openai,     model: "${OPENAI_MODEL_YOUTUBE}" }
+  fake:      { backend: fake }       # tests and local development only
 ```
 
-- `--max-turns 1` and no tools: a single transformation. `cwd="/tmp"` avoids loading a repo `CLAUDE.md`.
-- If the installed CLI supports `--json-schema`, use it instead of trimming to the braces.
+| Backend                     | Client                                                               | Notes                                                                                                                                              |
+| --------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `freellmapi`                | OpenAI client, `base_url=FREELLMAPI_URL` (`http://<h4-ip>:3001/v1`)   | **MVP.** The `notes` profile. Prompt for JSON, validate with pydantic, retry once with the error.                                                   |
+| `openai`                    | OpenAI client, `base_url=OPENAI_BASE_URL`, `api_key=OPENAI_API_KEY`  | **MVP.** The `clippings` and `youtube` profiles. Uses JSON mode (`response_format={"type": "json_object"}`), validates with pydantic and retries once. Native schema-enforced outputs can come later. |
+| `fake`                      | Canned JSON per schema                                               | **MVP.** Tests and local development.                                                                                                              |
+| `anthropic-api`, `gemini-api` | Official SDKs                                                      | **Future**, selected explicitly by a profile, never as an automatic fallback.                                                                       |
+
+`freellmapi` and `openai` are the **same OpenAI-compatible client** with a different base URL, key and model, so a third provider that speaks the same protocol (another proxy, a local server) is one more profile line.
+
+**No fallback between backends.** A temporary failure (rate limit, quota, timeout, provider down) is logged and the note is retried on the **next run**. After 3 failed days the note is flagged `stuck` and keeps retrying. Invalid JSON is retried once at once, on the same profile. A provider that reports a **rate limit or a used-up budget stops all further calls to that provider for the rest of the run**, and the other providers carry on.
+
+**The API key's budget can run out.** The keys are capped at a budget, so the `openai` profiles can stop working until the budget is raised or renewed. That is not a rate limit, so it is handled separately: the backend is blocked for the run, the log gets one `ERROR` per backend (`openai budget reached: 4 note(s) waiting; raise the key's budget or point the profile at another provider`), the documents stall in `output/` (`stage: deferred`) until you move them back into `inbox/` (in Stage B the queue retries them every `budget_retry_delay`). With no fallback, the two ways out are to raise the budget or to change the profile's provider. See [Risks](#risks).
+
+```python
+# llm/backends/openai_compatible.py  (used by both `freellmapi` and `openai`)
+from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError
+from pydantic import BaseModel
+
+
+def run(client: OpenAI, prompt: str, model: str, schema: type[BaseModel]) -> tuple[BaseModel, Usage]:
+    try:
+        reply = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},  # JSON mode; the freellmapi backend omits this
+        )
+    except RateLimitError as e:  # includes "insufficient_quota"
+        raise UsageLimitReached(str(e)) from e  # job → deferred, provider blocked for this run
+    except (APIConnectionError, APITimeoutError) as e:
+        raise BackendUnavailable(str(e)) from e  # job → deferred
+    obj = schema.model_validate_json(reply.choices[0].message.content)  # invalid → one immediate retry
+    return obj, Usage.from_openai(reply.usage)  # tokens for the metrics
+```
+
+- One message, no tools: a single transformation.
+- The API key comes from the environment (`OPENAI_API_KEY`), is never logged and never written to a page or a sidecar.
 
 ### Main flow
 
@@ -977,51 +1106,53 @@ A pipeline run is three kinds of jobs: one `pipeline.run`, one `llm.reason` per 
 @job("pipeline.run", queue="default", unique=True)
 async def run(ctx: JobContext, p: RunParams) -> None:
     pull(ideas_repo)
-    for note in sorted((ideas_repo / "inbox").rglob("*.md")):   # recursive: notes/, clippings/
-        fm, body = load_frontmatter(note)
-        doctype = detect(fm)
-        fm = clean(fm, doctype)                         # id, class, strip [[ ]]; body stays as captured
-        if doctype.name == "youtube":
-            fm |= fetch_youtube(video_id(fm["source"])) # counts + transcript, with fetch date
-        write_staged(ideas_repo / "staging", fm, body)  # replaces a staged copy with the same id
-        note.unlink()
-        ctx.item(fm["id"], doctype.name, status="staged")
-    push(ideas_repo)                                    # pull --rebase first
-
-    for staged in sorted((ideas_repo / "staging").glob("*.md")):  # also notes left from earlier runs
-        fm, body = load_frontmatter(staged)
-        doctype = DOC_TYPES_BY_NAME[fm["class"]]
-        await ctx.enqueue_or_update(                    # one open llm.reason per doc id
-            "llm.reason", key=fm["id"],
-            request=LlmRequest(task=doctype.prompt, prompt_version=doctype.prompt_version,
-                               input=prompt_input(doctype, fm, body), schema_name=doctype.schema.__name__,
-                               llm=ctx.llm_options(default_profile=doctype.llm_profile)),  # message > class default
+    notes = scan_inbox(ideas_repo, only=p.only)  # read-only: class + id in memory, nothing moves yet
+    for rel, reason in notes.errors.items():  # unreadable → archive + failed/ with an .error.txt
+        move_to_failed(ideas_repo, ideas_repo / rel, reason)
+    winners, duplicates = split_duplicates(notes.notes)  # longest per id; earlier snapshots
+    for dup, winner in duplicates:
+        move_to_duplicates(ideas_repo, dup, winner)  # archive + duplicates/, no LLM call
+    for note in winners:  # only what we are about to work on leaves inbox/ (--limit, --file)
+        start_work(ideas_repo, note)  # original → archive/, working copy (stage: analyzed) → output/
+        await ctx.enqueue_or_update(  # one open llm.reason per document
+            "llm.reason",
+            key=note.rel.as_posix(),
+            request=LlmRequest(
+                task=note.doctype.prompt,
+                prompt_version=note.doctype.prompt_version,
+                input=prompt_input(note),
+                schema_name=note.doctype.schema.__name__,
+                llm=ctx.llm_options(default_profile=note.doctype.llm_profile),
+            ),  # message > class default
         )
-        ctx.item(fm["id"], doctype.name, status="waiting_llm")
-```
+        ctx.item(note.doc_id, note.doctype.name, status="waiting_llm")
+    push(ideas_repo)  # pull --rebase first
 
-```python
+
 # pipeline/jobs.py – pipeline.publish  (default queue; folded, so one publish serves many notes)
 @job("pipeline.publish", queue="default", fold=True)
 async def publish(ctx: JobContext, p: PublishParams) -> None:
-    pull(ideas_repo); pull(docs_repo)
-    for item in ctx.ready_items():                      # LLM result stored, not yet published
+    pull(ideas_repo)
+    pull(docs_repo)
+    for item in ctx.ready_items():  # LLM result stored, not yet published
         doctype = DOC_TYPES_BY_NAME[item.doc_class]
         summary = item.llm_result(doctype.schema)
-        summary.tags = keep_allowed(summary.tags)       # unknown tags → tag_suggestion event
+        summary.tags = keep_allowed(summary.tags)  # unknown tags → tag_suggestion event
         page = render_page(summary, item.frontmatter, doctype.template)
-        if problems := validate_page(page):             # frontmatter, required fields, tags, shortcodes
-            ctx.item_failed(item, problems); continue
+        if problems := validate_page(page):  # frontmatter, required fields, tags, shortcodes
+            ctx.item_failed(item, problems)  # output/<sub>/<name>.md → failed/<sub>/ + .error.txt
+            continue
         write_page(docs_repo / doctype.out_dir, item.doc_id, page)
-        archive(item.staged_path, ideas_repo / doctype.archive_dir)
+        finish(ideas_repo, item, page)  # the working copy in output/ becomes the final page (no stage)
         ctx.item(item.doc_id, item.doc_class, status="published")
-    push(docs_repo); push(ideas_repo)                   # straight to main, docs first
+    push(docs_repo)
+    push(ideas_repo)  # straight to main, docs first
 ```
 
-- **`write_page` overwrites by ID:** delete any existing `*_<id>_*.md` in the folder, then write `YYYYMMDD_<id>_<slug>.md`. The friendly name may change between runs, but the ID never does.
+- **`write_page` overwrites by ID:** delete any existing page in the folder whose frontmatter `id` matches, then write the page under its calculated name (`YYYYMMDD-<short guid>-<title>.md`). The file name differs for every clip, but the ID never does.
 - **Python validation instead of a Hugo build (MVP):** YAML frontmatter parses, `title`, `description`, `weight` and `type: docs` are present, tags come from the allowed list, only known shortcodes are used. Your manual `deploy.sh` build catches anything else.
 - **One Git writer.** Only the worker touches the repos, one job at a time. The phone may still push to idea-bucket during a run, so use `pull --rebase` before pushing, and retry once.
-- **Per-note errors don't fail the run.** A bad note is marked `failed` or `deferred` in the metrics and stays in `staging/`.
+- **Per-note errors don't fail the run.** A bad note is marked `failed` (moved to `failed/`, with an `.error.txt`) or `deferred` (stalls in `output/`) in the metrics, and the log says which.
 - **No hand-maintained index:** Hugo's section list pages and tag pages build the overviews from frontmatter, so there are no merge conflicts on index files.
 - **Follow the site conventions** from the `epi-hugo-docs` and `epi-hugo-youtube` skills in prompts and templates: frontmatter with `title`, `description`, `weight`, `type: docs`, emoji on `##` headers and `youtube-lite` embeds.
 
@@ -1031,11 +1162,11 @@ Everything runs in the service's Compose stack in one LXC (see [Hosting & Deploy
 
 | Container | Does                                                                                | Needs                                                                                                                                                           |
 | --------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `worker`  | Scheduler loop, `pipeline.run`, `llm.reason`, `pipeline.publish`, one job at a time | Python, Git, `yt-dlp` (with Deno), `youtube-transcript-api`, Claude Code CLI, GitHub PAT, `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), FreeLLMApi URL |
+| `worker`  | Scheduler loop, `pipeline.run`, `llm.reason`, `pipeline.publish`, one job at a time | Python, Git, `yt-dlp` (with Deno), `youtube-transcript-api`, GitHub PAT, `OPENAI_API_KEY`, FreeLLMApi URL |
 | `api`     | Start runs, list runs and items                                                     | DB, API keys                                                                                                                                                    |
 | `db`      | Postgres: the queue and the metrics                                                 | A volume                                                                                                                                                        |
 
-The starting schedule is `pipeline.run` at 08:00, 12:00, 17:00 and 21:00. Short notes are published within hours. AI chats and YouTube clips wait for the evening window of their `claude-code` jobs. **The docs site deploy stays manual:** pull `epiaku-docs` on the Mac and run `./.github/workflows/deploy.sh`.
+The starting schedule is `pipeline.run` at 08:00, 12:00, 17:00 and 21:00. Every capture is published within one run, because the APIs can be called at any hour. **The docs site deploy stays manual:** pull `epiaku-docs` on the Mac and run `./.github/workflows/deploy.sh`.
 
 ### GitHub authentication for the pipeline
 
@@ -1064,10 +1195,11 @@ from github import Auth, GithubIntegration
 APP_ID = int(os.environ["GH_APP_ID"])
 PRIVATE_KEY = open(os.environ["GH_APP_KEY_PATH"]).read()
 
+
 def installation_token(owner: str = "epiaku", repo: str = "epiaku-docs") -> str:
     gi = GithubIntegration(auth=Auth.AppAuth(APP_ID, PRIVATE_KEY))
     inst = gi.get_repo_installation(owner, repo)
-    return gi.get_access_token(inst.id).token          # valid ~1 hour
+    return gi.get_access_token(inst.id).token  # valid ~1 hour
 ```
 
 - Clone into a fresh temporary directory each run (`https://x-access-token:<token>@github.com/...`), so the token never stays in `.git/config`.
@@ -1080,7 +1212,7 @@ def installation_token(owner: str = "epiaku", repo: str = "epiaku-docs") -> str:
 The service is built as an MVP first (see [Build steps](../idea-catcher-service-architecture/#mvp-steps) on the service page):
 
 1. ✅ **Set up capture** — done on both devices: Obsidian + Git plugin on the [iPhone](../obsidian-git-iphone-setup/) and [Mac](../obsidian-git-macbook-setup/), each syncing independently with the `idea-bucket` repo; the Web Clipper saves directly into `inbox/clippings/`.
-2. **Stage A, the Python pipeline, run locally:** staging, `reason()` with `claude -p`, rendering, the reviewer and publishing, as plain functions behind a CLI. Tested step by step on copies of the repos, then against GitHub (see [Stage A](../idea-catcher-service-architecture/#mvp-stage-a)).
+2. **Stage A, the Python pipeline, run locally:** ingest, `reason()` through the API profiles, rendering, the reviewer and publishing, as plain functions behind a CLI. Tested step by step on copies of the repos, then against GitHub (see [Stage A](../idea-catcher-service-architecture/#mvp-stage-a)).
 3. **Stage B, Postgres + the queue, locally:** the same functions wrapped in jobs, with next-day deferral, stuck rules, metrics and the scheduler (see [Stage B](../idea-catcher-service-architecture/#mvp-stage-b)).
 4. **Stage C, the API, locally:** start runs and read jobs and items over HTTP. The full Compose stack runs on the Mac (see [Stage C](../idea-catcher-service-architecture/#mvp-stage-c)).
 5. **Proxmox:** the LXC, `deploy.sh`, the schedule, and a fine-grained PAT for the real repos (later the GitHub App).
@@ -1092,7 +1224,8 @@ The service is built as an MVP first (see [Build steps](../idea-catcher-service-
 ## ⚠️ Risks & Blind Spots {#risks}
 
 - **iCloud and Git on the same vault.** Solved by option A. Don't put the idea-bucket vault back into iCloud. See [iCloud and Git on the same vault](#icloud-git).
-- **Free LLM limits.** FreeLLMApi may hit rate limits or context limits on long Gemini chats. A failed note stays in `staging/` and is retried the next day, with no fallback to a paid model. After 3 days it is flagged `stuck`.
+- **API budget.** The OpenAI key has a budget cap. When it is used up, `clippings` and `youtube` documents stall in `output/` with `stage: deferred` (nothing is lost, nothing is published). Raise the budget or point the profile at another provider, then move the files from `archive/` back into `inbox/`. The log says so in one `ERROR` line. Keep an eye on `tokens_in` and `tokens_out`, and set the budget with some headroom.
+- **LLM limits and cost.** FreeLLMApi may hit rate limits (that is why it only serves short notes), and the OpenAI API has its own rate limit and a budget. A deferred note stalls in `output/` until you move it back into `inbox/` (Stage A), with no fallback to another provider. After 3 days it is flagged `stuck`. The OpenAI key has a **budget cap** that stops the profile when reached (see [Risks](#risks)), so pick a budget with headroom.
 - **Mobile sync only runs in the foreground.** A note typed just before locking the phone may wait until the next time Obsidian is opened. That is fine for this use case.
 - **Tokens on devices and on the server.** Keep tokens fine-grained (one repo, Contents only) with an expiry, and plan the renewal.
 - **Unstable IDs.** Regenerating or copying an `id` breaks overwrite-by-ID. Create it once, and clear it when duplicating a note.
@@ -1110,7 +1243,7 @@ The service is built as an MVP first (see [Build steps](../idea-catcher-service-
 | ------------------ | --------------------------------- | ------------------------------------ | ------------------------------------------------------------- |
 | **Capture**        | Obsidian + Git                    | Obsidian + Git, webhooks, email      | Own web/mobile app, Obsidian plugin, email or chat-bot ingest |
 | **Engine**         | Python job on Proxmox             | GitHub Action or cloud container job | Queue-based workers, per-tenant isolation                     |
-| **LLM**            | Paid API or subscription          | Paid API with logging and alerts     | Central LLM proxy with per-user token budgets                 |
+| **LLM**            | Paid API with a key               | Paid API with logging and alerts     | Central LLM proxy with per-user token budgets                 |
 | **Output**         | Hugo on the home LAN behind VPN   | Cloudflare Pages or similar, private | Per-tenant sites on subdomains or custom domains              |
 | **Auth & billing** | None                              | None                                 | e.g. Supabase Auth or Clerk + Stripe                          |
 | **Focus**          | Prompt quality and pipeline logic | Reliability and cloud APIs           | UX, scaling and monetization                                  |
@@ -1125,7 +1258,7 @@ SaaS ideas from the session, for later:
 
 ## ❓ Open Questions {#open-questions}
 
-1. **Which LLM:** decided by the [model test suite](#test-suite). The options are FreeLLMApi only, FreeLLMApi for notes plus [leftover Claude usage](#leftover-usage) for long chats, or a paid API.
+1. **Which LLM:** decided by the [model test suite](#test-suite). Decided for the start: FreeLLMApi for notes, the OpenAI API for clippings and YouTube. The suite tells us whether to change a profile's provider or model.
 
 ### Reminders
 

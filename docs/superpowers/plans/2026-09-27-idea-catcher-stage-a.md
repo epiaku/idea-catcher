@@ -2,44 +2,50 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A local Python CLI (`catcher`) that turns captures in the `idea-bucket` repo into validated Hugo pages in `epiaku-docs`: staging, the LLM step through `claude -p` / FreeLLMApi, the YouTube reviewer, rendering, archiving and committing. There is no database, Docker or API yet.
+**Goal:** A local Python CLI (`catcher`) that turns captures in the `idea-bucket` repo into validated Hugo pages in `epiaku-docs`: ingest, the LLM step through API-key backends (FreeLLMApi and the OpenAI API, three profiles), the YouTube reviewer, rendering, filing and committing. There is no database, Docker or API yet.
 
-**Architecture:** The core logic is plain functions with no knowledge of a queue or API: `stage_inbox()`, `reason()`, `review_summary()`, `render_page()`, `write_page()` / `archive_staged()`, `commit_paths()`. A thin Typer CLI calls them. Stage B will wrap these same functions in Postgres jobs, and Stage C will put an API in front. Python does everything deterministic: IDs, classes, paths, frontmatter, metrics and Git. The LLM only returns JSON, which Pydantic validates.
+**Architecture:** The core logic is plain functions with no knowledge of a queue or API: `ingest_inbox()`, `reason()`, `review_summary()`, `render_page()`, `write_page()` / `finalize_output()` / `move_to_failed()`, `commit_paths()`. A thin Typer CLI calls them. Stage B will wrap these same functions in Postgres jobs, and Stage C will put an API in front. Python does everything deterministic: IDs, classes, paths, frontmatter, metrics and Git. The LLM only returns JSON, which Pydantic validates.
 
-**Tech Stack:** Python 3.12, uv, Typer, Pydantic v2 + pydantic-settings, Jinja2, PyYAML, OpenAI SDK (FreeLLMApi), Claude Code CLI (`claude -p`), yt-dlp, youtube-transcript-api 1.x, pytest + respx + syrupy, ruff, pyright, pre-commit.
+**Tech Stack:** Python 3.12, uv, Typer, Pydantic v2 + pydantic-settings, Jinja2, PyYAML, OpenAI SDK (FreeLLMApi and the OpenAI API), yt-dlp, youtube-transcript-api 1.x, pytest + respx + syrupy, ruff, pyright, pre-commit.
+
+> **LLM access revised on 2026-09-28.** Every LLM call is now an API call with an API key. `claude -p` (subscription) is removed, together with the `when` / evening option. There are three profiles: `notes` → FreeLLMApi, `clippings` (AI chats) → OpenAI API, `youtube` (both YouTube classes and the reviewer) → OpenAI API. Tasks 1, 6, 7, 8, 9, 12, 14, 16 and 18 still show the old `claude-code` backend and the profile names `free-fast`, `claude-sub-evening` and `claude-sub-now`; they are kept as history. **Task 20 does the refactor**, and where they disagree, Task 20 wins.
+
+> **Folder layout revised on 2026-09-28.** Tasks 1–18 were built on a `staging/` folder. The design now uses four folders: `inbox/` → `archive/` (untouched copy), `output/` (in progress, then the final page) and `failed/`, each with `notes/` and `clippings/`, and a file keeps its inbox name everywhere. The state per document moves to Postgres in Stage B; in Stage A it is the folder, a `stage` frontmatter field and the Python log. **Task 19 does the refactor**, so the code samples in Tasks 4, 12, 14, 15, 16 and 18 still show `staging/` and are kept as history. Where they disagree with Task 19 and the [design](../../idea-catcher-pipeline.md#repo-layout), Task 19 wins.
 
 **Spec:** `docs/idea-catcher-service-architecture.md` (Stage A steps A1–A8, LLM Step & Profiles, Reviewer, Processing Flow, Testing) and `docs/idea-catcher-pipeline.md` (Implementation Reference, Stage 3 ID & naming, Stage 4 document classes, Stage 5 tag rules).
 
 ## Global Constraints
 
 - Python `>=3.12` (the production image uses Python 3.12 + uv); dependencies are managed with **uv**.
-- **Raw first:** the captured text (the note body) is never changed. Staging only adds frontmatter fields: `id`, `class`, `captured`, `source_file`, `staged_at`.
-- **One stable ID per capture.** Pages are named `YYYYMMDD_<id>_<slug>.md` and are **overwritten by ID**. The existing page is found by the `id` in its frontmatter, never by the filename.
+- **Raw first:** the captured text (the note body) is never changed, and the original of every processed inbox file is kept in `archive/` under its calculated file name, with only two frontmatter lines added (`original_filename`, `calculated_filename`). Ingest only adds frontmatter fields to the `output/` copy: `id`, `class`, `captured`, `source_file`, `analyzed_at`, `stage`.
+- **Five folders, one rule, and a run only looks at `inbox/` for work.** `inbox/`, `archive/`, `output/`, `failed/`, `duplicates/`, each with the same subfolders (`notes/`, `clippings/`), and the file name never changes. A document leaves `inbox/` right before its own LLM step: the untouched original goes to `archive/` and a working copy (`stage: analyzed`) to `output/`, which becomes the final page. A permanent failure moves to `failed/` (with an `.error.txt`), an earlier snapshot of a longer clip to `duplicates/`, and a temporary error leaves the working copy in `output/` with `stage: deferred` and the reason. The pipeline never reads `output/`: **to retry, move the file from `archive/` back into `inbox/`** and the next run overwrites the stalled copy. There is no `staging/` and no `superseded/` folder. A helper such as `catcher requeue` is a possible later addition.
+- **One stable ID per capture, one calculated file name per document.** A document gets `YYYYMMDD-<short guid>-<title>.md` when work starts, and that name is used in `archive/`, `output/`, `failed/`, `duplicates/` and `epiaku-docs`. Pages are still **overwritten by ID**: the existing page is found by the `id` in its frontmatter, never by the file name.
 - **Python first, AI last:** the LLM returns only JSON matching a Pydantic schema. Python owns IDs, paths, frontmatter, tags and Git. **Metrics (views, likes, subscribers, dates) come only from Python (`yt-dlp`)**, never from an LLM.
 - **Tags from the fixed list only:** exactly **one idea-type tag**, **1–4 topic tags**, **0–1 project tag**. Unknown tags are dropped and reported.
-- **No fallback between backends.** If an LLM call fails, the note stays in `staging/` and is retried on the next run. Invalid JSON is retried **once, immediately, on the same backend**, with the validation error added to the prompt.
-- `claude -p` is always called as `claude -p --output-format json --max-turns 1 [--model <m>]`, with `cwd` set to the temp directory. Only the official `claude` binary may use the subscription token; the token is never read or forwarded by our code.
+- **No fallback between backends.** If an LLM call fails for a temporary reason, the note stays in `output/` with `stage: analyzed` and is retried on the next run. Invalid JSON is retried **once, immediately, on the same backend**, with the validation error added to the prompt.
+- **Every LLM call is an API call with an API key** (FreeLLMApi for `notes`, the OpenAI API for `clippings` and `youtube`). There is no CLI, no subscription login and no `claude` binary anywhere. Keys come from `.env`, are never logged and never written to a page, a sidecar or an error file. Provider and model are set per profile in `profiles.yaml`, so changing a provider is a config change.
 - Every page's frontmatter has `title`, `description`, `weight` (int), `type: docs`, `id`, `tags`. The only shortcodes allowed in pages are `youtube-lite` and `alert`.
-- **One review round** for YouTube summaries. Review is on by default and can be turned off with `--no-review`. The review profile defaults to `claude-sub-evening`.
+- **One review round** for YouTube summaries. Review is on by default and can be turned off with `--no-review`. The review profile defaults to `youtube`.
+- **The default `pytest` run never calls a real LLM and never runs end-to-end tests.** Tests use the `fake` backend, HTTP mocked with `respx`, recorded YouTube data and local bare Git repos. Tests that call a real LLM or a real outside service carry the marker `live`, end-to-end tests carry `e2e`, and both are **run manually** (`uv run pytest -m live`, `uv run pytest -m e2e`). `pyproject.toml` deselects them by default with `addopts = "-m 'not live and not e2e'"`. The manual checks in Tasks 20 and 21 (real OpenAI and FreeLLMApi calls, the real run on copies) are not part of the suite.
 - **`--push` is off by default.** Without it, the run commits locally and pushes nothing. With it, epiaku-docs is pushed first, then idea-bucket.
 - The pipeline commits **only the files it wrote or removed** (`git commit --only`). Other changes in either working tree are never committed.
-- **Stage A scope:** no Postgres, no queue, no API, no Docker. A profile's `when` (`now` / `evening`) is **ignored in Stage A**: every profile runs immediately. In this stage, "deferred" just means the note stays in `staging/`.
-- **Deviations from the spec, decided while planning against the real data** (to be recorded in the docs in Task 19):
+- **Stage A scope:** no Postgres, no queue, no API, no Docker. There is no `when` option: every profile is an API and runs immediately. In this stage, "deferred" means the working copy stalls in `output/` with `stage: deferred` until you move the file back into `inbox/`. **No document state is stored** (that is Stage B's Postgres): the folders, the `stage` field and the **Python log** show what happened, so every step logs one line per file.
+- **Deviations from the spec, decided while planning against the real data** (to be recorded in the docs in Task 21):
   - AI chats publish to the existing site folder `idea-bucket/clipping/`, not `gemini/` + `claude/`. There is one `ai-chat` class for both.
-  - YouTube facts are stored in a sidecar file `staging/<id>.youtube.json` instead of in the note's frontmatter, so the Obsidian properties panel stays readable.
+  - YouTube facts are stored in a sidecar file `output/<sub>/<name>.youtube.json` instead of in the note's frontmatter, so the Obsidian properties panel stays readable. The sidecar stays next to the final page.
   - `reason()` is synchronous; Stage B can call it through `asyncio.to_thread`.
   - `YoutubeSummary` gains a `description` field, because every page needs one.
-  - Copies that lose to a newer capture with the same ID are moved to `archive/<class>/superseded/`, never deleted.
+  - **Snapshots of one conversation cost one LLM call.** Every inbox file is archived and ingested, the same filename overwrites its earlier copies, and the page in `epiaku-docs` is overwritten by ID. Of several clips with one ID, only the longest goes to the LLM; earlier snapshots of it (same messages, last one possibly cut off) move from `output/` to `duplicates/` with `duplicate_of` in the frontmatter, and their `archive/` copy stays. Clips with different content are all processed. (Replaces the earlier "largest body wins, losers go to a `superseded/` folder" rule: nothing moves to a folder, and nothing is deleted.)
 
 ## Review Focus
 
 These five inputs are the most likely to break the pipeline on real use, most likely first. Each has a test in the task named in brackets.
 
-1. **The same Gemini conversation clipped several times** in one inbox batch. This already happens: `2446cd9c762c9cc9` is clipped 5 times in the current inbox. Expected: one staged copy (the longest body), with the others kept in `archive/clippings/superseded/`. [Task 4]
+1. **The same Gemini conversation clipped several times** in one inbox batch. This already happens: `2446cd9c762c9cc9` is clipped 5 times in the current inbox. Expected: all five files are archived and ingested, but only the longest (`obsidian github link.md`, 68 messages) goes to the LLM. The other four move to `duplicates/clippings/` with `duplicate_of`, and `epiaku-docs` ends with **one** page for that id. A clip whose content differs from the longest is not hidden: it is processed on its own. [Tasks 4 and 19]
 2. **An epiaku-docs working tree with unrelated uncommitted changes.** This is the case right now: two deleted `clipping/` pages. Expected: the pipeline commits only its own pages, and the user's changes stay exactly as they were. [Tasks 13 and 14]
 3. **Captures without the expected frontmatter.** Phone notes have no frontmatter at all, newer Web Clipper notes write `source :` with a space and no `title`, and YouTube URLs carry `&list=…&t=…` or `\_` escapes. Expected: correct class and stable ID, with a title hint taken from the file name. [Tasks 2, 3 and 4]
-4. **LLM text that breaks Markdown or Hugo:** a `|` or a newline inside a Tips table cell, or an unknown `{{< shortcode >}}` in the body. Expected: cells are escaped, and a page with an unknown shortcode is rejected while its note stays staged. [Tasks 10, 11 and 16]
-5. **The Claude usage limit hit halfway through a run.** Expected: that note and every later `claude-code` note are deferred without any further calls, and FreeLLMApi notes are still published. [Task 14]
+4. **LLM text that breaks Markdown or Hugo:** a `|` or a newline inside a Tips table cell, or an unknown `{{< shortcode >}}` in the body. Expected: cells are escaped, and a page with an unknown shortcode is rejected and its note moves to `failed/` with the reason. [Tasks 10, 11, 16 and 19]
+5. **The OpenAI quota or rate limit hit halfway through a run** (or a bad API key). Expected: that note and every later `openai` note are deferred (they stay in `output/`, not in `failed/`) without any further calls, and FreeLLMApi notes are still published. A bad key logs one clear `ERROR`. [Tasks 14, 19 and 20]
 
 ---
 
@@ -51,13 +57,14 @@ idea-catcher/
 ├── .python-version             3.12
 ├── .pre-commit-config.yaml     ruff, pyright, fast tests
 ├── .env.example                every setting, no secrets
-├── profiles.yaml               LLM profiles (backend, model, when), review profile
+├── profiles.yaml               the three LLM profiles (notes, clippings, youtube), review profile
 ├── src/catcher/
 │   ├── __init__.py             __version__
-│   ├── cli.py                  Typer app: version | stage | reason | render | run pipeline | youtube facts
+│   ├── cli.py                  Typer app: version | ingest | reason | render | run pipeline | youtube facts
 │   ├── core/
 │   │   ├── config.py           Settings (env + .env)
 │   │   ├── frontmatter.py      tolerant frontmatter parse/dump (Doc)
+│   │   ├── logging.py          configure_logging() (Task 19)
 │   │   └── git.py              pull / commit_paths / push
 │   └── modules/
 │       ├── llm/
@@ -66,10 +73,10 @@ idea-catcher/
 │       │   ├── prompts.py      render_prompt(task, vars) -> (text, version)
 │       │   ├── prompts/        note.md, ai-chat.md, youtube.md, youtube-from-gemini.md, review.md
 │       │   ├── service.py      reason(), errors, Usage, BackendReply, LlmResult
-│       │   └── backends/       __init__.py (make_backend), fake.py, claude_code.py, freellmapi.py
+│       │   └── backends/       __init__.py (make_backend), fake.py, openai_compatible.py (freellmapi + openai)
 │       ├── pipeline/
 │       │   ├── doctypes.py     DocType registry, detect(), derive_id(), canonical_source()
-│       │   ├── staging.py      stage_inbox(), load_staged(), facts_sidecar()
+│       │   ├── ingest.py       ingest_inbox(), load_pending(), facts_sidecar()   (was staging.py before Task 19)
 │       │   ├── tags.yaml       the fixed tag list
 │       │   ├── tags.py         load_tags(), normalize_tags()
 │       │   ├── inputs.py       prompt_input(), capture_tags()
@@ -77,7 +84,7 @@ idea-catcher/
 │       │   ├── templates/      note.md.j2, ai-chat.md.j2, youtube.md.j2
 │       │   ├── validate.py     validate_page()
 │       │   ├── process.py      Services, ProcessOptions, process_note()
-│       │   ├── publish.py      find_pages_by_id, write_page, archive_staged
+│       │   ├── publish.py      find_pages_by_id, write_page, finalize_output, move_to_failed
 │       │   └── run.py          run_pipeline() -> RunReport
 │       └── youtube/
 │           ├── urls.py         host_of, video_id, find_youtube_url
@@ -85,7 +92,6 @@ idea-catcher/
 │           └── review.py       review_summary, python_checks, ReviewOutcome
 └── tests/
     ├── conftest.py             shared fixtures (profiles, notes, results, services)
-    ├── bin/claude              fake claude CLI
     ├── fixtures/youtube/       recorded facts JSON
     ├── unit/                   pure functions
     ├── component/              one module with its outside world faked
@@ -96,21 +102,23 @@ idea-catcher/
 
 ### Task 1: Project scaffold, settings and CLI skeleton (A1)
 
+> **Superseded in part by Task 20.** `CLAUDE_BIN`, `claude_bin`, `CLAUDE_CODE_OAUTH_TOKEN` and the Claude Code CLI install are removed. Settings gain `OPENAI_API_KEY` and `OPENAI_BASE_URL`, and `.env.example` gains the two OpenAI model variables.
+
 **Files:**
 - Create: `pyproject.toml`, `.python-version`, `.gitignore`, `.env.example`, `.pre-commit-config.yaml`
 - Create: `src/catcher/__init__.py`, `src/catcher/cli.py`, `src/catcher/core/__init__.py`, `src/catcher/core/config.py`, `src/catcher/modules/__init__.py`
 - Create: `tests/unit/test_cli.py`, `tests/unit/test_config.py`, `tests/component/.gitkeep`, `tests/integration/git/.gitkeep`
 
 **Interfaces:**
-- Produces: `catcher.__version__ = "0.1.0"`; `catcher.cli.app` (Typer); `catcher.core.config.Settings` with fields `ideas_repo: Path`, `docs_repo: Path`, `profiles_file: Path`, `freellmapi_url: str`, `freellmapi_model: str`, `freellmapi_api_key: str`, `claude_bin: str`, `llm_timeout_s: int`, `transcript_languages: str`, `git_author_name: str`, `git_author_email: str`, and the property `transcript_language_list -> list[str]`.
+- Produces: `catcher.__version__ = "0.1.0"`; `catcher.cli.app` (Typer); `catcher.core.config.Settings` with fields `ideas_repo: Path`, `docs_repo: Path`, `profiles_file: Path`, `freellmapi_url: str`, `freellmapi_model: str`, `freellmapi_api_key: str`, `llm_timeout_s: int`, `transcript_languages: str`, `git_author_name: str`, `git_author_email: str`, and the property `transcript_language_list -> list[str]`.
 
 - [ ] **Step 1: Install the tools**
 
 Run: `brew install uv && uv --version`
 Expected: a version such as `uv 0.8.x`.
 
-Run: `claude --version || npm install -g @anthropic-ai/claude-code`
-Expected: the Claude Code CLI version. Later tasks only need it for the manual checks in Task 19.
+Run: `uv run python --version`
+Expected: `Python 3.12.x`. (An earlier version of this task also installed the Claude Code CLI. It is no longer needed: all LLM calls use API keys.)
 
 - [ ] **Step 2: Write the project files**
 
@@ -567,7 +575,10 @@ from catcher.modules.youtube.urls import find_youtube_url, host_of, video_id
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
-        ("https://www.youtube.com/watch?v=tcqEUSNCn8I&list=PL4RKwZPB4EJDizVLBstGU-ocFQxb6RtRO&index=10&t=1s", "tcqEUSNCn8I"),
+        (
+            "https://www.youtube.com/watch?v=tcqEUSNCn8I&list=PL4RKwZPB4EJDizVLBstGU-ocFQxb6RtRO&index=10&t=1s",
+            "tcqEUSNCn8I",
+        ),
         ("https://youtu.be/AeV5F0ppaGw?si=abc", "AeV5F0ppaGw"),
         ("https://m.youtube.com/watch?v=MBPHU7aaklM", "MBPHU7aaklM"),
         ("https://www.youtube.com/shorts/AeV5F0ppaGw", "AeV5F0ppaGw"),
@@ -772,16 +783,33 @@ NOTE = DocType(
     "note", "note", "NoteSummary", "note.md.j2", f"{DOCS_ROOT}/notes", "archive/notes", "free-fast"
 )
 AI_CHAT = DocType(
-    "ai-chat", "ai-chat", "ChatSummary", "ai-chat.md.j2", f"{DOCS_ROOT}/clipping", "archive/clippings",
+    "ai-chat",
+    "ai-chat",
+    "ChatSummary",
+    "ai-chat.md.j2",
+    f"{DOCS_ROOT}/clipping",
+    "archive/clippings",
     "claude-sub-evening",
 )
 YOUTUBE = DocType(
-    "youtube", "youtube", "YoutubeSummary", "youtube.md.j2", f"{DOCS_ROOT}/youtube", "archive/youtube",
-    "claude-sub-evening", reviewed=True,
+    "youtube",
+    "youtube",
+    "YoutubeSummary",
+    "youtube.md.j2",
+    f"{DOCS_ROOT}/youtube",
+    "archive/youtube",
+    "claude-sub-evening",
+    reviewed=True,
 )
 YOUTUBE_GEMINI = DocType(
-    "youtube-gemini", "youtube-from-gemini", "YoutubeSummary", "youtube.md.j2", f"{DOCS_ROOT}/youtube",
-    "archive/youtube", "claude-sub-evening", reviewed=True,
+    "youtube-gemini",
+    "youtube-from-gemini",
+    "YoutubeSummary",
+    "youtube.md.j2",
+    f"{DOCS_ROOT}/youtube",
+    "archive/youtube",
+    "claude-sub-evening",
+    reviewed=True,
 )
 DOC_TYPES: dict[str, DocType] = {t.name: t for t in (NOTE, AI_CHAT, YOUTUBE, YOUTUBE_GEMINI)}
 
@@ -879,6 +907,8 @@ git commit -m "feat: detect capture classes and derive stable ids"
 
 ### Task 4: Staging, including repeated clips, replay and `catcher stage` (A2)
 
+> **Superseded in part by Task 19.** This task built `stage_inbox()` with a flat `staging/` folder, deduplication by id and `archive/<class>/superseded/`. Task 19 replaces all three: `ingest_inbox()` archives every inbox file untouched, writes `output/<sub>/<name>.md` under the **same name**, and does not deduplicate. `catcher stage` becomes `catcher ingest`. Read this task for the frontmatter, id and body-preservation tests, which still hold.
+
 **Files:**
 - Create: `src/catcher/modules/pipeline/staging.py`
 - Modify: `src/catcher/cli.py` (add the `stage` command)
@@ -958,7 +988,11 @@ def test_clip_body_is_kept_byte_for_byte(tmp_path):
 
 def test_repeated_clips_of_one_chat_are_staged_once(tmp_path):
     put(tmp_path, "inbox/clippings/New chat.md", gemini_clip("2446cd9c762c9cc9", "short\n"))
-    put(tmp_path, "inbox/clippings/Idea catcher.md", gemini_clip("2446cd9c762c9cc9", "the longest version\n" * 5))
+    put(
+        tmp_path,
+        "inbox/clippings/Idea catcher.md",
+        gemini_clip("2446cd9c762c9cc9", "the longest version\n" * 5),
+    )
     put(tmp_path, "inbox/clippings/obsidian github link.md", gemini_clip("2446cd9c762c9cc9", "medium\n" * 2))
     result = stage_inbox(tmp_path, now=NOW)
     assert [n.doc_id for n in result.staged] == ["2446cd9c762c9cc9"]
@@ -1336,7 +1370,11 @@ class TagList:
         return frozenset(self.idea_types + self.topics + self.projects)
 
     def as_prompt_dict(self) -> dict[str, list[str]]:
-        return {"idea_types": list(self.idea_types), "topics": list(self.topics), "projects": list(self.projects)}
+        return {
+            "idea_types": list(self.idea_types),
+            "topics": list(self.topics),
+            "projects": list(self.projects),
+        }
 
 
 @dataclass
@@ -1394,6 +1432,8 @@ git commit -m "feat: enforce the fixed tag list"
 ---
 
 ### Task 6: LLM output schemas and profiles
+
+> **Superseded in part by Task 20.** `Profile.when`, `evening_window`, the `claude-code` backend name and the profile names `free-fast`, `claude-sub-evening` and `claude-sub-now` are replaced by `Profile(backend, model)` and the three profiles `notes`, `clippings`, `youtube`. The schemas are unchanged.
 
 **Files:**
 - Create: `src/catcher/modules/llm/__init__.py` (empty), `src/catcher/modules/llm/schemas.py`, `src/catcher/modules/llm/profiles.py`, `profiles.yaml`
@@ -1464,12 +1504,15 @@ def test_repo_profiles_file_loads():
     assert cfg.default == "free-fast"
     assert cfg.review_profile == "claude-sub-evening"
     assert cfg.profiles["free-fast"] == Profile(backend="freellmapi", model="auto", when="now")
-    assert cfg.profiles["claude-sub-evening"] == Profile(backend="claude-code", model="sonnet", when="evening")
+    assert cfg.profiles["claude-sub-evening"] == Profile(
+        backend="claude-code", model="sonnet", when="evening"
+    )
 
 
 def test_resolution_order_is_request_then_class_then_global():
     cfg = ProfilesConfig(
-        default="a", profiles={"a": Profile(backend="fake"), "b": Profile(backend="fake"), "c": Profile(backend="fake")}
+        default="a",
+        profiles={"a": Profile(backend="fake"), "b": Profile(backend="fake"), "c": Profile(backend="fake")},
     )
     assert resolve_profile(cfg, requested="c", class_default="b")[0] == "c"
     assert resolve_profile(cfg, requested=None, class_default="b")[0] == "b"
@@ -1678,7 +1721,11 @@ from catcher.modules.llm.profiles import Profile, ProfilesConfig
 
 @pytest.fixture
 def prompt_tags() -> dict[str, list[str]]:
-    return {"idea_types": ["app-idea", "tech-note"], "topics": ["automation", "ai-agents"], "projects": ["idea-catcher"]}
+    return {
+        "idea_types": ["app-idea", "tech-note"],
+        "topics": ["automation", "ai-agents"],
+        "projects": ["idea-catcher"],
+    }
 
 
 @pytest.fixture
@@ -1777,10 +1824,16 @@ def test_missing_prompt_variable_fails_loudly():
 def test_ai_chat_prompt_renders(prompt_tags):
     text, version = render_prompt(
         "ai-chat",
-        {"title_hint": "New chat", "body": "**You**\n\nq", "source": None, "tags": prompt_tags, "capture_tags": []},
+        {
+            "title_hint": "New chat",
+            "body": "**You**\n\nq",
+            "source": None,
+            "tags": prompt_tags,
+            "capture_tags": [],
+        },
     )
     assert version == "ai-chat-1"
-    assert "Never \"New chat\"" in text
+    assert 'Never "New chat"' in text
 
 
 def test_extract_json_without_object():
@@ -1926,7 +1979,9 @@ def reason(req: LlmRequest, *, profiles: ProfilesConfig, backends: BackendFactor
             error = str(e)[:2000]
             continue
         usage = Usage(tokens_in=tokens_in, tokens_out=tokens_out, duration_ms=reply.usage.duration_ms)
-        return LlmResult(output, req.profile, backend.name, reply.model or profile.model, version, usage, attempt)
+        return LlmResult(
+            output, req.profile, backend.name, reply.model or profile.model, version, usage, attempt
+        )
     raise InvalidOutput(f"{req.task}: invalid output after 2 attempts: {error}")
 ```
 
@@ -1990,7 +2045,9 @@ class FakeBackend:
             text = reply
         else:
             text = json.dumps(CANNED[task])
-        return BackendReply(text=text, usage=Usage(tokens_in=len(prompt) // 4, tokens_out=len(text) // 4), model="fake")
+        return BackendReply(
+            text=text, usage=Usage(tokens_in=len(prompt) // 4, tokens_out=len(text) // 4), model="fake"
+        )
 ```
 
 `src/catcher/modules/llm/prompts/note.md`:
@@ -2074,6 +2131,8 @@ git commit -m "feat: add the generic reason() step with prompts and a fake backe
 
 ### Task 8: The `claude -p` backend, backend factory, prompt inputs and `catcher reason` (A3)
 
+> **Superseded in part by Task 20.** The `claude -p` backend, the fake `claude` script and its tests are deleted in Task 20. `make_backend`, the prompt inputs and `catcher reason` stay, with the new profile names.
+
 **Files:**
 - Create: `src/catcher/modules/llm/backends/claude_code.py`, `src/catcher/modules/pipeline/inputs.py`, `tests/bin/claude` (executable)
 - Modify: `src/catcher/modules/llm/backends/__init__.py`, `src/catcher/cli.py`
@@ -2103,17 +2162,27 @@ if log:
 
 mode = os.environ.get("FAKE_CLAUDE_MODE", "ok")
 if mode == "ok":
-    print(json.dumps({
-        "type": "result",
-        "subtype": "success",
-        "is_error": False,
-        "result": os.environ.get("FAKE_CLAUDE_RESULT", "{}"),
-        "duration_ms": 1234,
-        "usage": {"input_tokens": 100, "cache_read_input_tokens": 20,
-                  "cache_creation_input_tokens": 5, "output_tokens": 50},
-    }))
+    print(
+        json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": os.environ.get("FAKE_CLAUDE_RESULT", "{}"),
+                "duration_ms": 1234,
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_read_input_tokens": 20,
+                    "cache_creation_input_tokens": 5,
+                    "output_tokens": 50,
+                },
+            }
+        )
+    )
 elif mode == "limit":
-    print(json.dumps({"type": "result", "is_error": True, "result": "Claude AI usage limit reached|1760000000"}))
+    print(
+        json.dumps({"type": "result", "is_error": True, "result": "Claude AI usage limit reached|1760000000"})
+    )
     sys.exit(1)
 elif mode == "limit-text":
     print(json.dumps({"type": "result", "is_error": False, "result": "You've hit your limit · resets 9pm"}))
@@ -2236,7 +2305,12 @@ def staged(tmp_path: Path, fm: dict, body: str = "An idea\n") -> Path:
     return path
 
 
-BASE = {"id": "a7b2c9", "class": "note", "captured": "2026-09-27", "source_file": "inbox/notes/YouTube walks.md"}
+BASE = {
+    "id": "a7b2c9",
+    "class": "note",
+    "captured": "2026-09-27",
+    "source_file": "inbox/notes/YouTube walks.md",
+}
 
 
 def test_prompt_input_for_a_note(tmp_path):
@@ -2343,7 +2417,11 @@ class ClaudeCodeBackend:
         )
         return BackendReply(
             text=result,
-            usage=Usage(tokens_in=tokens_in, tokens_out=usage.get("output_tokens"), duration_ms=data.get("duration_ms")),
+            usage=Usage(
+                tokens_in=tokens_in,
+                tokens_out=usage.get("output_tokens"),
+                duration_ms=data.get("duration_ms"),
+            ),
             model=model,
         )
 ```
@@ -2466,6 +2544,8 @@ git commit -m "feat: add the claude -p backend and the catcher reason command"
 
 ### Task 9: The FreeLLMApi backend
 
+> **Superseded in part by Task 20.** `FreeLlmApiBackend` becomes `OpenAiCompatibleBackend`, shared with the new `openai` backend, in Task 20.
+
 **Files:**
 - Create: `src/catcher/modules/llm/backends/freellmapi.py`
 - Modify: `src/catcher/modules/llm/backends/__init__.py`
@@ -2501,14 +2581,18 @@ def completion(content: str) -> dict:
         "object": "chat.completion",
         "created": 0,
         "model": "llama-3.3-70b",
-        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+        "choices": [
+            {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}
+        ],
         "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
     }
 
 
 @respx.mock
 def test_returns_text_usage_and_model():
-    route = respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(200, json=completion('{"a": 1}')))
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(200, json=completion('{"a": 1}'))
+    )
     reply = FreeLlmApiBackend(BASE, "k").complete("PROMPT", model="auto", task="note")
     assert reply.text == '{"a": 1}'
     assert (reply.usage.tokens_in, reply.usage.tokens_out, reply.model) == (12, 3, "llama-3.3-70b")
@@ -2520,7 +2604,9 @@ def test_returns_text_usage_and_model():
 @respx.mock
 @pytest.mark.parametrize("status", [429, 500, 413])
 def test_http_errors_are_backend_unavailable(status):
-    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(status, json={"error": {"message": "x"}}))
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(status, json={"error": {"message": "x"}})
+    )
     with pytest.raises(BackendUnavailable, match=str(status)):
         FreeLlmApiBackend(BASE, "k").complete("p", model="auto", task="note")
 
@@ -2604,7 +2690,9 @@ def make_backend(profile: Profile, settings: Settings) -> Backend:
     if profile.backend == "claude-code":
         return ClaudeCodeBackend(settings.claude_bin, timeout_s=settings.llm_timeout_s)
     if profile.backend == "freellmapi":
-        return FreeLlmApiBackend(settings.freellmapi_url, settings.freellmapi_api_key, timeout_s=settings.llm_timeout_s)
+        return FreeLlmApiBackend(
+            settings.freellmapi_url, settings.freellmapi_api_key, timeout_s=settings.llm_timeout_s
+        )
     raise BackendUnavailable(f"backend {profile.backend!r} is not available")
 ```
 
@@ -2653,7 +2741,12 @@ from catcher.modules.pipeline.staging import StagedNote
 @pytest.fixture
 def make_note():
     def _make(
-        doctype: str = "note", *, doc_id: str = "a7b2c9", body: str = "An idea.\n", root: Path | None = None, **fm: Any
+        doctype: str = "note",
+        *,
+        doc_id: str = "a7b2c9",
+        body: str = "An idea.\n",
+        root: Path | None = None,
+        **fm: Any,
     ) -> StagedNote:
         base = {
             "id": doc_id,
@@ -2675,7 +2768,12 @@ def make_note():
 @pytest.fixture
 def make_result():
     def _make(
-        output: BaseModel, *, profile: str = "fake", backend: str = "fake", model: str = "fake", version: str = "note-1"
+        output: BaseModel,
+        *,
+        profile: str = "fake",
+        backend: str = "fake",
+        model: str = "fake",
+        version: str = "note-1",
     ) -> LlmResult:
         return LlmResult(output, profile, backend, model, version, Usage(tokens_in=10, tokens_out=5), 1)
 
@@ -2710,7 +2808,10 @@ def test_slugify():
 
 
 def test_page_filename():
-    assert page_filename("2026-09-27", "a7b2c9", "Idea Catcher Pipeline") == "20260927_a7b2c9_idea-catcher-pipeline.md"
+    assert (
+        page_filename("2026-09-27", "a7b2c9", "Idea Catcher Pipeline")
+        == "20260927_a7b2c9_idea-catcher-pipeline.md"
+    )
 
 
 def test_md_cell_escapes_pipes_and_newlines():
@@ -2735,9 +2836,19 @@ def test_note_page(make_note, make_result, snapshot):
     doc = parse(page)
     assert doc.fm["title"] == "Walk-and-talk videos"
     assert doc.fm["description"] == "Film career stories while walking."
-    assert (doc.fm["type"], doc.fm["weight"], doc.fm["id"], doc.fm["date"]) == ("docs", 100, "a7b2c9", "2026-09-27")
+    assert (doc.fm["type"], doc.fm["weight"], doc.fm["id"], doc.fm["date"]) == (
+        "docs",
+        100,
+        "a7b2c9",
+        "2026-09-27",
+    )
     assert doc.fm["tags"] == ["youtube-idea", "content-creation"]
-    assert doc.fm["llm"] == {"profile": "fake", "backend": "fake", "model": "fake", "prompt_version": "note-1"}
+    assert doc.fm["llm"] == {
+        "profile": "fake",
+        "backend": "fake",
+        "model": "fake",
+        "prompt_version": "note-1",
+    }
     assert "source" not in doc.fm
     assert doc.body == "Record videos while walking and talk about your career.\n"
     assert page_name(ctx) == "20260927_a7b2c9_walk-and-talk-videos.md"
@@ -2761,7 +2872,9 @@ def test_chat_page_sections_and_canonical_source(make_note, make_result, snapsho
         body="## 🧩 Details\n\nUse one product with drip content.",
         tags=["digital-product-idea"],
     )
-    page = render_page(PageContext(note, summary, ["digital-product-idea", "online-courses"], make_result(summary)))
+    page = render_page(
+        PageContext(note, summary, ["digital-product-idea", "online-courses"], make_result(summary))
+    )
     doc = parse(page)
     assert doc.fm["source"] == "https://gemini.google.com/app/cf81e40b020519ef"
     assert doc.body.startswith("## 📝 Summary\n\n- You can sell a bundle before all parts exist.\n")
@@ -3018,8 +3131,12 @@ def test_missing_fields_and_wrong_types():
 
 
 def test_tag_rules():
-    assert "tags not in the allowed list: apps" in validate_page(page({**GOOD_FM, "tags": ["app-idea", "apps"]}), TAGS)
-    assert "need exactly one idea-type tag, found 0" in validate_page(page({**GOOD_FM, "tags": ["obsidian"]}), TAGS)
+    assert "tags not in the allowed list: apps" in validate_page(
+        page({**GOOD_FM, "tags": ["app-idea", "apps"]}), TAGS
+    )
+    assert "need exactly one idea-type tag, found 0" in validate_page(
+        page({**GOOD_FM, "tags": ["obsidian"]}), TAGS
+    )
     assert "need exactly one idea-type tag, found 2" in validate_page(
         page({**GOOD_FM, "tags": ["app-idea", "todo"]}), TAGS
     )
@@ -3109,6 +3226,8 @@ git commit -m "feat: validate rendered pages before they are written"
 
 ### Task 12: Processing one note, overwrite-by-ID publishing and `catcher render` (A4)
 
+> **Superseded in part by Task 19.** `archive_staged()` and the `staging/` paths in this task are replaced by `finalize_output()` and `move_to_failed()` in Task 19. Rendering, overwrite-by-id and `write_page()` are unchanged.
+
 **Files:**
 - Create: `src/catcher/modules/pipeline/process.py`, `src/catcher/modules/pipeline/publish.py`
 - Modify: `src/catcher/cli.py`, `tests/conftest.py` (add `make_services`)
@@ -3184,7 +3303,9 @@ def test_note_becomes_a_valid_page(make_note, make_services):
 
 def test_chat_uses_the_class_default_profile(make_note, make_services):
     chats = FakeBackend()
-    note = make_note("ai-chat", doc_id="cf81e40b020519ef", source="https://gemini.google.com/app/cf81e40b020519ef")
+    note = make_note(
+        "ai-chat", doc_id="cf81e40b020519ef", source="https://gemini.google.com/app/cf81e40b020519ef"
+    )
     processed = process_note(note, make_services(chat_backend=chats), ProcessOptions())
     assert processed.llm.profile == "claude-sub-evening"
     assert len(chats.prompts) == 1
@@ -3208,7 +3329,9 @@ def test_capture_tags_are_merged_and_unknown_tags_dropped(make_note, make_servic
 
 def test_page_without_an_idea_type_has_a_problem(make_note, make_services):
     reply = json.dumps({**CANNED["note"], "tags": ["obsidian"]})
-    processed = process_note(make_note("note"), make_services(note_backend=FakeBackend([reply])), ProcessOptions())
+    processed = process_note(
+        make_note("note"), make_services(note_backend=FakeBackend([reply])), ProcessOptions()
+    )
     assert processed.problems == ["need exactly one idea-type tag, found 0"]
 
 
@@ -3216,7 +3339,11 @@ def test_blocked_backend_is_not_called(make_note, make_services):
     chats = FakeBackend()
     note = make_note("ai-chat", doc_id="cf81e40b020519ef")
     with pytest.raises(UsageLimitReached):
-        process_note(note, make_services(chat_backend=chats), ProcessOptions(blocked_backends=frozenset({"claude-code"})))
+        process_note(
+            note,
+            make_services(chat_backend=chats),
+            ProcessOptions(blocked_backends=frozenset({"claude-code"})),
+        )
     assert chats.prompts == []
 ```
 
@@ -3372,7 +3499,9 @@ def check_not_blocked(profile: Profile, opts: ProcessOptions) -> None:
 
 
 def process_note(note: StagedNote, svc: Services, opts: ProcessOptions) -> ProcessedPage:
-    profile_name, profile = resolve_profile(svc.profiles, requested=opts.profile, class_default=note.doctype.llm_profile)
+    profile_name, profile = resolve_profile(
+        svc.profiles, requested=opts.profile, class_default=note.doctype.llm_profile
+    )
     check_not_blocked(profile, opts)
     request = LlmRequest(
         task=note.doctype.task,
@@ -3385,7 +3514,9 @@ def process_note(note: StagedNote, svc: Services, opts: ProcessOptions) -> Proce
     tag_result = normalize_tags([*summary.tags, *capture_tags(note)], svc.tags)
     ctx = PageContext(note=note, summary=summary, tags=tag_result.tags, llm=result)
     page = render_page(ctx)
-    return ProcessedPage(note, page_name(ctx), page, validate_page(page, svc.tags), result, tag_result.dropped)
+    return ProcessedPage(
+        note, page_name(ctx), page, validate_page(page, svc.tags), result, tag_result.dropped
+    )
 ```
 
 `src/catcher/modules/pipeline/publish.py`:
@@ -3562,7 +3693,9 @@ AUTHOR = ("idea-catcher", "bot@example.com")
 
 
 def test_commit_paths_leaves_unrelated_changes_alone(make_repo, sh):
-    _, work = make_repo("docs", {"hugo/content/en/docs/idea-bucket/clipping/old.md": "old\n", "other.md": "x\n"})
+    _, work = make_repo(
+        "docs", {"hugo/content/en/docs/idea-bucket/clipping/old.md": "old\n", "other.md": "x\n"}
+    )
     (work / "hugo/content/en/docs/idea-bucket/clipping/old.md").unlink()
     (work / "other.md").write_text("changed\n")
     (work / "staged-by-user.md").write_text("u\n")
@@ -3694,9 +3827,17 @@ def commit_paths(repo: Path, paths: Iterable[Path], message: str, *, author: tup
     name, email = author
     git(
         repo,
-        "-c", f"user.name={name}",
-        "-c", f"user.email={email}",
-        "commit", "--only", f"--author={name} <{email}>", "-m", message, "--", *in_index,
+        "-c",
+        f"user.name={name}",
+        "-c",
+        f"user.email={email}",
+        "commit",
+        "--only",
+        f"--author={name} <{email}>",
+        "-m",
+        message,
+        "--",
+        *in_index,
     )
     return True
 
@@ -3726,6 +3867,8 @@ git commit -m "feat: commit only the pipeline's own files and push with one reba
 ---
 
 ### Task 14: The whole run, `catcher run pipeline` (A5 + A8 for notes and chats)
+
+> **Superseded in part by Task 19.** The `stage_inbox` / `load_staged` / `archive_staged` calls and the "stays in `staging/`" expectations are replaced in Task 19: failures move to `failed/`, deferrals stay in `output/`, published notes end as the page in `output/`.
 
 **Files:**
 - Create: `src/catcher/modules/pipeline/run.py`
@@ -3777,7 +3920,10 @@ def repos(make_repo):
     )
     docs_bare, docs = make_repo(
         "epiaku-docs",
-        {f"{NOTES}/_index.md": "---\ntitle: Notes\n---\n", f"{CLIPPING}/_index.md": "---\ntitle: Clippings\n---\n"},
+        {
+            f"{NOTES}/_index.md": "---\ntitle: Notes\n---\n",
+            f"{CLIPPING}/_index.md": "---\ntitle: Clippings\n---\n",
+        },
     )
     return SimpleNamespace(ideas=ideas, docs=docs, ideas_bare=ideas_bare, docs_bare=docs_bare)
 
@@ -3795,7 +3941,9 @@ def test_run_publishes_archives_and_commits(repos, make_services, sh):
     assert report.counts() == {"published": 2}
     [note_page] = [p.name for p in (repos.docs / NOTES).glob("*.md") if p.name != "_index.md"]
     assert note_page.endswith("_fake-note.md")
-    assert [p.name for p in (repos.docs / CLIPPING).glob("2026*.md")] == ["20260925_cf81e40b020519ef_fake-chat.md"]
+    assert [p.name for p in (repos.docs / CLIPPING).glob("2026*.md")] == [
+        "20260925_cf81e40b020519ef_fake-chat.md"
+    ]
     assert not list((repos.ideas / "inbox").rglob("*.md"))
     assert not list((repos.ideas / "staging").glob("*"))
     assert (repos.ideas / "archive/clippings/cf81e40b020519ef.md").exists()
@@ -3809,7 +3957,9 @@ def test_run_publishes_archives_and_commits(repos, make_services, sh):
 def test_push_updates_both_remotes(repos, make_services, sh):
     report = run_pipeline(repos.ideas, repos.docs, RunOptions(push=True), make_services())
     assert report.pushed
-    assert sh(repos.docs_bare, "log", "-1", "--format=%s", "main").strip() == "idea-catcher: publish 2 page(s)"
+    assert (
+        sh(repos.docs_bare, "log", "-1", "--format=%s", "main").strip() == "idea-catcher: publish 2 page(s)"
+    )
     assert sh(repos.ideas_bare, "log", "-1", "--format=%s", "main").strip().startswith("idea-catcher:")
 
 
@@ -3835,7 +3985,10 @@ def test_usage_limit_defers_every_claude_note_but_not_free_notes(repos, make_ser
     report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
     assert report.counts() == {"published": 1, "deferred": 2}
     assert len(chats.prompts) == 1
-    assert {i.doc_id for i in report.items if i.status == "deferred"} == {"cf81e40b020519ef", "925d9b0b4ca21b63"}
+    assert {i.doc_id for i in report.items if i.status == "deferred"} == {
+        "cf81e40b020519ef",
+        "925d9b0b4ca21b63",
+    }
 
 
 def test_limit_processes_at_most_n_notes(repos, make_services):
@@ -3846,7 +3999,9 @@ def test_limit_processes_at_most_n_notes(repos, make_services):
 
 def test_reclipped_chat_overwrites_its_page(repos, make_services):
     run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
-    (repos.ideas / "inbox/clippings/systeme again.md").write_text(chat("cf81e40b020519ef", "**You**\n\nlonger\n" * 3))
+    (repos.ideas / "inbox/clippings/systeme again.md").write_text(
+        chat("cf81e40b020519ef", "**You**\n\nlonger\n" * 3)
+    )
     v2 = json.dumps({**CANNED["ai-chat"], "title": "Bundles v2"})
     run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=FakeBackend([v2])))
     pages = sorted((repos.docs / CLIPPING).glob("2026*.md"))
@@ -3992,7 +4147,10 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             docs, touched_docs, f"idea-catcher: publish {published} page(s)", author=author
         )
         report.committed["ideas"] = commit_paths(
-            ideas, touched_ideas, f"idea-catcher: stage and archive captures ({published} published)", author=author
+            ideas,
+            touched_ideas,
+            f"idea-catcher: stage and archive captures ({published} published)",
+            author=author,
         )
         if opts.push:
             push(docs)
@@ -4032,7 +4190,9 @@ def run_pipeline_cmd(
     """Stage the inbox, summarize, publish pages, archive and commit."""
     settings = Settings()
     opts = RunOptions(profile=profile, review=not no_review, dry_run=dry_run, push=push, limit=limit)
-    report = run_pipeline(ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings))
+    report = run_pipeline(
+        ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
+    )
     for item in report.items:
         detail = " ".join(part for part in (item.page or "", item.message) if part)
         typer.echo(f"{item.status:<14} {item.doc_class:<15} {item.doc_id:<24} {detail}")
@@ -4058,6 +4218,8 @@ git commit -m "feat: run the whole pipeline with per-note errors, usage-limit bl
 ---
 
 ### Task 15: YouTube facts (yt-dlp + transcript) and `catcher youtube facts` (A6)
+
+> **Superseded in part by Task 19.** The sidecar path `staging/<id>.youtube.json` becomes `output/<sub>/<name>.youtube.json` in Task 19 (next to the note, kept next to the final page).
 
 **Files:**
 - Create: `src/catcher/modules/youtube/facts.py`, `tests/fixtures/youtube/MBPHU7aaklM.json`
@@ -4251,7 +4413,9 @@ def _fetch_transcript(video_id: str, languages: Sequence[str]) -> list[Segment] 
     return [Segment(start_s=snippet.start, text=snippet.text) for snippet in fetched]
 
 
-def fetch_facts(video_id: str, *, languages: Sequence[str] = ("en",), today: date | None = None) -> YoutubeFacts:
+def fetch_facts(
+    video_id: str, *, languages: Sequence[str] = ("en",), today: date | None = None
+) -> YoutubeFacts:
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         info = _extract_info(url)
@@ -4273,7 +4437,10 @@ def fetch_facts(video_id: str, *, languages: Sequence[str] = ("en",), today: dat
         upload_date=f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}" if len(raw_date) == 8 else None,
         duration_s=int(info["duration"]) if info.get("duration") else None,
         description=info.get("description"),
-        chapters=[Chapter(start_s=c.get("start_time") or 0, title=c.get("title") or "") for c in info.get("chapters") or []],
+        chapters=[
+            Chapter(start_s=c.get("start_time") or 0, title=c.get("title") or "")
+            for c in info.get("chapters") or []
+        ],
         transcript=transcript,
         fetched_at=(today or date.today()).isoformat(),
     )
@@ -4406,8 +4573,11 @@ NO_REVIEW = ProcessOptions(review=False)
 
 def youtube_note(make_note, tmp_path):
     return make_note(
-        "youtube", doc_id="MBPHU7aaklM", root=tmp_path,
-        source="https://www.youtube.com/watch?v=MBPHU7aaklM&list=PL1&t=1s", body="page scrape\n",
+        "youtube",
+        doc_id="MBPHU7aaklM",
+        root=tmp_path,
+        source="https://www.youtube.com/watch?v=MBPHU7aaklM&list=PL1&t=1s",
+        body="page scrape\n",
     )
 
 
@@ -4451,7 +4621,9 @@ def test_no_transcript_is_said_on_the_page(make_note, make_services, yt_facts, t
     no_captions = yt_facts.model_copy(update={"transcript": None})
     chats = FakeBackend()
     note = youtube_note(make_note, tmp_path)
-    processed = process_note(note, make_services(chat_backend=chats, facts=lambda vid: no_captions), NO_REVIEW)
+    processed = process_note(
+        note, make_services(chat_backend=chats, facts=lambda vid: no_captions), NO_REVIEW
+    )
     assert "No transcript was available" in processed.page
     assert "There is NO transcript" in chats.prompts[0]
 
@@ -4471,7 +4643,9 @@ def test_table_cells_are_escaped(make_note, make_services, yt_facts, tmp_path):
 
 def test_gemini_youtube_chat_is_converted(make_note, make_services, yt_facts, tmp_path):
     chats = FakeBackend()
-    note = make_note("youtube-gemini", doc_id="MBPHU7aaklM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT)
+    note = make_note(
+        "youtube-gemini", doc_id="MBPHU7aaklM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT
+    )
     processed = process_note(note, make_services(chat_backend=chats, facts=lambda vid: yt_facts), NO_REVIEW)
     assert processed.problems == []
     assert "Gemini web chat" in chats.prompts[0]
@@ -4809,7 +4983,9 @@ def youtube_video_id(note: StagedNote) -> str:
     return vid
 
 
-def facts_for(note: StagedNote, vid: str, svc: Services, opts: ProcessOptions) -> tuple[YoutubeFacts, list[Path]]:
+def facts_for(
+    note: StagedNote, vid: str, svc: Services, opts: ProcessOptions
+) -> tuple[YoutubeFacts, list[Path]]:
     sidecar = facts_sidecar(note.path)
     if sidecar.exists():
         return YoutubeFacts.model_validate_json(sidecar.read_text(encoding="utf-8")), []
@@ -4837,7 +5013,9 @@ def youtube_embed(vid: str, title: str) -> str:
     return "{{< youtube-lite " + vid + " `" + title.replace("`", "'") + "` >}}"
 
 
-def _reason(note: StagedNote, svc: Services, profile_name: str, facts: YoutubeFacts | None = None) -> LlmResult:
+def _reason(
+    note: StagedNote, svc: Services, profile_name: str, facts: YoutubeFacts | None = None
+) -> LlmResult:
     request = LlmRequest(
         task=note.doctype.task,
         input=prompt_input(note, svc.tags, facts),
@@ -4853,10 +5031,14 @@ def _process_text(note: StagedNote, svc: Services, profile_name: str) -> Process
     tag_result = normalize_tags([*summary.tags, *capture_tags(note)], svc.tags)
     ctx = PageContext(note=note, summary=summary, tags=tag_result.tags, llm=result)
     page = render_page(ctx)
-    return ProcessedPage(note, page_name(ctx), page, validate_page(page, svc.tags), result, tag_result.dropped)
+    return ProcessedPage(
+        note, page_name(ctx), page, validate_page(page, svc.tags), result, tag_result.dropped
+    )
 
 
-def _process_youtube(note: StagedNote, svc: Services, opts: ProcessOptions, profile_name: str) -> ProcessedPage:
+def _process_youtube(
+    note: StagedNote, svc: Services, opts: ProcessOptions, profile_name: str
+) -> ProcessedPage:
     vid = youtube_video_id(note)
     facts, written = facts_for(note, vid, svc, opts)
     result = _reason(note, svc, profile_name, facts)
@@ -4875,7 +5057,9 @@ def _process_youtube(note: StagedNote, svc: Services, opts: ProcessOptions, prof
 
 
 def process_note(note: StagedNote, svc: Services, opts: ProcessOptions) -> ProcessedPage:
-    profile_name, profile = resolve_profile(svc.profiles, requested=opts.profile, class_default=note.doctype.llm_profile)
+    profile_name, profile = resolve_profile(
+        svc.profiles, requested=opts.profile, class_default=note.doctype.llm_profile
+    )
     check_not_blocked(profile, opts)
     if note.doctype.name in YOUTUBE_CLASSES:
         return _process_youtube(note, svc, opts, profile_name)
@@ -4939,7 +5123,13 @@ SUMMARY = YoutubeSummary.model_validate(CANNED["youtube"])
 
 def run_review(fake, facts, fake_profiles, text="SUMMARY TEXT"):
     return review_summary(
-        text, facts, profile="fake", profiles=fake_profiles, backends=lambda p: fake, tags=load_tags(), now=NOW
+        text,
+        facts,
+        profile="fake",
+        profiles=fake_profiles,
+        backends=lambda p: fake,
+        tags=load_tags(),
+        now=NOW,
     )
 
 
@@ -4955,7 +5145,13 @@ def test_clean_review_is_ok(fake_profiles, yt_facts):
 
 
 def test_needs_attention_is_kept_and_high_issues_listed(fake_profiles, yt_facts):
-    issue = {"kind": "unsupported_claim", "severity": "high", "excerpt": "Uses Notion", "evidence": None, "fix": "remove"}
+    issue = {
+        "kind": "unsupported_claim",
+        "severity": "high",
+        "excerpt": "Uses Notion",
+        "evidence": None,
+        "fix": "remove",
+    }
     reply = json.dumps({"verdict": "needs_attention", "issues": [issue], "revised": CANNED["youtube"]})
     outcome = run_review(FakeBackend([reply]), yt_facts, fake_profiles)
     assert outcome.status == "needs_attention"
@@ -4981,7 +5177,9 @@ def test_python_flags_tools_that_are_not_in_the_transcript(yt_facts):
 
 
 def test_python_checks_are_added_to_the_review(fake_profiles, yt_facts):
-    reply = json.dumps({"verdict": "fixed", "issues": [], "revised": {**CANNED["youtube"], "tools": ["Notion"]}})
+    reply = json.dumps(
+        {"verdict": "fixed", "issues": [], "revised": {**CANNED["youtube"], "tools": ["Notion"]}}
+    )
     outcome = run_review(FakeBackend([reply]), yt_facts, fake_profiles)
     assert outcome.status == "fixed"
     assert [i.excerpt for i in outcome.issues] == ["Notion"]
@@ -5131,7 +5329,9 @@ def python_checks(summary: YoutubeSummary, facts: YoutubeFacts) -> list[ReviewIs
                         )
                     )
     if facts.transcript:
-        source = " ".join(part for part in (facts.title, facts.description, facts.transcript_text()) if part).lower()
+        source = " ".join(
+            part for part in (facts.title, facts.description, facts.transcript_text()) if part
+        ).lower()
         for tool in summary.tools:
             plain = tool.replace("*", "").replace("_", " ")
             words = _PROPER_WORD.findall(plain) or _ANY_WORD.findall(plain)
@@ -5234,7 +5434,9 @@ def youtube_note(make_note, tmp_path):
 def test_youtube_summary_is_reviewed_by_default(make_note, make_services, yt_facts, tmp_path):
     chats = FakeBackend()
     processed = process_note(
-        youtube_note(make_note, tmp_path), make_services(chat_backend=chats, facts=lambda v: yt_facts), ProcessOptions()
+        youtube_note(make_note, tmp_path),
+        make_services(chat_backend=chats, facts=lambda v: yt_facts),
+        ProcessOptions(),
     )
     assert processed.problems == []
     assert len(chats.prompts) == 2
@@ -5256,11 +5458,19 @@ def test_review_can_be_switched_off(make_note, make_services, yt_facts, tmp_path
 
 
 def test_needs_attention_shows_an_alert(make_note, make_services, yt_facts, tmp_path):
-    issue = {"kind": "wrong_fact", "severity": "high", "excerpt": "Claims | 10 steps", "evidence": None, "fix": "It is 4"}
+    issue = {
+        "kind": "wrong_fact",
+        "severity": "high",
+        "excerpt": "Claims | 10 steps",
+        "evidence": None,
+        "fix": "It is 4",
+    }
     review = json.dumps({"verdict": "needs_attention", "issues": [issue], "revised": CANNED["youtube"]})
     chats = FakeBackend([json.dumps(CANNED["youtube"]), review])
     processed = process_note(
-        youtube_note(make_note, tmp_path), make_services(chat_backend=chats, facts=lambda v: yt_facts), ProcessOptions()
+        youtube_note(make_note, tmp_path),
+        make_services(chat_backend=chats, facts=lambda v: yt_facts),
+        ProcessOptions(),
     )
     assert processed.problems == []
     body = parse(processed.page).body
@@ -5271,8 +5481,12 @@ def test_needs_attention_shows_an_alert(make_note, make_services, yt_facts, tmp_
 
 def test_gemini_chat_is_reviewed_directly(make_note, make_services, yt_facts, tmp_path):
     chats = FakeBackend()
-    note = make_note("youtube-gemini", doc_id="MBPHU7aaklM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT)
-    processed = process_note(note, make_services(chat_backend=chats, facts=lambda v: yt_facts), ProcessOptions())
+    note = make_note(
+        "youtube-gemini", doc_id="MBPHU7aaklM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT
+    )
+    processed = process_note(
+        note, make_services(chat_backend=chats, facts=lambda v: yt_facts), ProcessOptions()
+    )
     assert len(chats.prompts) == 1
     assert "strict fact-checker" in chats.prompts[0]
     assert "GEMINI ANSWER" in chats.prompts[0]
@@ -5282,7 +5496,9 @@ def test_gemini_chat_is_reviewed_directly(make_note, make_services, yt_facts, tm
 
 def test_gemini_chat_without_review_is_converted(make_note, make_services, yt_facts, tmp_path):
     chats = FakeBackend()
-    note = make_note("youtube-gemini", doc_id="MBPHU7aaklM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT)
+    note = make_note(
+        "youtube-gemini", doc_id="MBPHU7aaklM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT
+    )
     processed = process_note(
         note, make_services(chat_backend=chats, facts=lambda v: yt_facts), ProcessOptions(review=False)
     )
@@ -5330,13 +5546,17 @@ Add this function under `check_not_blocked`:
 
 ```python
 def review_profile(svc: Services, opts: ProcessOptions) -> tuple[str, Profile]:
-    return resolve_profile(svc.profiles, requested=opts.review_profile, class_default=svc.profiles.review_profile)
+    return resolve_profile(
+        svc.profiles, requested=opts.review_profile, class_default=svc.profiles.review_profile
+    )
 ```
 
 Replace `_process_youtube` with:
 
 ```python
-def _process_youtube(note: StagedNote, svc: Services, opts: ProcessOptions, profile_name: str) -> ProcessedPage:
+def _process_youtube(
+    note: StagedNote, svc: Services, opts: ProcessOptions, profile_name: str
+) -> ProcessedPage:
     review_name: str | None = None
     if opts.review:
         review_name, review_prof = review_profile(svc, opts)
@@ -5404,7 +5624,552 @@ git commit -m "feat: review YouTube summaries by default and flag pages that nee
 
 ---
 
-### Task 19: A real run on copies, then on the real repos (A8 done-when)
+### Task 19: Simplify the folders to inbox / archive / output / failed
+
+> **Status: implemented (2026-09-28), not yet committed.** All 173 tests, ruff and pyright pass, and a run on a scratch repo produced `archive/`, `output/` and `failed/` as designed. The `[ ]` boxes below are the original steps.
+
+> **Superseded in part by Task 23.** Task 19 built a separate `ingest` step that moved every inbox file to `output/` at the start and then re-read `output/` for work. Task 23 keeps the folders and the `stage` field, but a run **only looks at `inbox/`**, a document leaves it right before its own LLM step, and `output/` is never scanned for work. `ingest_inbox`, `load_pending` and `catcher ingest` are gone.
+
+Tasks 1–18 are built on a `staging/` folder. This task replaces it with the four-folder layout from the design ([layout](../../idea-catcher-pipeline.md#repo-layout), [stage of a file](../../idea-catcher-pipeline.md#file-stage), [failures](../../idea-catcher-pipeline.md#failed-folder)). It is a **refactor of working code**: the LLM, rendering, tag, validation, Git and YouTube code does not change. Only the code that moves files, and the names around it, do.
+
+**The target layout** (`<sub>` is the path under `inbox/`, in practice `notes/` or `clippings/`, and is copied unchanged):
+
+```text
+inbox/<sub>/<name>.md      ← Obsidian writes here
+archive/<sub>/<name>.md    ← byte-for-byte copy of the inbox file, made first, never edited
+output/<sub>/<name>.md     ← `stage: analyzed` while in progress; the final page when done (no `stage`)
+output/<sub>/<name>.youtube.json   ← YouTube facts sidecar, stays next to the page
+failed/<sub>/<name>.md     ← failed for good, with failed/<sub>/<name>.error.txt
+duplicates/<sub>/<name>.md ← an earlier snapshot of a longer clip (added after this task), never processed
+```
+
+**Rules to implement:**
+
+1. **Same name, same subfolder, everywhere.** No renaming by id. No flat folder. No `superseded/`. The `id` lives in the frontmatter.
+2. **Ingest, per inbox file:** copy to `archive/` first (overwrite an existing copy). Then parse. If it cannot be parsed or read → move the **inbox file** to `failed/` with an `.error.txt`. Otherwise derive `id` and `class`, write `output/<sub>/<name>.md` with the frontmatter `id`, `class`, `captured`, `source_file`, `analyzed_at`, `stage: analyzed` (plus the original fields), and delete the inbox file. The body is written byte for byte, as before.
+3. **Every inbox file is archived and ingested, but growing snapshots cost one LLM call.** The same filename again overwrites its `archive/` and `output/` copies. Among the waiting notes with one `id`, the longest goes to the LLM. A shorter one that `is_snapshot_of` the longest (all its messages identical, except that its last one may be cut off; text without messages must be an exact prefix) is moved with its sidecar from `output/` to `duplicates/<sub>/<same name>`, gets `duplicate_of: <rel path of the longest>` in its frontmatter (and no `stage`), and produces a log line and an `ItemReport` with status `duplicate`. It gets no LLM call, and its `archive/` copy stays. Clips of one `id` whose content differs are all processed, and the later page overwrites the earlier one (overwrite-by-id is unchanged). Implemented after Task 19, in `ingest.py` (`is_snapshot_of`, `move_to_duplicates`) and `run.py`.
+4. **Which files are processed:** `output/` files with `stage: analyzed`. A file without `stage` is a final page and is never touched. A file with any other `stage` value (`reasoned`, reserved for Stage B) is skipped and logged.
+5. **Publish:** `write_page()` to `epiaku-docs` is unchanged. Then the same page string is written over `output/<sub>/<name>.md`, so the `stage` field disappears. The sidecar stays.
+6. **Failures** move the `output/` file (and its sidecar, if any) to `failed/<sub>/` and write `<name>.error.txt` (timestamp, doc id, class, the reason). They are: invalid LLM output after the one immediate retry, and a page that fails validation. **Deferrals are not failures:** usage limit, backend down, YouTube facts unavailable. The file stays in `output/` with `stage: analyzed` and the next run retries it.
+7. **Retry by moving files.** A file moved from `failed/<sub>/` (or `archive/<sub>/`) back to `inbox/<sub>/` is a new capture. No code is needed beyond rule 2, but a test proves it.
+8. **Logging is the state record in Stage A, and it is already in the code** (added before this task: `src/catcher/core/log.py`, `LOG_LEVEL` / `LOG_FILE`, `--log-level`). This task only has to keep it working: use the same logger names (`catcher.staging` becomes `catcher.ingest`, `catcher.run`, `catcher.process`, `catcher.git`), keep the `(i/N)` progress prefix and the final `processed X/N` line, and add a log line for each new file move: `archived`, `moved to failed/ (reason)`, `final page written`. Every `failed` and every `deferred` already logs at `ERROR` and `WARNING` with the reason; the move to `failed/` must log the same reason.
+
+**Files:**
+- Rename: `src/catcher/modules/pipeline/staging.py` → `ingest.py` (`stage_inbox` → `ingest_inbox`, `StagedNote` → `Note`, `StagingResult` → `IngestResult`, `load_staged` → `load_pending`, `load_staged_note` → `load_note`; `facts_sidecar` keeps its name)
+- Modify: `src/catcher/modules/pipeline/doctypes.py` (remove `archive_dir` from `DocType` and from the four registry entries)
+- Modify: `src/catcher/modules/pipeline/publish.py` (remove `archive_staged`; add `finalize_output`). `move_to_failed` lives in `ingest.py`, because ingest uses it too and `publish.py` would otherwise be imported by `ingest.py`.
+- Modify: `src/catcher/modules/pipeline/process.py` (only the renamed imports and types; `facts_for` writes the sidecar next to the output note as before)
+- Modify: `src/catcher/modules/pipeline/inputs.py`, `src/catcher/modules/pipeline/render.py` (renamed types only)
+- Modify: `src/catcher/modules/pipeline/run.py` (the new flow, failures, report fields)
+- Modify: `src/catcher/cli.py` (`stage` → `ingest`; `reason` and `render` take an output note)
+- Modify: `tests/conftest.py` (`make_note` writes to `output/<sub>/` and returns a `Note`)
+- Test: `tests/component/test_ingest.py` (replaces `test_staging.py`), `tests/component/test_publish.py`, `tests/integration/git/test_run.py`, `tests/unit/test_doctypes.py`, plus the renamed imports in the other tests
+
+**Interfaces:**
+- `Note(doc_id: str, doctype: DocType, doc: Doc, path: Path)` with the property `rel -> Path` (the path under `output/`, for example `clippings/New chat.md`).
+- `IngestResult(notes: list[Note], touched: list[Path], errors: dict[str, str])`, where `errors` maps the inbox-relative path to the reason and those files are already in `failed/`.
+- `ingest_inbox(ideas_repo: Path, *, dry_run: bool = False, now: datetime | None = None) -> IngestResult`
+- `load_pending(ideas_repo: Path) -> list[Note]`: every `output/**/*.md` with `stage == "analyzed"`, sorted by path.
+- `finalize_output(note: Note, page: str) -> list[Path]`: writes `page` over `note.path` and returns the touched paths.
+- `move_to_failed(ideas_repo: Path, src: Path, reason: str, *, doc_id: str | None = None, doc_class: str | None = None, now: datetime | None = None) -> list[Path]`: moves `src` (and `facts_sidecar(src)` if it exists) to the same relative path under `failed/`, replaces an older failed copy, writes the `.error.txt`, and returns every touched path (sources and destinations).
+- `RunReport.staging_errors` → `RunReport.ingest_errors`. `Status` is unchanged.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/component/test_ingest.py` (helpers `put`, `gemini_clip`, `files`, `NOW` are copied from the old `test_staging.py`). These are the tests that must exist. Reuse the old bodies of `test_clip_body_is_kept_byte_for_byte`, `test_replay_from_the_archive_keeps_the_id`, `test_dry_run_changes_nothing` and `test_hidden_folders_are_ignored` with the new paths.
+
+```python
+def test_dictated_note_is_archived_analyzed_and_leaves_the_inbox(tmp_path):
+    src = put(tmp_path, "inbox/notes/YouTube walks.md", "Create YouTube content walking around\n")
+    original = src.read_text()
+    result = ingest_inbox(tmp_path, now=NOW)
+    [note] = result.notes
+    out = tmp_path / "output/notes/YouTube walks.md"
+    assert (tmp_path / "archive/notes/YouTube walks.md").read_text() == original
+    assert not src.exists()
+    assert note.path == out and note.rel == Path("notes/YouTube walks.md")
+    staged = load(out)
+    assert staged.body == original
+    assert staged.fm == {
+        "id": note.doc_id,
+        "class": "note",
+        "captured": "2026-09-27",
+        "source_file": "inbox/notes/YouTube walks.md",
+        "analyzed_at": "2026-09-27T18:00:00+00:00",
+        "stage": "analyzed",
+    }
+    assert not (tmp_path / "staging").exists()
+
+
+def test_the_archive_copy_is_untouched_even_when_the_output_is_enriched(tmp_path):
+    text = gemini_clip("cf81e40b020519ef", "q\n")
+    put(tmp_path, "inbox/clippings/chat.md", text)
+    ingest_inbox(tmp_path, now=NOW)
+    assert (tmp_path / "archive/clippings/chat.md").read_text() == text
+    assert load(tmp_path / "output/clippings/chat.md").fm["id"] == "cf81e40b020519ef"
+
+
+def test_every_file_is_processed_even_with_the_same_id(tmp_path):
+    put(tmp_path, "inbox/clippings/New chat.md", gemini_clip("2446cd9c762c9cc9", "short\n"))
+    put(
+        tmp_path,
+        "inbox/clippings/Idea catcher.md",
+        gemini_clip("2446cd9c762c9cc9", "the longest version\n" * 5),
+    )
+    result = ingest_inbox(tmp_path, now=NOW)
+    assert sorted(n.path.name for n in result.notes) == ["Idea catcher.md", "New chat.md"]
+    assert {n.doc_id for n in result.notes} == {"2446cd9c762c9cc9"}
+    assert not (tmp_path / "archive/clippings/superseded").exists()
+
+
+def test_the_same_filename_again_overwrites_the_archive_and_output_copies(tmp_path):
+    put(
+        tmp_path,
+        "output/clippings/again.md",
+        "---\nid: cf81e40b020519ef\nclass: ai-chat\nstage: analyzed\n---\nold\n",
+    )
+    put(tmp_path, "inbox/clippings/again.md", gemini_clip("cf81e40b020519ef", "newer\n"))
+    ingest_inbox(tmp_path, now=NOW)
+    assert load(tmp_path / "output/clippings/again.md").body == "newer\n"
+    assert load(tmp_path / "archive/clippings/again.md").body == "newer\n"
+
+
+def test_unreadable_capture_is_archived_and_moved_to_failed(tmp_path):
+    bad = put(tmp_path, "inbox/notes/bad.md", "---\ntitle: [oops\n---\nbody\n")
+    put(tmp_path, "inbox/notes/good.md", "A good idea\n")
+    result = ingest_inbox(tmp_path, now=NOW)
+    assert not bad.exists()
+    assert (tmp_path / "archive/notes/bad.md").exists()
+    assert (tmp_path / "failed/notes/bad.md").read_text() == "---\ntitle: [oops\n---\nbody\n"
+    assert "bad.md" in (tmp_path / "failed/notes/bad.error.txt").read_text()
+    assert list(result.errors) == ["inbox/notes/bad.md"]
+    assert len(result.notes) == 1
+
+
+def test_a_file_moved_back_from_failed_is_a_new_capture(tmp_path):
+    put(tmp_path, "inbox/notes/retry.md", "An idea\n")
+    [note] = ingest_inbox(tmp_path, now=NOW).notes
+    move_to_failed(tmp_path, note.path, "invalid output", doc_id=note.doc_id, doc_class="note", now=NOW)
+    (tmp_path / "failed/notes/retry.error.txt").unlink()
+    shutil.move(tmp_path / "failed/notes/retry.md", tmp_path / "inbox/notes/retry.md")
+    [again] = ingest_inbox(tmp_path, now=NOW).notes
+    assert again.path == tmp_path / "output/notes/retry.md"
+
+
+def test_load_pending_returns_only_analyzed_files(tmp_path):
+    put(tmp_path, "output/notes/waiting.md", "---\nid: a1\nclass: note\nstage: analyzed\n---\nx\n")
+    put(tmp_path, "output/notes/final.md", "---\ntitle: T\nid: a2\ntype: docs\n---\nx\n")
+    put(tmp_path, "output/notes/later.md", "---\nid: a3\nclass: note\nstage: reasoned\n---\nx\n")
+    assert [n.doc_id for n in load_pending(tmp_path)] == ["a1"]
+
+
+def test_the_facts_sidecar_sits_next_to_the_output_note(tmp_path):
+    path = tmp_path / "output/clippings/A video.md"
+    assert facts_sidecar(path) == tmp_path / "output/clippings/A video.youtube.json"
+
+
+def test_ingest_command(tmp_path):
+    put(tmp_path, "inbox/notes/idea.md", "An idea\n")
+    result = CliRunner().invoke(app, ["ingest", "--ideas", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert len(list((tmp_path / "output/notes").glob("*.md"))) == 1
+```
+
+`tests/component/test_publish.py` (keep the `write_page` and `find_pages_by_id` tests, replace the two `archive_staged` tests, and update the `render` command test to an output note):
+
+```python
+def test_finalize_output_replaces_the_note_with_the_page_and_keeps_the_sidecar(tmp_path, make_note):
+    note = make_note("youtube", doc_id="MBPHU7aaklM", root=tmp_path)
+    sidecar = put(facts_sidecar(note.path), "{}")
+    touched = finalize_output(note, "---\ntitle: T\nid: MBPHU7aaklM\n---\nbody\n")
+    assert load(note.path).fm == {"title": "T", "id": "MBPHU7aaklM"}
+    assert "stage" not in load(note.path).fm
+    assert sidecar.exists()
+    assert touched == [note.path]
+
+
+def test_move_to_failed_moves_the_note_its_sidecar_and_writes_the_reason(tmp_path, make_note):
+    note = make_note("youtube", doc_id="MBPHU7aaklM", root=tmp_path)
+    put(facts_sidecar(note.path), "{}")
+    touched = move_to_failed(
+        tmp_path, note.path, "unknown shortcode", doc_id=note.doc_id, doc_class="youtube", now=NOW
+    )
+    dest = tmp_path / "failed" / note.rel
+    assert dest.exists() and facts_sidecar(dest).exists() and not note.path.exists()
+    error = dest.with_suffix(".error.txt").read_text()
+    assert "unknown shortcode" in error and "MBPHU7aaklM" in error
+    assert note.path in touched and dest in touched
+
+
+def test_move_to_failed_replaces_an_older_failed_copy(tmp_path, make_note):
+    note = make_note(root=tmp_path)
+    put(tmp_path / "failed" / note.rel, "old")
+    move_to_failed(tmp_path, note.path, "second failure", now=NOW)
+    assert "old" not in (tmp_path / "failed" / note.rel).read_text()
+```
+
+`tests/integration/git/test_run.py`: update every path from `staging/<id>.md` to `output/<sub>/<name>.md` and add:
+
+```python
+def test_a_finished_run_leaves_archive_original_and_page_in_output(repos, make_services, sh):
+    # one note and one chat in the inbox, fake LLM
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(profile="fake"), make_services())
+    assert report.counts() == {"published": 2}
+    assert not list((repos.ideas / "inbox").rglob("*.md"))
+    assert (repos.ideas / "archive/notes/idea.md").read_text() == ORIGINAL_NOTE
+    final = load(repos.ideas / "output/notes/idea.md")
+    assert "stage" not in final.fm and final.fm["id"]
+    assert (repos.docs / DOC_PAGE_DIR / page_name_of(final)).read_text() == (
+        repos.ideas / "output/notes/idea.md"
+    ).read_text()
+    assert not (repos.ideas / "staging").exists()
+
+
+def test_invalid_output_moves_the_note_to_failed_with_the_reason(repos, make_services):
+    # fake backend returns invalid JSON twice
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(profile="fake"), make_services())
+    assert report.counts() == {"failed": 1}
+    assert (repos.ideas / "failed/clippings/chat.md").exists()
+    assert "invalid" in (repos.ideas / "failed/clippings/chat.error.txt").read_text().lower()
+    assert not (repos.ideas / "output/clippings/chat.md").exists()
+    assert (repos.ideas / "archive/clippings/chat.md").exists()
+
+
+def test_a_usage_limit_leaves_the_note_analyzed_in_output_and_the_next_run_retries_it(repos, make_services):
+    first = run_pipeline(repos.ideas, repos.docs, RunOptions(profile="limited"), make_services(limit=True))
+    assert first.counts() == {"deferred": 1}
+    assert load(repos.ideas / "output/clippings/chat.md").fm["stage"] == "analyzed"
+    assert not (repos.ideas / "failed").exists()
+    second = run_pipeline(repos.ideas, repos.docs, RunOptions(profile="fake"), make_services())
+    assert second.counts() == {"published": 1}
+
+
+def test_a_final_page_in_output_is_not_processed_again(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(profile="fake"), make_services())
+    again = run_pipeline(repos.ideas, repos.docs, RunOptions(profile="fake"), make_services())
+    assert again.items == []
+
+
+def test_the_moves_are_logged_with_the_file_and_the_reason(repos, make_services, caplog):
+    caplog.set_level("INFO", logger="catcher")
+    run_pipeline(repos.ideas, repos.docs, RunOptions(profile="fake"), make_services())
+    text = caplog.text
+    assert "archived" in text and "notes/idea.md" in text and "final page written" in text
+```
+
+The existing logging tests (`test_run_logs_progress_per_note_and_a_total`, `test_failures_and_deferrals_are_always_logged`, `tests/unit/test_log.py`) must keep passing after the rename; only their expected message text changes (`staged` becomes `ingested`).
+
+`tests/unit/test_doctypes.py`: delete the assertions on `archive_dir`, and assert that `DocType` has no such field.
+
+Run: `uv run pytest -q`
+Expected: FAIL. The new imports (`ingest`, `finalize_output`, `move_to_failed`, `configure_logging`) do not exist yet.
+
+- [ ] **Step 2: Write the implementation**
+
+Work in this order, running the affected tests after each item.
+
+1. `git mv src/catcher/modules/pipeline/staging.py src/catcher/modules/pipeline/ingest.py` and `git mv tests/component/test_staging.py tests/component/test_ingest.py`. Apply the renames from the **Files** list with an editor search-and-replace, then run `uv run pytest -q` to see the failures move from `ImportError` to behaviour.
+2. `ingest.py`: rewrite `ingest_inbox`. For each `inbox/**/*.md` (skip hidden folders as now): `shutil.copy2` to `archive/<rel>`; `load()`; on `FrontmatterError` / `UnicodeDecodeError` call `move_to_failed` on the **inbox file**, record the error, continue. Otherwise `detect`, `derive_id` (or `new_id()`), build the frontmatter as in rule 2, write `output/<rel>`, delete the inbox file. Remove the grouping by id, `winner`, `superseded_dir` and `stamp`. `dry_run` still changes nothing and returns what would be ingested. Add `load_pending`.
+3. `publish.py`: delete `archive_staged`. Add `finalize_output` and `move_to_failed` as specified. `move_to_failed` uses `shutil.move` and writes the `.error.txt` with `path.with_suffix(".error.txt")`.
+4. `doctypes.py`: remove `archive_dir`.
+5. `run.py`: `run_pipeline` now (a) `ingest_inbox`; (b) `load_pending` merged with the notes just ingested (same `path` = same note, so no duplicates); (c) for each note as today; on `InvalidOutput` or `processed.problems` → `move_to_failed(...)` and `status="failed"`; on `UsageLimitReached`, `BackendUnavailable`, `FactsUnavailable` → `deferred` and nothing moves; on success `write_page` then `finalize_output` instead of `archive_staged`; (d) one `logging` line per step as in rule 8; (e) the ideas commit message becomes `idea-catcher: ingest and publish captures (N published)`. The `--dry-run` path writes no files and no log lines beyond `INFO would publish …`.
+6. `config.py`, `logging.py`, `.env.example`, `cli.py`: add the settings and `configure_logging`, call it once from a Typer callback, rename the commands, and update the help texts (`ingest`: "Copy inbox captures to archive/ and write the analyzed note to output/"; `reason` and `render`: "Run … on one output note").
+7. `tests/conftest.py`: `make_note` writes `output/<sub>/<name>.md` (default `notes/<doc_id>.md`) with `stage: analyzed` and returns a `Note`.
+8. `grep -rn "staging\|staged\|superseded\|archive_staged\|archive_dir" src tests` must return nothing except the word "staged" inside `git` test names about the git index (`staged-by-user.md`).
+
+- [ ] **Step 3: Run the whole suite and the linters**
+
+Run: `uv run ruff check && uv run ruff format --check && uv run pyright && uv run pytest -q`
+Expected: no lint or type errors, and all tests pass.
+
+- [ ] **Step 4: Prove it on a copy with the fake profile**
+
+```bash
+rm -rf /tmp/ic-test && mkdir -p /tmp/ic-test
+git clone --no-hardlinks ~/Documents/dev/epiaku/idea-bucket /tmp/ic-test/idea-bucket
+git clone --no-hardlinks ~/Documents/dev/epiaku/epiaku-docs /tmp/ic-test/epiaku-docs
+git -C /tmp/ic-test/idea-bucket remote remove origin && git -C /tmp/ic-test/epiaku-docs remote remove origin
+uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --profile fake --no-review
+```
+
+Expected: `inbox/` is empty; `archive/`, `output/` and (only if something failed) `failed/` mirror the old inbox names; every `output/` file is a final page without `stage`; the log shows one line per file and step, with `(i/N)` progress and a final `processed X/N` line. The 5 clips of `2446cd9c762c9cc9` are all present in `archive/` and `output/`, and the docs repo has **one** page for that id.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A src tests .env.example
+git commit -m "refactor: replace staging/ with inbox, archive, output and failed folders and log every step"
+```
+
+---
+
+### Task 20: Replace `claude -p` with API-key backends and three profiles (`notes`, `clippings`, `youtube`)
+
+> **Status: implemented (2026-09-28), not yet committed.** 180 tests, ruff and pyright pass, and no test calls a real LLM. The manual check in Step 4 is for you to run. Two details differ from the text below: a missing model for an `openai` profile is rejected when the profile is **resolved** (`resolve_profile`), not when `profiles.yaml` is loaded, so `--profile notes` still works without the OpenAI variables; and a configuration error (missing model) **defers** the note and logs an `ERROR`, it never moves it to `failed/`.
+
+Decision (2026-09-28): **every LLM call is an API call with an API key.** `claude -p` was unreliable and is removed, together with the subscription token, the `when` / evening option and the Claude Code CLI. The design is in the pipeline page ([LLM options](../../idea-catcher-pipeline.md#llm-options), [backends](../../idea-catcher-pipeline.md#llm-backends)) and the architecture page ([LLM step & profiles](../../idea-catcher-service-architecture.md#mvp-llm)). Tasks 1, 6, 7, 8, 9, 12, 14, 16 and 18 built the `claude-code` backend and the old profile names; this task removes them. Do it **after Task 19** (folders), because both touch `run.py` and the test helpers. It is a refactor plus one new backend, and the reasoning, rendering, reviewer, tag and Git code does not change.
+
+**Rules to implement:**
+
+1. **Three profiles, one per kind of capture**, in `profiles.yaml`:
+
+   ```yaml
+   default: notes
+   review_profile: youtube
+   retry_delay: 60m            # used from stage B
+   stuck_after_days: 3         # used from stage B
+   profiles:
+     notes:     { backend: freellmapi, model: "${FREELLMAPI_MODEL:-auto}" }
+     clippings: { backend: openai,     model: "${OPENAI_MODEL_CLIPPINGS}" }
+     youtube:   { backend: openai,     model: "${OPENAI_MODEL_YOUTUBE}" }
+     fake:      { backend: fake }
+   ```
+
+2. **Document class → default profile:** `note` → `notes`, `ai-chat` → `clippings`, `youtube` and `youtube-gemini` → `youtube`. The reviewer uses `review_profile` (`youtube`) unless `--review-profile` says otherwise. `--profile <name>` still overrides the class default for a whole run.
+3. **Backends:** `freellmapi`, `openai`, `fake`. `freellmapi` and `openai` are **one OpenAI-compatible client class** with a different name, base URL, API key and, for `openai`, JSON mode (`response_format={"type": "json_object"}`). Native schema-enforced outputs are **not** used in this stage (strict JSON schemas need extra constraints), so the reply is still validated with Pydantic and retried once, exactly as today.
+4. **No `when`, no evening window, no `claude-code`.** `Profile` has only `backend` and `model`, and rejects unknown fields (`extra="forbid"`), so an old `profiles.yaml` with `when:` fails loudly instead of being ignored. `ProfilesConfig` loses `evening_window`. A profile with `backend: openai` and an empty `model` is rejected when it is resolved (not at load, so other profiles still work), with a message that says to set its model variable in `.env`.
+5. **Error mapping** (all in the one client class, and each logs at `WARNING` or `ERROR` with the reason and never logs the key):
+   - HTTP `429` with `rate_limit_exceeded` (a temporary rate limit) → `UsageLimitReached(backend=<name>)`. `run_pipeline` then stops calling that backend for the rest of the run (existing behaviour) and defers its notes; other backends carry on.
+   - **Budget reached:** HTTP `429` (or `402`) with the error code `insufficient_quota`, or a message that mentions the quota, billing, credits or budget → `BudgetExhausted(UsageLimitReached)`. The API keys are capped at a budget, so this is a normal condition, not a fault. It blocks the backend for the rest of the run like a rate limit does, but it is reported separately: the run logs **one `ERROR` per backend**, not one per note, with the number of waiting notes, for example `openai budget reached: 4 note(s) waiting; raise the key's budget or point the profile at another provider`. The waiting notes stay in `output/` with `stage: analyzed`, are never moved to `failed/`, and go through on a later run once calls work again. (The longer `budget_retry_delay` is used from Stage B; in Stage A the next run simply tries again.) Check the exact error code the OpenAI API returns for a spend limit on a test key, and adjust the classifier if it differs.
+   - HTTP `401` or `403` (bad or revoked key) → `UsageLimitReached` with the message `authentication failed: check OPENAI_API_KEY`, so a bad key stops that backend at once instead of failing every note one by one, and the run logs one clear `ERROR`.
+   - Timeout, connection error, HTTP `5xx`, HTTP `413` → `BackendUnavailable` (deferred, retried on the next run).
+   - No `OPENAI_API_KEY` set → `make_backend` raises `BackendUnavailable("OPENAI_API_KEY is not set")` before any call.
+6. **Settings and `.env.example`:** remove `claude_bin` and `CLAUDE_BIN`, `CLAUDE_CODE_OAUTH_TOKEN`. Add `openai_api_key: str = ""`, `openai_base_url: str = "https://api.openai.com/v1"`, and `.env.example` lines `OPENAI_API_KEY=`, `OPENAI_BASE_URL=https://api.openai.com/v1`, `OPENAI_MODEL_CLIPPINGS=gpt-6-sol`, `OPENAI_MODEL_YOUTUBE=gpt-6-sol` (check the exact model id in the OpenAI docs before the first run). `FREELLMAPI_*` and `LLM_TIMEOUT_S` stay.
+7. **Nothing else may need a Claude login.** `claude` is not called by any code or test, and the image and the setup steps no longer install it.
+
+**Files:**
+- Rename: `src/catcher/modules/llm/backends/freellmapi.py` → `openai_compatible.py`. The class becomes `OpenAiCompatibleBackend(name: str, base_url: str, api_key: str, *, json_mode: bool = False, timeout_s: int = 120)`.
+- Delete: `src/catcher/modules/llm/backends/claude_code.py`, `tests/bin/claude`, `tests/component/test_claude_code.py`
+- Modify: `src/catcher/modules/llm/backends/__init__.py` (`make_backend`: `fake`, `freellmapi`, `openai`)
+- Modify: `src/catcher/modules/llm/service.py` (add `class BudgetExhausted(UsageLimitReached)`)
+- Modify: `src/catcher/modules/pipeline/run.py` (catch `BudgetExhausted`, one `ERROR` per backend)
+- Modify: `src/catcher/modules/llm/profiles.py` (`BackendName = Literal["freellmapi", "openai", "fake"]`; `Profile(backend, model)` with `extra="forbid"`, and the empty-model check in `resolve_profile`; `ProfilesConfig.review_profile: str = "youtube"`; no `when`)
+- Modify: `profiles.yaml`, `.env.example`, `src/catcher/core/config.py`
+- Modify: `src/catcher/modules/pipeline/doctypes.py` (`llm_profile`: `notes` / `clippings` / `youtube` / `youtube`)
+- Modify: `src/catcher/cli.py` (no `claude` mention in help texts; `--profile` help lists the three profile names)
+- Modify: `tests/conftest.py` (`_profiles_for_tests`: `notes` = `fake`, `clippings` and `youtube` = `Profile(backend="openai", model="gpt-test")`, `review_profile="youtube"`; the backend factory becomes `lambda p: chats if p.backend == "openai" else notes`)
+- Test: `tests/component/test_openai_compatible.py` (replaces `test_freellmapi.py` and `test_claude_code.py`), `tests/unit/test_profiles.py`, `tests/unit/test_doctypes.py`, `tests/unit/test_config.py`, and the renamed profile and backend names in `test_reason.py`, `test_process*.py`, `test_cli_reason.py` and `tests/integration/git/test_run.py`
+
+**Interfaces:**
+- `make_backend(profile: Profile, settings: Settings) -> Backend` (unchanged signature).
+- `OpenAiCompatibleBackend.name` is `"freellmapi"` or `"openai"`, and `complete(prompt, *, model, task) -> BackendReply` is unchanged.
+- `UsageLimitReached(message, backend)` and `BackendUnavailable` keep their names. The new `BudgetExhausted(UsageLimitReached)` is a subclass, so the existing blocking in `process.py` and `run.py` covers it, and `run.py` only adds the per-backend budget line. `ItemReport.message` for such a note is `budget reached (<backend>)`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/component/test_openai_compatible.py` (start from the old `test_freellmapi.py`, then add):
+
+```python
+import json
+
+import httpx
+import pytest
+import respx
+
+from catcher.core.config import Settings
+from catcher.modules.llm.backends import make_backend
+from catcher.modules.llm.backends.openai_compatible import OpenAiCompatibleBackend
+from catcher.modules.llm.profiles import Profile
+from catcher.modules.llm.service import BackendUnavailable, BudgetExhausted, UsageLimitReached
+
+BASE = "https://api.openai.test/v1"
+
+
+def completion(content: str) -> dict:
+    return {
+        "id": "x",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "gpt-test-2026",
+        "choices": [
+            {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}
+        ],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+    }
+
+
+@respx.mock
+def test_openai_sends_the_key_the_model_and_json_mode():
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(200, json=completion('{"a": 1}'))
+    )
+    reply = OpenAiCompatibleBackend("openai", BASE, "sk-test", json_mode=True).complete(
+        "PROMPT", model="gpt-test", task="ai-chat"
+    )
+    request = route.calls[0].request
+    assert request.headers["authorization"] == "Bearer sk-test"
+    body = json.loads(request.content)
+    assert body["model"] == "gpt-test" and body["response_format"] == {"type": "json_object"}
+    assert (reply.text, reply.usage.tokens_in, reply.usage.tokens_out, reply.model) == (
+        '{"a": 1}',
+        12,
+        3,
+        "gpt-test-2026",
+    )
+
+
+@respx.mock
+def test_freellmapi_does_not_send_json_mode():
+    route = respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(200, json=completion("{}"))
+    )
+    OpenAiCompatibleBackend("freellmapi", BASE, "k").complete("p", model="auto", task="note")
+    assert "response_format" not in json.loads(route.calls[0].request.content)
+
+
+@respx.mock
+@pytest.mark.parametrize("code", ["rate_limit_exceeded", "requests"])
+def test_a_429_blocks_the_backend_for_the_run(code):
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(429, json={"error": {"message": "slow down", "code": code}})
+    )
+    with pytest.raises(UsageLimitReached) as info:
+        OpenAiCompatibleBackend("openai", BASE, "k").complete("p", model="m", task="ai-chat")
+    assert info.value.backend == "openai"
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (429, {"error": {"message": "You exceeded your current quota", "code": "insufficient_quota"}}),
+        (429, {"error": {"message": "Project budget limit reached", "code": "billing_hard_limit_reached"}}),
+        (402, {"error": {"message": "Insufficient credits", "code": "insufficient_credits"}}),
+    ],
+)
+def test_a_used_up_budget_is_reported_as_its_own_condition(status, body):
+    respx.post(f"{BASE}/chat/completions").mock(return_value=httpx.Response(status, json=body))
+    with pytest.raises(BudgetExhausted) as info:
+        OpenAiCompatibleBackend("openai", BASE, "k").complete("p", model="m", task="ai-chat")
+    assert info.value.backend == "openai" and isinstance(info.value, UsageLimitReached)
+
+
+@respx.mock
+def test_a_plain_rate_limit_is_not_a_budget_problem():
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(
+            429, json={"error": {"message": "slow down", "code": "rate_limit_exceeded"}}
+        )
+    )
+    with pytest.raises(UsageLimitReached) as info:
+        OpenAiCompatibleBackend("openai", BASE, "k").complete("p", model="m", task="ai-chat")
+    assert not isinstance(info.value, BudgetExhausted)
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_bad_key_blocks_the_backend_with_a_clear_message(status):
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(status, json={"error": {"message": "bad key"}})
+    )
+    with pytest.raises(UsageLimitReached, match="authentication failed: check OPENAI_API_KEY"):
+        OpenAiCompatibleBackend("openai", BASE, "k").complete("p", model="m", task="ai-chat")
+
+
+@respx.mock
+@pytest.mark.parametrize("status", [500, 502, 413])
+def test_server_errors_are_backend_unavailable_and_not_blocking(status):
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(status, json={"error": {"message": "x"}})
+    )
+    with pytest.raises(BackendUnavailable) as info:
+        OpenAiCompatibleBackend("openai", BASE, "k").complete("p", model="m", task="ai-chat")
+    assert not isinstance(info.value, UsageLimitReached)
+
+
+@respx.mock
+def test_a_connection_error_is_backend_unavailable():
+    respx.post(f"{BASE}/chat/completions").mock(side_effect=httpx.ConnectError("no route"))
+    with pytest.raises(BackendUnavailable, match="unreachable"):
+        OpenAiCompatibleBackend("openai", BASE, "k").complete("p", model="m", task="ai-chat")
+
+
+def test_the_key_is_never_in_an_error_message():
+    with respx.mock:
+        respx.post(f"{BASE}/chat/completions").mock(
+            return_value=httpx.Response(401, json={"error": {"message": "bad"}})
+        )
+        with pytest.raises(UsageLimitReached) as info:
+            OpenAiCompatibleBackend("openai", BASE, "sk-secret-123").complete("p", model="m", task="x")
+    assert "sk-secret-123" not in str(info.value)
+
+
+def test_make_backend_needs_the_key_for_openai():
+    with pytest.raises(BackendUnavailable, match="OPENAI_API_KEY is not set"):
+        make_backend(Profile(backend="openai", model="m"), Settings(openai_api_key=""))
+
+
+def test_make_backend_builds_both_clients():
+    settings = Settings(openai_api_key="sk-x", openai_base_url=BASE, freellmapi_url="http://f/v1")
+    assert make_backend(Profile(backend="openai", model="m"), settings).name == "openai"
+    assert make_backend(Profile(backend="freellmapi"), settings).name == "freellmapi"
+    assert make_backend(Profile(backend="fake"), settings).name == "fake"
+```
+
+`tests/unit/test_profiles.py`: the shipped `profiles.yaml` (with `OPENAI_MODEL_CLIPPINGS=gpt-a` and `OPENAI_MODEL_YOUTUBE=gpt-b` in the env) loads as `default == "notes"`, `review_profile == "youtube"`, `notes == Profile("freellmapi", "auto")`, `clippings == Profile("openai", "gpt-a")`, `youtube == Profile("openai", "gpt-b")`; a profile with `when: evening` raises `ValidationError`; `backend: claude-code` raises `ValidationError`; `backend: openai` with an unset model variable raises a `ValueError` naming `model`; `resolve_profile` still follows message > class default > global default.
+
+`tests/unit/test_doctypes.py`: `DOC_TYPES["note"].llm_profile == "notes"`, `ai-chat` → `clippings`, `youtube` and `youtube-gemini` → `youtube`.
+
+`tests/unit/test_config.py`: `Settings()` has no `claude_bin`; `openai_base_url` defaults to `https://api.openai.com/v1`; `openai_api_key` defaults to `""`.
+
+`tests/integration/git/test_run.py`: rename the old usage-limit test to `test_a_quota_error_defers_every_note_of_that_backend_but_not_the_others` and make the fake chat backend raise `UsageLimitReached("insufficient_quota", backend="openai")`. Expected counts are unchanged (`{"published": 1, "deferred": 2}` and one prompt sent). Add two more tests there:
+
+```python
+def test_a_used_up_budget_logs_one_error_per_backend_and_keeps_the_notes(repos, make_services, caplog):
+    (repos.ideas / "inbox/clippings/second.md").write_text(chat("925d9b0b4ca21b63"))
+    chats = FakeBackend([BudgetExhausted("insufficient_quota", backend="openai")])
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    assert report.counts() == {"published": 1, "deferred": 2}
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and "openai budget reached: 2 note(s) waiting" in errors[0]
+    assert not (repos.ideas / "failed").exists()
+    assert len(chats.prompts) == 1
+
+
+def test_the_waiting_notes_go_through_once_the_budget_is_back(repos, make_services):
+    run_pipeline(
+        repos.ideas,
+        repos.docs,
+        RunOptions(),
+        make_services(chat_backend=FakeBackend([BudgetExhausted("insufficient_quota", backend="openai")])),
+    )
+    second = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert second.counts() == {"published": 1}
+```
+
+Run: `uv run pytest -q`
+Expected: FAIL with `ModuleNotFoundError: No module named 'catcher.modules.llm.backends.openai_compatible'`, then with validation errors for the profiles.
+
+- [ ] **Step 2: Write the implementation**
+
+1. `git mv` the backend file and its test as listed, delete `claude_code.py`, `tests/bin/claude` and `test_claude_code.py`.
+2. `openai_compatible.py`: one class. In `complete()`, build the request as `FreeLlmApiBackend` does today (same client, `max_retries=0`, `temperature=0.2`), add `response_format={"type": "json_object"}` only when `json_mode`. Map exceptions: `openai.RateLimitError` → `UsageLimitReached`; `openai.AuthenticationError` and `openai.PermissionDeniedError` → `UsageLimitReached("authentication failed: check OPENAI_API_KEY", backend=self.name)` (use the name in the message for `freellmapi`); other `openai.APIStatusError` → `BackendUnavailable(f"{self.name} HTTP {status}: …")` (truncate to 300 characters, and never include headers); `openai.APIConnectionError` and `openai.APITimeoutError` → `BackendUnavailable(f"{self.name} unreachable: …")`. Log each mapped error with the logger `catcher.llm` (`WARNING` for deferrals, `ERROR` for the authentication case).
+3. `make_backend`: `fake`; `freellmapi` → `OpenAiCompatibleBackend("freellmapi", settings.freellmapi_url, settings.freellmapi_api_key, timeout_s=settings.llm_timeout_s)`; `openai` → raise `BackendUnavailable("OPENAI_API_KEY is not set")` when the key is empty, else `OpenAiCompatibleBackend("openai", settings.openai_base_url, settings.openai_api_key, json_mode=True, timeout_s=settings.llm_timeout_s)`.
+4. `profiles.py`, `profiles.yaml`, `config.py`, `.env.example`, `doctypes.py`, `cli.py`, `conftest.py` as listed under **Files**. `Profile` gets the empty-model check for `backend == "openai"` in `resolve_profile`, raising `UnknownProfile`.
+5. `run.py`: catch `BudgetExhausted` before `UsageLimitReached`. Record the backend in a `budget_blocked: dict[str, int]` (backend → number of deferred notes, counting the note that hit the budget), mark each note `deferred` with the message `budget reached (<backend>)`, and after the loop log one `ERROR` per backend in `budget_blocked` with the text from rule 5. The run summary line adds `budget reached: <backend>` when it happened.
+6. `grep -rniE "claude.code|claude_code|claude -p|claude_bin|CLAUDE_CODE|claude-sub|free-fast|evening|\bwhen\b" src tests profiles.yaml .env.example` must return nothing, apart from the `claude.ai` host in the class detection, the `**Claude**` chat-turn marker and the `claude-code` **topic tag** in `tags.yaml`.
+
+- [ ] **Step 3: Run the whole suite and the linters**
+
+Run: `uv run ruff check && uv run ruff format --check && uv run pyright && uv run pytest -q`
+Expected: no lint or type errors, and all tests pass.
+
+- [ ] **Step 4: Try the two providers by hand (no repo changes)**
+
+Put `OPENAI_API_KEY` in `.env`. Then run:
+`uv run catcher reason "<an output note>" --profile clippings`
+Expected: validated JSON, plus a stderr line showing `backend=openai model=<the model> tokens_in=… tokens_out=…`. With an empty or wrong key, the run stops with one `ERROR` line `authentication failed: check OPENAI_API_KEY`, and no note is moved to `failed/`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A src tests profiles.yaml .env.example
+git commit -m "refactor: call every LLM through an API key with three profiles and drop claude -p"
+```
+
+---
+
+### Task 21: A real run on copies, then on the real repos (A8 done-when)
 
 This task is a manual checklist on real data. It ends with one approval gate from your human partner before anything is pushed to GitHub.
 
@@ -5432,7 +6197,7 @@ Expected: both copies exist, and `git -C /tmp/ic-test/idea-bucket remote` prints
 
 Run: `uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --profile fake --no-review --dry-run`
 Expected:
-- There is one line per distinct capture, and `2446cd9c762c9cc9` appears **once**, even though it was clipped 5 times.
+- There is one line per **inbox file**, so `2446cd9c762c9cc9` appears **five times** (it was clipped 5 times). The docs repo will still get one page for it, because each page overwrites the previous one by id.
 - The YouTube-summary Gemini chats are shown as `youtube-gemini` with ID `<video-id>-gemini`.
 - The Web Clipper YouTube clips are shown as `youtube`, and the phone notes as `note` with 6-hex IDs.
 - YouTube items show `deferred` (the fake profile does not stop the facts fetch, so it will try the network: that is expected here) or `would_publish`.
@@ -5440,23 +6205,28 @@ Expected:
 
 - [ ] **Step 4: Stage the copy for real and inspect it**
 
-Run: `uv run catcher stage --ideas /tmp/ic-test/idea-bucket && ls /tmp/ic-test/idea-bucket/staging /tmp/ic-test/idea-bucket/archive/clippings/superseded`
-Expected: one staged file per capture, and the superseded copies of the repeated Gemini clips.
+Run: `uv run catcher ingest --ideas /tmp/ic-test/idea-bucket && ls -R /tmp/ic-test/idea-bucket/archive /tmp/ic-test/idea-bucket/output`
+Expected: `inbox/` is empty, and `archive/` and `output/` hold the same file names in the same `notes/` and `clippings/` subfolders. Every `output/` file has `stage: analyzed`, and `diff` of an `archive/` file against the original in `git show HEAD:inbox/...` is empty. Any unreadable file is in `failed/` with an `.error.txt`.
 
-- [ ] **Step 5: One note and one chat through the real `claude -p`**
+- [ ] **Step 5: One note and one chat through the real APIs**
 
-Run: `uv run catcher reason /tmp/ic-test/idea-bucket/staging/<a-note-id>.md --profile claude-sub-now`
-Expected: validated JSON, plus a stderr line showing `backend=claude-code` and a token count.
+Put `OPENAI_API_KEY`, `OPENAI_MODEL_CLIPPINGS`, `OPENAI_MODEL_YOUTUBE` and `FREELLMAPI_URL` (the H4 FreeLLMApi LXC) in `.env`.
 
-Run: `uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --profile claude-sub-now --limit 3`
-Expected: up to 3 `published` lines. `git -C /tmp/ic-test/epiaku-docs log --stat -1` shows only new files under `hugo/content/en/docs/idea-bucket/`.
+Run: `uv run catcher reason "/tmp/ic-test/idea-bucket/output/notes/<a-note-name>.md" --profile notes`
+Expected: validated JSON, plus a stderr line showing `backend=freellmapi` and a token count.
+
+Run: `uv run catcher reason "/tmp/ic-test/idea-bucket/output/clippings/<a-chat-name>.md" --profile clippings`
+Expected: validated JSON, plus a stderr line showing `backend=openai model=<your model>` and a token count.
+
+Run: `uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --limit 3`
+Expected: up to 3 `published` lines, with the notes on `freellmapi` and the chats on `openai`. `git -C /tmp/ic-test/epiaku-docs log --stat -1` shows only new files under `hugo/content/en/docs/idea-bucket/`. Every step is in the log with the file name and an `(i/N)` counter.
 
 - [ ] **Step 6: One YouTube clip and one Gemini video chat, with the reviewer**
 
-Pick the IDs from the Step 3 output, then run:
-`uv run catcher render /tmp/ic-test/idea-bucket/staging/<video-id>.md --docs /tmp/ic-test/epiaku-docs --profile claude-sub-now`
-`uv run catcher render /tmp/ic-test/idea-bucket/staging/<video-id>-gemini.md --docs /tmp/ic-test/epiaku-docs --profile claude-sub-now`
-Expected: two pages in `idea-bucket/youtube/` with real metrics and a `review:` block in the frontmatter. The second page links to the first.
+Pick the file names from the Step 3 output, then run:
+`uv run catcher render "/tmp/ic-test/idea-bucket/output/clippings/<the-youtube-clip>.md" --docs /tmp/ic-test/epiaku-docs`
+`uv run catcher render "/tmp/ic-test/idea-bucket/output/clippings/<the-gemini-chat>.md" --docs /tmp/ic-test/epiaku-docs`
+Expected: both use the `youtube` profile, the log shows two OpenAI calls each (summary and review, or review only for the Gemini chat), and there are two pages in `idea-bucket/youtube/` with real metrics and a `review:` block in the frontmatter. The second page links to the first.
 
 - [ ] **Step 7: Build the copy with Hugo and look at the pages**
 
@@ -5469,33 +6239,91 @@ If the build fails on PostCSS or missing modules, run `ln -s ~/Documents/dev/epi
 
 Expected: the build succeeds with no errors. Then run `hugo server --source . --config hugo.yaml` and open the Notes, Clippings and YouTube cards. Check that the titles are good, the tags link to tag pages, the `youtube-lite` embed plays, and the Tips tables render.
 
-- [ ] **Step 8: FreeLLMApi for short notes**
+- [ ] **Step 8: Provider failures and a used-up budget are deferrals, not failures**
 
-Set `FREELLMAPI_URL` in `.env` to the H4 FreeLLMApi LXC. Then run:
+Run once with `FREELLMAPI_URL` pointing at a closed port, and once with `OPENAI_API_KEY=sk-wrong`:
 `uv run catcher run pipeline --ideas /tmp/ic-test/idea-bucket --docs /tmp/ic-test/epiaku-docs --limit 2`
-Expected: the notes are published with `llm.backend: freellmapi` in their frontmatter. If FreeLLMApi is down, they show `deferred` and stay in staging.
+Expected: the affected notes show `deferred` and stay in `output/` with `stage: analyzed` (nothing in `failed/`). With the wrong key the log has one `ERROR authentication failed: check OPENAI_API_KEY` and no further OpenAI calls in that run. Notes on the other provider are still published.
 
-- [ ] **Step 9: Record the deviations in the docs**
+Then make the budget run out on purpose, on a **throw-away key with a tiny budget** (for example $0.01): run the pipeline until it reaches the cap. Expected: one `ERROR openai budget reached: N note(s) waiting …`, the waiting notes stay in `output/` with `stage: analyzed` (nothing in `failed/`), the FreeLLMApi notes are published, and after the budget is raised, the next run publishes the waiting notes. Note the exact error code the API returned and fix the classifier in Task 20 if it differs.
 
-In `docs/idea-catcher-pipeline.md`:
-- In the Document classes table, change the AI chats target from `` `idea-bucket/gemini/` or `idea-bucket/claude/` `` to `` `idea-bucket/clipping/` ``.
-- In the `DOC_TYPES` sketch, replace the separate `gemini-chat` / `claude-chat` entries with one `ai-chat` entry: `out_dir=f"{DOCS}/clipping"`, `archive_dir="archive/clippings"`.
+- [ ] **Step 9: Check that the docs match the code**
 
-In `docs/idea-catcher-service-architecture.md`, Processing Flow, change step 2's `yt-dlp counts + transcript` so that it says the facts are stored in `staging/<id>.youtube.json` and archived next to the note.
+The deviations (AI chats publish to `idea-bucket/clipping/`, the facts sidecar, the four-folder layout, no deduplication, `failed/` and the `stage` field, no state store in Stage A, API-key profiles instead of `claude -p`) are recorded in `docs/idea-catcher-pipeline.md` and `docs/idea-catcher-service-architecture.md`. Read them once against what the copy run just did, fix anything that differs, and commit:
 
 ```bash
-git add docs/idea-catcher-pipeline.md docs/idea-catcher-service-architecture.md
-git commit -m "docs: record the Stage A decisions (clipping folder, facts sidecar)"
+git add docs
+git commit -m "docs: match the docs to the four-folder run"
 ```
 
 - [ ] **Step 10: STOP and ask your human partner before touching the real repos**
 
 Show the results from Steps 5–8 and ask: "Run against the real idea-bucket and epiaku-docs and push to GitHub `main`?" Mention two things:
-- All current inbox captures will move to `staging/` on GitHub, which clears the phone's inbox on the next pull.
+- All current inbox captures will move to `archive/` (untouched copy) and `output/` on GitHub, which clears the phone's inbox on the next pull. The five clips of `2446cd9c762c9cc9` all go through the LLM, so use `--limit` sensibly, or move four of them out of the inbox first.
 - The two uncommitted deletions in `epiaku-docs/hugo/content/en/docs/idea-bucket/clipping/` will stay uncommitted.
 
 Only after an explicit yes, run:
 `uv run catcher run pipeline --limit 3 --push`
-Expected: `pushed=True`. GitHub shows one `idea-catcher: publish N page(s)` commit on epiaku-docs and one `idea-catcher: stage and archive captures` commit on idea-bucket. After a `git pull` in the local epiaku-docs, the new pages appear in the local build.
+Expected: `pushed=True`. GitHub shows one `idea-catcher: publish N page(s)` commit on epiaku-docs and one `idea-catcher: ingest and publish captures` commit on idea-bucket. After a `git pull` in the local epiaku-docs, the new pages appear in the local build.
 
 **Stage A is done when:** a real run turns every document class in the inbox into correct pages on GitHub, and we are happy with the prompts, templates and code structure.
+
+---
+
+### Task 22: Run only named documents (`--file`)
+
+> **Status: implemented (2026-09-28), not yet committed.** Added after Task 21 was written, because testing one specific document must not need a whole inbox run. 197 tests pass.
+
+> **Superseded in part by Task 23:** `--file` now searches **only `inbox/`**. Rule 3 below (matching waiting notes in `output/`) no longer applies, because a run never reads `output/`.
+
+**Rules:**
+
+1. `catcher run pipeline` and `catcher ingest` take `--file NAME` (short `-f`), repeatable.
+2. A name matches a document by its file name (`New chat.md`), the name without `.md`, or its path under `inbox/` (`clippings/New chat.md`), ignoring case. Partial names never match.
+3. Only matching files are archived and ingested. Other inbox files are untouched. Matching **waiting notes in `output/`** (`stage: analyzed`) are processed too. `archive/`, `failed/` and `duplicates/` are not searched.
+4. A name that matches nothing logs a `WARNING` (`no document named "X" found in inbox/ or waiting in output/`), is listed in `RunReport.not_found` and printed as `not-found`, and the command exits with code 1. Names that did match are still processed.
+5. `--limit` applies after the selection. The duplicate check (`is_snapshot_of`) only compares the selected documents.
+
+**Files:** `ingest.py` (`name_matches`, `ingest_inbox(only=…)`, `load_pending(only=…)`, `IngestResult.matched`), `run.py` (`RunOptions.only`, `RunReport.not_found`), `cli.py` (`--file` on both commands), tests in `tests/component/test_ingest.py` and `tests/integration/git/test_run.py`. Docs: the how-to-run and configuration pages.
+
+---
+
+### Task 23: A run only looks at the inbox
+
+> **Status: implemented (2026-09-28), not yet committed.** 204 tests pass. Decision from the user: a run only looks at `inbox/` to find work, and a document leaves `inbox/` as soon as work on it starts (original to `archive/`, working copy to `output/`), so it is never started twice. A stalled copy stays in `output/` with a status. To retry, move the file from `archive/` back into `inbox/`.
+
+> **Superseded in part by Task 24:** the archive copy is no longer byte for byte. It is renamed (calculated name) and gets two frontmatter lines. Everything else in this task holds.
+
+**Rules:**
+
+1. **`scan_inbox()` is read-only.** It reads `inbox/` (or only the `--file` names), works out class and `id` in memory (`Note.path` is the inbox file) and returns `ScanResult(notes, errors, matched)`. It writes and moves nothing. `catcher scan` prints its result.
+2. **A document leaves `inbox/` right before its own LLM step** (`start_work`): copy the original to `archive/`, write the working copy to `output/<same subfolder and name>` with `stage: analyzed` and `analyzed_at`, remove the inbox file. It overwrites a stalled copy from an earlier run. With `--limit` or `--file`, only the chosen documents move. A dry run moves nothing.
+3. **Ready:** the working copy is overwritten with the final page (no `stage`), plus `<name>.youtube.json` next to it for YouTube (`write_output`).
+4. **Permanent failure:** `move_to_failed` moves the working copy to `failed/` with an `.error.txt`. An unreadable inbox file is archived and moved from `inbox/`. **Earlier snapshot:** `move_to_duplicates` (archive, then move from `inbox/`, with `duplicate_of`).
+5. **Temporary problem** (rate limit, budget, provider down, facts unavailable, missing model): `mark_deferred` keeps the working copy in `output/` with `stage: deferred`, `deferred_reason` and `deferred_at`. Nothing retries it by itself.
+6. **`--file` only searches `inbox/`.** A name that matches nothing warns (`no document named "X" found in inbox/`), is listed in `RunReport.not_found`, and the command exits with code 1.
+7. **Commands:** `catcher scan` (read-only listing: `would process` or `duplicate of …`) replaces `catcher ingest`. `catcher reason` and `catcher render` take a document and read it in memory. `run pipeline` and `scan` have `--file`.
+8. **Retry is manual for now.** A helper such as `catcher requeue`, moving every stalled document back in one go, is a possible later addition and is written up as such in the docs.
+
+**Files:** `ingest.py` is now `inbox.py` (`scan_inbox`, `read_note`, `start_work`, `mark_deferred`, `archive_copy`, `move_to_failed`, `move_to_duplicates`, `name_matches`, `is_snapshot_of`); `publish.py` (`write_output` replaces `finalize_output`); `process.py` (`facts_for` no longer reads or writes a sidecar, `ProcessedPage.facts` carries the facts); `run.py` (the flow, `RunReport.unreadable`); `cli.py` (`scan`); tests `tests/component/test_inbox.py` and `tests/integration/git/test_run.py`. Docs: the pipeline, architecture, configuration and how-to-run pages.
+
+---
+
+### Task 24: One calculated file name in every folder
+
+> **Status: implemented (2026-09-28), not yet committed.** 214 tests pass. Decision from the user: files with the same name overwrote each other in `archive/` and valuable information was lost. So a document gets a calculated, unique file name when work starts, and keeps it everywhere.
+
+**Rules:**
+
+1. **Name:** `YYYYMMDD-<short guid>-<title>.md`. Date = capture date (`created`/`captured`), else the processing day. Guid = 6 random hex characters, re-drawn until the name is unused in `archive/`, `output/`, `failed/` and `duplicates/`. Title = the clip `title`; when it is missing or generic (`New chat`, `Untitled`, `Chat`), an `ai-chat` uses the first 8 words of the first `**You**` message (links removed, cut at the answer), everything else its original file name. The title is slugged to lower-case ASCII letters, digits and hyphens (`untitled` when nothing is left). The stem is cut so that `<stem>.youtube.json` is at most 128 characters.
+2. **Assigned when work starts** (`start_work`), and also for duplicates (`move_to_duplicates`) and unreadable files (`move_to_failed`), so the same collision cannot come back in `failed/` or `duplicates/`.
+3. **Stored in the frontmatter:** `original_filename` and `calculated_filename`, on the archive copy and the working copy. They are **inserted as text** into the existing frontmatter (`with_filename_fields`), so everything else stays byte for byte (line endings and comments included). A file without frontmatter gets a new block. Fields that are already there are kept.
+4. **Unreadable files** cannot be edited: their bytes are copied unchanged under a calculated name to `archive/` and `failed/`, and the `.error.txt` records the original and the calculated name.
+5. **Requeue:** a file moved from `archive/` to `inbox/` carries `calculated_filename`, so `assign_name` keeps it. `start_work` overwrites the same-named files in `archive/` and `output/` (the stalled copy), and no second archive file appears.
+6. **The docs page uses the same name.** `page_name()` returns the calculated name, `write_page` still removes an older page with the same `id`, and the page frontmatter gets `source_file: <subfolder>/<calculated name>`. The `output/` page and the `epiaku-docs` page stay identical.
+7. **`--file` and `scan`** match a document by its file name in `inbox/` or by `original_filename` (a requeued file), ignoring case.
+8. **`catcher render`** gives the page a calculated name too (random guid, no uniqueness check across folders, because it has no idea-bucket).
+
+**Known limits (documented):** the guid is random, so a name cannot be predicted; a re-clip of one conversation gets its own name, so `output/` can hold several copies for one page in `epiaku-docs`; requeueing an edited file overwrites its archive copy; a note duplicated in Obsidian keeps the copied `calculated_filename` and would overwrite the original's archive file.
+
+**Files:** `inbox.py` (`calculated_stem`, `slugify_title`, `name_title`, `first_words`, `assign_name`, `with_filename_fields`, `Note.name`, `Note.original`, `Note.target_rel`), `publish.py` (`write_output` uses the calculated name), `render.py` (`page_name`, `source_file`), `cli.py`, tests `tests/component/test_inbox.py` and `tests/integration/git/test_run.py`. Docs: the pipeline page (new "File names" section), the architecture, how-to-run pages.
