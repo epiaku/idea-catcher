@@ -46,6 +46,10 @@ class UsageLimitReached(BackendUnavailable):
         self.backend = backend
 
 
+class BudgetExhausted(UsageLimitReached):
+    """The API key's budget is used up: calls fail until it is raised or renewed."""
+
+
 class InvalidOutput(LlmError):
     pass
 

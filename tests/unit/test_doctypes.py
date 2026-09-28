@@ -51,7 +51,7 @@ def test_explicit_type_overrides_detection():
     assert detect({"source": GEMINI, "type": "ai-chat"}, YT_CHAT_BODY) is AI_CHAT
 
 
-def test_class_from_a_previous_staging_is_kept_on_replay():
+def test_class_from_a_previous_ingest_is_kept_on_replay():
     fm = {"source": GEMINI, "class": "youtube-gemini", "id": "MBPHU7aaklM-gemini"}
     assert detect(fm, "body without a link") is YOUTUBE_GEMINI
     assert derive_id(YOUTUBE_GEMINI, fm, "body without a link") == "MBPHU7aaklM-gemini"
@@ -86,9 +86,15 @@ def test_first_user_turn_stops_at_the_first_answer():
     assert first_user_turn("no markers at all") == "no markers at all"
 
 
-def test_output_and_archive_folders():
+def test_default_llm_profiles():
+    assert NOTE.llm_profile == "notes"
+    assert AI_CHAT.llm_profile == "clippings"
+    assert YOUTUBE.llm_profile == YOUTUBE_GEMINI.llm_profile == "youtube"
+
+
+def test_output_folders():
     assert AI_CHAT.out_dir == "hugo/content/en/docs/idea-bucket/clipping"
-    assert AI_CHAT.archive_dir == "archive/clippings"
     assert YOUTUBE_GEMINI.out_dir == YOUTUBE.out_dir == "hugo/content/en/docs/idea-bucket/youtube"
-    assert YOUTUBE.archive_dir == "archive/youtube"
+
+    assert not hasattr(YOUTUBE, "archive_dir")
     assert NOTE.out_dir == "hugo/content/en/docs/idea-bucket/notes"

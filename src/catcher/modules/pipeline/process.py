@@ -1,4 +1,5 @@
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -8,10 +9,10 @@ from catcher.modules.llm.profiles import Profile, ProfilesConfig, load_profiles,
 from catcher.modules.llm.schemas import Summary, YoutubeSummary
 from catcher.modules.llm.service import BackendFactory, LlmRequest, LlmResult, UsageLimitReached, reason
 from catcher.modules.pipeline.doctypes import gemini_video_id
+from catcher.modules.pipeline.inbox import Note, note_label
 from catcher.modules.pipeline.inputs import capture_tags, prompt_input
 from catcher.modules.pipeline.publish import find_pages_by_id
 from catcher.modules.pipeline.render import PageContext, page_name, render_page
-from catcher.modules.pipeline.staging import StagedNote, facts_sidecar
 from catcher.modules.pipeline.tags import TagList, load_tags, normalize_tags
 from catcher.modules.pipeline.validate import validate_page
 from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, YoutubeFacts, fetch_facts
@@ -19,6 +20,8 @@ from catcher.modules.youtube.review import ReviewOutcome, not_reviewed, review_s
 from catcher.modules.youtube.urls import video_id
 
 YOUTUBE_CLASSES = ("youtube", "youtube-gemini")
+
+log = logging.getLogger("catcher.process")
 
 
 @dataclass
@@ -42,14 +45,14 @@ class ProcessOptions:
 
 @dataclass
 class ProcessedPage:
-    note: StagedNote
+    note: Note
     filename: str
     page: str
     problems: list[str]
     llm: LlmResult
     dropped_tags: list[str]
-    written: list[Path] = field(default_factory=list)
     review: ReviewOutcome | None = None
+    facts: YoutubeFacts | None = None  # YouTube only: written next to the final page
 
 
 def default_services(settings: Settings) -> Services:
@@ -74,7 +77,7 @@ def review_profile(svc: Services, opts: ProcessOptions) -> tuple[str, Profile]:
     )
 
 
-def youtube_video_id(note: StagedNote) -> str:
+def youtube_video_id(note: Note) -> str:
     if note.doctype.name == "youtube":
         vid = video_id(str(note.doc.fm.get("source") or ""))
     else:
@@ -84,21 +87,19 @@ def youtube_video_id(note: StagedNote) -> str:
     return vid
 
 
-def facts_for(
-    note: StagedNote, vid: str, svc: Services, opts: ProcessOptions
-) -> tuple[YoutubeFacts, list[Path]]:
-    sidecar = facts_sidecar(note.path)
-    if sidecar.exists():
-        return YoutubeFacts.model_validate_json(sidecar.read_text(encoding="utf-8")), []
+def facts_for(note: Note, vid: str, svc: Services) -> YoutubeFacts:
+    log.info("%s: fetching YouTube facts for %s", note_label(note), vid)
     facts = svc.facts(vid)
-    if opts.dry_run:
-        return facts, []
-    sidecar.parent.mkdir(parents=True, exist_ok=True)
-    sidecar.write_text(facts.model_dump_json(indent=2), encoding="utf-8")
-    return facts, [sidecar]
+    log.info(
+        "%s: facts fetched (views=%s transcript=%s)",
+        note_label(note),
+        facts.views,
+        "yes" if facts.transcript else "no",
+    )
+    return facts
 
 
-def sibling_link(note: StagedNote, vid: str, opts: ProcessOptions) -> dict[str, str | None]:
+def sibling_link(note: Note, vid: str, opts: ProcessOptions) -> dict[str, str | None]:
     none: dict[str, str | None] = {"sibling": None, "sibling_label": None}
     if opts.docs_repo is None:
         return none
@@ -114,19 +115,33 @@ def youtube_embed(vid: str, title: str) -> str:
     return "{{< youtube-lite " + vid + " `" + title.replace("`", "'") + "` >}}"
 
 
-def _reason(
-    note: StagedNote, svc: Services, profile_name: str, facts: YoutubeFacts | None = None
-) -> LlmResult:
+def log_llm(note: Note, step: str, result: LlmResult) -> None:
+    log.info(
+        "%s: %s done (backend=%s model=%s attempts=%d tokens_in=%s tokens_out=%s)",
+        note_label(note),
+        step,
+        result.backend,
+        result.model,
+        result.attempts,
+        result.usage.tokens_in,
+        result.usage.tokens_out,
+    )
+
+
+def _reason(note: Note, svc: Services, profile_name: str, facts: YoutubeFacts | None = None) -> LlmResult:
     request = LlmRequest(
         task=note.doctype.task,
         input=prompt_input(note, svc.tags, facts),
         schema_name=note.doctype.schema_name,
         profile=profile_name,
     )
-    return reason(request, profiles=svc.profiles, backends=svc.backends)
+    log.info("%s: asking the LLM (profile=%s)", note_label(note), profile_name)
+    result = reason(request, profiles=svc.profiles, backends=svc.backends)
+    log_llm(note, "reason", result)
+    return result
 
 
-def _process_text(note: StagedNote, svc: Services, profile_name: str) -> ProcessedPage:
+def _process_text(note: Note, svc: Services, profile_name: str) -> ProcessedPage:
     result = _reason(note, svc, profile_name)
     summary = cast(Summary, result.output)
     tag_result = normalize_tags([*summary.tags, *capture_tags(note)], svc.tags)
@@ -137,21 +152,30 @@ def _process_text(note: StagedNote, svc: Services, profile_name: str) -> Process
     )
 
 
-def _process_youtube(
-    note: StagedNote, svc: Services, opts: ProcessOptions, profile_name: str
-) -> ProcessedPage:
+def _process_youtube(note: Note, svc: Services, opts: ProcessOptions, profile_name: str) -> ProcessedPage:
     review_name: str | None = None
     if opts.review:
         review_name, review_prof = review_profile(svc, opts)
         check_not_blocked(review_prof, opts)
     vid = youtube_video_id(note)
-    facts, written = facts_for(note, vid, svc, opts)
+    facts = facts_for(note, vid, svc)
 
     def run_review(text: str) -> ReviewOutcome:
         assert review_name is not None
-        return review_summary(
+        log.info("%s: reviewing against the facts (profile=%s)", note_label(note), review_name)
+        outcome = review_summary(
             text, facts, profile=review_name, profiles=svc.profiles, backends=svc.backends, tags=svc.tags
         )
+        if outcome.llm:
+            log_llm(note, "review", outcome.llm)
+        log.log(
+            logging.WARNING if outcome.status == "needs_attention" else logging.INFO,
+            "%s: review status=%s issues=%d",
+            note_label(note),
+            outcome.status,
+            len(outcome.issues),
+        )
+        return outcome
 
     if note.doctype.name == "youtube-gemini" and review_name:
         outcome = run_review(note.doc.body)
@@ -173,10 +197,10 @@ def _process_youtube(
         **sibling_link(note, vid, opts),
     )
     problems = validate_page(page, svc.tags)
-    return ProcessedPage(note, page_name(ctx), page, problems, result, tag_result.dropped, written, outcome)
+    return ProcessedPage(note, page_name(ctx), page, problems, result, tag_result.dropped, outcome, facts)
 
 
-def process_note(note: StagedNote, svc: Services, opts: ProcessOptions) -> ProcessedPage:
+def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPage:
     profile_name, profile = resolve_profile(
         svc.profiles, requested=opts.profile, class_default=note.doctype.llm_profile
     )

@@ -30,14 +30,14 @@ def test_commit_paths_leaves_unrelated_changes_alone(make_repo, sh):
 def test_commit_paths_records_deletions_and_skips_unknown_paths(make_repo, sh):
     _, work = make_repo("ideas", {"inbox/notes/a note.md": "hi\n"})
     (work / "inbox/notes/a note.md").unlink()
-    staged = work / "staging/a7b2c9.md"
-    staged.parent.mkdir()
-    staged.write_text("staged\n")
+    made = work / "output/notes/a7b2c9.md"
+    made.parent.mkdir(parents=True)
+    made.write_text("made\n")
     ghost = work / "inbox/notes/never committed.md"
-    assert commit_paths(work, [work / "inbox/notes/a note.md", staged, ghost], "stage", author=AUTHOR)
+    assert commit_paths(work, [work / "inbox/notes/a note.md", made, ghost], "stage", author=AUTHOR)
     assert sh(work, "show", "--name-status", "--format=", "HEAD").splitlines() == [
         "D\tinbox/notes/a note.md",
-        "A\tstaging/a7b2c9.md",
+        "A\toutput/notes/a7b2c9.md",
     ]
 
 
@@ -63,9 +63,9 @@ def test_push_rebases_over_a_phone_push(make_repo, sh, tmp_path):
     sh(phone, "commit", "-m", "phone")
     sh(phone, "push")
 
-    (work / "staging").mkdir()
-    (work / "staging/x.md").write_text("x\n")
-    commit_paths(work, [work / "staging/x.md"], "stage", author=AUTHOR)
+    (work / "output/notes").mkdir(parents=True)
+    (work / "output/notes/x.md").write_text("x\n")
+    commit_paths(work, [work / "output/notes/x.md"], "stage", author=AUTHOR)
     push(work)
 
     assert sh(bare, "log", "--format=%s", "main").splitlines() == ["stage", "phone", "seed"]

@@ -10,7 +10,7 @@ from catcher.core.frontmatter import Doc, dump
 from catcher.modules.llm.schemas import Summary
 from catcher.modules.llm.service import LlmResult
 from catcher.modules.pipeline.doctypes import canonical_source
-from catcher.modules.pipeline.staging import StagedNote
+from catcher.modules.pipeline.inbox import Note
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 PAGE_WEIGHT = 100
@@ -51,7 +51,7 @@ _env.filters["num"] = fmt_count
 
 @dataclass
 class PageContext:
-    note: StagedNote
+    note: Note
     summary: Summary
     tags: list[str]
     llm: LlmResult
@@ -74,6 +74,8 @@ def build_frontmatter(ctx: PageContext, extra_fm: dict[str, Any] | None = None) 
     source = canonical_source(ctx.note.doctype, ctx.note.doc.fm)
     if source:
         fm["source"] = source
+    if ctx.note.name:  # points from the published page to its archive and output files
+        fm["source_file"] = ctx.note.target_rel.as_posix()
     fm.update(extra_fm or {})
     fm["llm"] = {
         "profile": ctx.llm.profile,
@@ -92,4 +94,6 @@ def render_page(ctx: PageContext, *, extra_fm: dict[str, Any] | None = None, **t
 
 
 def page_name(ctx: PageContext) -> str:
+    if ctx.note.name:  # the same name in archive/, output/ and epiaku-docs
+        return ctx.note.name
     return page_filename(str(ctx.note.doc.fm["captured"]), ctx.note.doc_id, ctx.summary.title)

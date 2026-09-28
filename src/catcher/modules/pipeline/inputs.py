@@ -2,26 +2,26 @@ from pathlib import Path
 from typing import Any
 
 from catcher.modules.pipeline.doctypes import canonical_source
-from catcher.modules.pipeline.staging import StagedNote
+from catcher.modules.pipeline.inbox import Note
 from catcher.modules.pipeline.tags import TagList
 from catcher.modules.youtube.facts import YoutubeFacts
 
 
-def capture_tags(note: StagedNote) -> list[str]:
+def capture_tags(note: Note) -> list[str]:
     raw = note.doc.fm.get("tags") or []
     if isinstance(raw, str):
         raw = [raw]
     return [str(t) for t in raw if str(t).strip().lower() != "clippings"]
 
 
-def title_hint(note: StagedNote) -> str:
+def title_hint(note: Note) -> str:
     title = note.doc.fm.get("title")
     if title:
         return str(title)
     return Path(str(note.doc.fm.get("source_file") or note.path.name)).stem
 
 
-def prompt_input(note: StagedNote, tags: TagList, facts: YoutubeFacts | None = None) -> dict[str, Any]:
+def prompt_input(note: Note, tags: TagList, facts: YoutubeFacts | None = None) -> dict[str, Any]:
     data: dict[str, Any] = {
         "title_hint": title_hint(note),
         "body": note.doc.body,

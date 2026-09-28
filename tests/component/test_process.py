@@ -11,7 +11,7 @@ def test_note_becomes_a_valid_page(make_note, make_services):
     processed = process_note(make_note("note"), make_services(), ProcessOptions())
     assert processed.problems == []
     assert processed.filename == "20260927_a7b2c9_fake-note.md"
-    assert processed.llm.profile == "free-fast"
+    assert processed.llm.profile == "notes"
     assert "A cleaned-up idea." in processed.page
 
 
@@ -21,7 +21,7 @@ def test_chat_uses_the_class_default_profile(make_note, make_services):
         "ai-chat", doc_id="cf81e40b020519ef", source="https://gemini.google.com/app/cf81e40b020519ef"
     )
     processed = process_note(note, make_services(chat_backend=chats), ProcessOptions())
-    assert processed.llm.profile == "claude-sub-evening"
+    assert processed.llm.profile == "clippings"
     assert len(chats.prompts) == 1
 
 
@@ -56,6 +56,6 @@ def test_blocked_backend_is_not_called(make_note, make_services):
         process_note(
             note,
             make_services(chat_backend=chats),
-            ProcessOptions(blocked_backends=frozenset({"claude-code"})),
+            ProcessOptions(blocked_backends=frozenset({"openai"})),
         )
     assert chats.prompts == []

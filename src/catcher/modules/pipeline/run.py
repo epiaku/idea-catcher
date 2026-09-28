@@ -1,16 +1,29 @@
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 from catcher.core.git import commit_paths, pull, push
-from catcher.modules.llm.service import BackendUnavailable, InvalidOutput, UsageLimitReached
-from catcher.modules.pipeline.process import ProcessOptions, Services, process_note
-from catcher.modules.pipeline.publish import archive_staged, write_page
-from catcher.modules.pipeline.staging import load_staged, stage_inbox
+from catcher.modules.llm.profiles import UnknownProfile
+from catcher.modules.llm.service import BackendUnavailable, BudgetExhausted, InvalidOutput, UsageLimitReached
+from catcher.modules.pipeline.inbox import (
+    Note,
+    is_snapshot_of,
+    mark_deferred,
+    move_to_duplicates,
+    move_to_failed,
+    note_label,
+    scan_inbox,
+    start_work,
+)
+from catcher.modules.pipeline.process import ProcessedPage, ProcessOptions, Services, process_note
+from catcher.modules.pipeline.publish import write_output, write_page
 from catcher.modules.youtube.facts import FactsUnavailable
 
-Status = Literal["published", "would_publish", "deferred", "failed", "skipped"]
+log = logging.getLogger("catcher.run")
+
+Status = Literal["published", "would_publish", "deferred", "failed", "skipped", "duplicate"]
 
 
 @dataclass
@@ -32,12 +45,14 @@ class RunOptions:
     dry_run: bool = False
     push: bool = False
     limit: int | None = None
+    only: list[str] | None = None  # process only the documents with these names
 
 
 @dataclass
 class RunReport:
     items: list[ItemReport] = field(default_factory=list)
-    staging_errors: dict[str, str] = field(default_factory=dict)
+    unreadable: dict[str, str] = field(default_factory=dict)  # files that could not be read, now in failed/
+    not_found: list[str] = field(default_factory=list)  # `--file` names that matched no inbox document
     committed: dict[str, bool] = field(default_factory=dict)
     pushed: bool = False
 
@@ -45,30 +60,111 @@ class RunReport:
         return dict(Counter(item.status for item in self.items))
 
 
+def finish(ideas: Path, note: Note, processed: ProcessedPage) -> list[Path]:
+    """The document is ready: the working copy in `output/` becomes the final page."""
+    facts_json = processed.facts.model_dump_json(indent=2) if processed.facts else None
+    return write_output(ideas, note, processed.page, facts_json)
+
+
 def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     report = RunReport()
+    log.info(
+        "run started: ideas=%s docs=%s profile=%s review=%s dry_run=%s push=%s limit=%s",
+        ideas,
+        docs,
+        opts.profile or "class default",
+        opts.review,
+        opts.dry_run,
+        opts.push,
+        opts.limit,
+    )
     if opts.push:
         pull(ideas)
         pull(docs)
 
-    staging = stage_inbox(ideas, dry_run=opts.dry_run)
-    report.staging_errors = staging.errors
-    touched_ideas: list[Path] = list(staging.touched)
+    scan = scan_inbox(ideas, only=opts.only)
+    touched_ideas: list[Path] = []
     touched_docs: list[Path] = []
+    for rel, reason in scan.errors.items():  # unreadable: archive it and move it to failed/
+        report.unreadable[rel] = reason
+        if not opts.dry_run:
+            touched_ideas += move_to_failed(ideas, ideas / rel, f"cannot read the capture: {reason}")
+    ordered = sorted(
+        scan.notes, key=lambda n: (str(n.doc.fm.get("captured", "")), n.doc_id, n.path.as_posix())
+    )
 
-    notes = {note.doc_id: note for note in load_staged(ideas)}
-    notes.update({note.doc_id: note for note in staging.staged})
-    ordered = sorted(notes.values(), key=lambda n: (str(n.doc.fm.get("captured", "")), n.doc_id))
+    for query in opts.only or []:
+        if query not in scan.matched:
+            report.not_found.append(query)
+            log.warning(
+                'no document named "%s" found in inbox/. Only inbox/ is searched: '
+                "to run a document from archive/, failed/ or duplicates/ again, move it into inbox/",
+                query,
+            )
+
+    # Several clips of one conversation: only the longest goes to the LLM.
+    # Earlier snapshots of it move to duplicates/ (nothing is deleted).
+    winners: dict[str, Note] = {}
+    for note in ordered:
+        best = winners.get(note.doc_id)
+        if best is None or len(note.doc.body) > len(best.doc.body):
+            winners[note.doc_id] = note
+    to_process: list[Note] = []
+    for note in ordered:
+        winner = winners[note.doc_id]
+        if note is winner or not is_snapshot_of(note.doc.body, winner.doc.body):
+            to_process.append(note)
+            continue
+        item = ItemReport(
+            note.doc_id, note.doctype.name, "duplicate", f"duplicate of {winner.rel.as_posix()}"
+        )
+        report.items.append(item)
+        if not opts.dry_run:
+            touched_ideas.extend(move_to_duplicates(ideas, note, winner))
+        log.info(
+            "%s: %s, an earlier clip of the same conversation as %s (no LLM call)",
+            note_label(note),
+            "would move to duplicates/" if opts.dry_run else "moved to duplicates/",
+            note_label(winner),
+        )
+    ordered = to_process
+
+    total = len(ordered)
+    log.info(
+        "%d note(s) to process (%d in the inbox, %d unreadable and moved to failed/)",
+        total,
+        len(scan.notes),
+        len(scan.errors),
+    )
+
+    def file_as_failed(note: Note, reason: str) -> None:
+        if not opts.dry_run:
+            touched_ideas.extend(
+                move_to_failed(
+                    ideas, note.output_path(ideas), reason, doc_id=note.doc_id, doc_class=note.doctype.name
+                )
+            )
+
+    def stall(note: Note, reason: str) -> None:
+        """A temporary error: the working copy stays in output/ and says why."""
+        if not opts.dry_run:
+            touched_ideas.extend(mark_deferred(ideas, note, reason))
 
     blocked: set[str] = set()
+    budget_blocked: dict[str, int] = {}  # backend -> notes waiting because its budget is used up
     attempted = 0
-    for note in ordered:
+    for position, note in enumerate(ordered, start=1):
+        who = f"({position}/{total}) {note_label(note)}"
         item = ItemReport(note.doc_id, note.doctype.name, "skipped")
         report.items.append(item)
         if opts.limit is not None and attempted >= opts.limit:
             item.message = "run limit reached"
+            log.info("%s: skipped, %s", who, item.message)
             continue
         attempted += 1
+        log.info("%s: processing", who)
+        if not opts.dry_run:
+            touched_ideas += start_work(ideas, note)  # out of inbox/: archive + working copy in output/
         popts = ProcessOptions(
             profile=opts.profile,
             review=opts.review,
@@ -79,35 +175,82 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
         )
         try:
             processed = process_note(note, svc, popts)
+        except BudgetExhausted as e:
+            blocked.add(e.backend)
+            budget_blocked[e.backend] = budget_blocked.get(e.backend, 0) + 1
+            item.status, item.message = "deferred", f"budget reached ({e.backend})"
+            log.warning("%s: deferred, %s: %s", who, item.message, e)
+            stall(note, item.message)
+            continue
         except UsageLimitReached as e:
             blocked.add(e.backend)
-            item.status, item.message = "deferred", f"usage limit ({e.backend}): {e}"
+            if e.backend in budget_blocked:
+                budget_blocked[e.backend] += 1
+                item.status, item.message = "deferred", f"budget reached ({e.backend})"
+            else:
+                item.status, item.message = "deferred", f"usage limit ({e.backend}): {e}"
+            log.warning("%s: deferred, %s", who, item.message)
+            stall(note, item.message)
             continue
         except BackendUnavailable as e:
             item.status, item.message = "deferred", str(e)
+            log.warning("%s: deferred, %s", who, item.message)
+            stall(note, item.message)
+            continue
+        except UnknownProfile as e:  # a configuration problem, not a bad note
+            item.status, item.message = "deferred", str(e)
+            log.error("%s: deferred, configuration error: %s", who, item.message)
+            stall(note, item.message)
             continue
         except InvalidOutput as e:
             item.status, item.message = "failed", str(e)
+            log.error("%s: failed, %s", who, item.message)
+            file_as_failed(note, item.message)
             continue
         except FactsUnavailable as e:
             item.status, item.message = "deferred", str(e)
+            log.warning("%s: deferred, %s", who, item.message)
+            stall(note, item.message)
+            continue
+        except Exception as e:  # one broken note must not stop the run
+            item.status, item.message = "failed", f"unexpected {type(e).__name__}: {e}"
+            log.exception("%s: failed, %s", who, item.message)
+            file_as_failed(note, item.message)
             continue
 
-        touched_ideas += processed.written
         item.tokens_in, item.tokens_out = processed.llm.usage.tokens_in, processed.llm.usage.tokens_out
         item.page = processed.filename
         if processed.problems:
             item.status, item.message = "failed", "; ".join(processed.problems)
+            log.error("%s: failed, page is invalid: %s", who, item.message)
+            file_as_failed(note, f"page is invalid: {item.message}")
         elif opts.dry_run:
             item.status = "would_publish"
+            log.info("%s: would publish %s", who, processed.filename)
         else:
             touched_docs += write_page(docs, note.doctype, note.doc_id, processed.filename, processed.page)
-            touched_ideas += archive_staged(ideas, note)
+            touched_ideas += finish(ideas, note, processed)
             item.status = "published"
+            log.info("%s: published %s", who, processed.filename)
         if processed.dropped_tags:
             dropped = f"dropped tags: {', '.join(processed.dropped_tags)}"
             item.message = f"{item.message}; {dropped}" if item.message else dropped
+            log.warning("%s: %s", who, dropped)
 
+    for backend, waiting in budget_blocked.items():
+        log.error(
+            "%s budget reached: %d note(s) waiting; "
+            "raise the key's budget or point the profile at another provider",
+            backend,
+            waiting,
+        )
+    counts = report.counts()
+    log.info(
+        "processed %d/%d: %s",
+        attempted,
+        total,
+        ", ".join(f"{n} {status}" for status, n in sorted(counts.items())) or "nothing to do",
+    )
     if not opts.dry_run:
         author = (svc.settings.git_author_name, svc.settings.git_author_email)
         published = report.counts().get("published", 0)
@@ -117,11 +260,12 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
         report.committed["ideas"] = commit_paths(
             ideas,
             touched_ideas,
-            f"idea-catcher: stage and archive captures ({published} published)",
+            f"idea-catcher: process the inbox ({published} published)",
             author=author,
         )
         if opts.push:
             push(docs)
             push(ideas)
             report.pushed = True
+    log.info("run finished: %s committed=%s pushed=%s", report.counts(), report.committed, report.pushed)
     return report

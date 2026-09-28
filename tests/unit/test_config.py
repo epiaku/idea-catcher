@@ -14,4 +14,6 @@ def test_settings_read_the_environment(monkeypatch, tmp_path):
 def test_settings_defaults():
     settings = Settings()
     assert settings.profiles_file == Path("profiles.yaml")
-    assert settings.claude_bin == "claude"
+    assert settings.openai_api_key == ""
+    assert settings.openai_base_url == "https://api.openai.com/v1"
+    assert not hasattr(settings, "claude_bin")

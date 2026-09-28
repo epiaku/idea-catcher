@@ -3,10 +3,10 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from catcher.cli import app
-from catcher.core.frontmatter import Doc, dump
+from catcher.core.frontmatter import Doc, dump, load
 from catcher.modules.pipeline.doctypes import NOTE, YOUTUBE
-from catcher.modules.pipeline.publish import archive_staged, find_pages_by_id, write_page
-from catcher.modules.pipeline.staging import facts_sidecar
+from catcher.modules.pipeline.inbox import facts_sidecar
+from catcher.modules.pipeline.publish import find_pages_by_id, write_output, write_page
 
 REPO = Path(__file__).parents[2]
 
@@ -50,21 +50,18 @@ def test_ids_match_exactly_even_with_underscores(tmp_path):
     assert [p.name for p in find_pages_by_id(out, "ab")] == ["20260927_ab_y.md"]
 
 
-def test_archive_moves_the_note_and_its_facts(tmp_path, make_note):
+def test_write_output_keeps_the_subfolder_and_name_and_writes_the_facts_next_to_it(tmp_path, make_note):
     note = make_note("youtube", doc_id="MBPHU7aaklM", root=tmp_path)
-    sidecar = put(facts_sidecar(note.path), "{}")
-    touched = archive_staged(tmp_path, note)
-    dest = tmp_path / "archive/youtube/MBPHU7aaklM.md"
-    assert dest.exists() and (tmp_path / "archive/youtube/MBPHU7aaklM.youtube.json").exists()
-    assert not note.path.exists() and not sidecar.exists()
-    assert touched == [note.path, dest, sidecar, tmp_path / "archive/youtube/MBPHU7aaklM.youtube.json"]
+    touched = write_output(tmp_path, note, page("MBPHU7aaklM"), facts_json="{}")
+    out = tmp_path / "output/notes/MBPHU7aaklM.md"
+    assert load(out).fm == {"title": "T", "id": "MBPHU7aaklM"}
+    assert facts_sidecar(out).read_text() == "{}"
+    assert touched == [out, facts_sidecar(out)]
 
 
-def test_archive_overwrites_an_earlier_archived_copy(tmp_path, make_note):
-    put(tmp_path / "archive/notes/a7b2c9.md", "old")
+def test_write_output_without_facts_writes_only_the_page(tmp_path, make_note):
     note = make_note("note", root=tmp_path)
-    archive_staged(tmp_path, note)
-    assert "An idea." in (tmp_path / "archive/notes/a7b2c9.md").read_text()
+    assert write_output(tmp_path, note, page("a7b2c9")) == [tmp_path / "output/notes/a7b2c9.md"]
 
 
 def test_render_command_writes_the_page(tmp_path, make_note, monkeypatch):
@@ -73,5 +70,6 @@ def test_render_command_writes_the_page(tmp_path, make_note, monkeypatch):
     docs = tmp_path / "docs"
     result = CliRunner().invoke(app, ["render", str(note.path), "--docs", str(docs), "--profile", "fake"])
     assert result.exit_code == 0, result.output
-    assert (docs / NOTE.out_dir / "20260927_a7b2c9_fake-note.md").exists()
+    [page_file] = list((docs / NOTE.out_dir).glob("*-a7b2c9.md"))
+    assert page_file.name.startswith("20260927-")
     assert note.path.exists()

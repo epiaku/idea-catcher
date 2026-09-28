@@ -1,9 +1,8 @@
-import shutil
 from pathlib import Path
 
 from catcher.core.frontmatter import FrontmatterError, load
 from catcher.modules.pipeline.doctypes import DocType
-from catcher.modules.pipeline.staging import StagedNote, facts_sidecar
+from catcher.modules.pipeline.inbox import Note, facts_sidecar
 
 
 def find_pages_by_id(out_dir: Path, doc_id: str) -> list[Path]:
@@ -33,13 +32,14 @@ def write_page(docs_repo: Path, doctype: DocType, doc_id: str, filename: str, pa
     return [target, *old]
 
 
-def archive_staged(ideas_repo: Path, note: StagedNote) -> list[Path]:
-    dest_dir = ideas_repo / note.doctype.archive_dir
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    touched: list[Path] = []
-    for src in (note.path, facts_sidecar(note.path)):
-        if src.exists():
-            dest = dest_dir / src.name
-            shutil.move(src, dest)
-            touched += [src, dest]
+def write_output(ideas_repo: Path, note: Note, page: str, facts_json: str | None = None) -> list[Path]:
+    """Write the final page to `output/<same subfolder and name>`, plus the YouTube facts next to it."""
+    target = note.output_path(ideas_repo)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(page, encoding="utf-8")
+    touched = [target]
+    if facts_json is not None:
+        sidecar = facts_sidecar(target)
+        sidecar.write_text(facts_json, encoding="utf-8")
+        touched.append(sidecar)
     return touched

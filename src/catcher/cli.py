@@ -1,3 +1,4 @@
+import secrets
 from pathlib import Path
 from typing import Annotated
 
@@ -6,14 +7,22 @@ from dotenv import load_dotenv
 
 from catcher import __version__
 from catcher.core.config import Settings
+from catcher.core.log import configure_logging
 from catcher.modules.llm.backends import make_backend
-from catcher.modules.llm.profiles import load_profiles, resolve_profile
+from catcher.modules.llm.profiles import UnknownProfile, load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
+from catcher.modules.pipeline.inbox import (
+    Note,
+    calculated_stem,
+    is_snapshot_of,
+    name_title,
+    read_note,
+    scan_inbox,
+)
 from catcher.modules.pipeline.inputs import prompt_input
 from catcher.modules.pipeline.process import ProcessOptions, default_services, process_note
 from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
-from catcher.modules.pipeline.staging import load_staged_note, stage_inbox
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.youtube.facts import FactsUnavailable, fetch_facts
 from catcher.modules.youtube.urls import video_id
@@ -26,14 +35,34 @@ app = typer.Typer(
 
 IdeasOpt = Annotated[Path | None, typer.Option("--ideas", help="idea-bucket checkout (default: IDEAS_REPO)")]
 DocsOpt = Annotated[Path | None, typer.Option("--docs", help="epiaku-docs checkout (default: DOCS_REPO)")]
+FileOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--file",
+        "-f",
+        help="process only this document (file name, name without .md, or subfolder/name). Repeat for more",
+    ),
+]
 ProfileOpt = Annotated[
-    str | None, typer.Option("--profile", "--llm-profile", help="LLM profile from profiles.yaml")
+    str | None,
+    typer.Option(
+        "--profile", "--llm-profile", help="LLM profile from profiles.yaml: notes, clippings or youtube"
+    ),
 ]
 
 
 @app.callback()
-def main() -> None:
+def main(
+    log_level: Annotated[
+        str | None, typer.Option("--log-level", help="DEBUG, INFO, WARNING or ERROR (default: LOG_LEVEL)")
+    ] = None,
+) -> None:
     load_dotenv(override=False)
+    settings = Settings()
+    try:
+        configure_logging(log_level or settings.log_level, settings.log_file)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
 
 @app.command()
@@ -43,31 +72,42 @@ def version() -> None:
 
 
 @app.command()
-def stage(
-    ideas: IdeasOpt = None,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="show what would be staged")] = False,
-) -> None:
-    """Move inbox captures to staging/ with a stable id and class."""
+def scan(ideas: IdeasOpt = None, file: FileOpt = None) -> None:
+    """List what is in inbox/ (class, id, duplicates) without changing anything."""
     settings = Settings()
-    result = stage_inbox(ideas or settings.ideas_repo, dry_run=dry_run)
-    verb = "would stage" if dry_run else "staged"
-    for note in result.staged:
-        typer.echo(f"{verb:<12} {note.doctype.name:<15} {note.doc_id:<40} <- {note.doc.fm['source_file']}")
+    result = scan_inbox(ideas or settings.ideas_repo, only=file)
+    winners: dict[str, Note] = {}
+    for note in result.notes:
+        best = winners.get(note.doc_id)
+        if best is None or len(note.doc.body) > len(best.doc.body):
+            winners[note.doc_id] = note
+    for note in result.notes:
+        winner = winners[note.doc_id]
+        dup = note is not winner and is_snapshot_of(note.doc.body, winner.doc.body)
+        status = f"duplicate of {winner.rel.as_posix()}" if dup else "would process"
+        typer.echo(f"{status:<14} {note.doctype.name:<15} {note.doc_id:<24} <- {note.doc.fm['source_file']}")
     for rel, error in result.errors.items():
-        typer.echo(f"{'error':<12} {rel}: {error}", err=True)
-    raise typer.Exit(1 if result.errors else 0)
+        typer.echo(f"{'unreadable':<14} {rel}: {error}", err=True)
+    missing = [q for q in file or [] if q not in result.matched]
+    for query in missing:
+        typer.echo(f'{"not-found":<14} no document named "{query}" in inbox/', err=True)
+    raise typer.Exit(1 if result.errors or missing else 0)
 
 
 @app.command("reason")
-def reason_cmd(staged_note: Path, profile: ProfileOpt = None) -> None:
-    """Run the LLM step on one staged note and print the validated JSON."""
+def reason_cmd(document: Path, profile: ProfileOpt = None) -> None:
+    """Run the LLM step on one document and print the validated JSON. Writes nothing."""
     settings = Settings()
-    note = load_staged_note(staged_note)
+    note = read_note(document)
     if note.doctype.name in ("youtube", "youtube-gemini"):
         typer.echo("YouTube notes need facts first: use `catcher render` for them.")
         raise typer.Exit(2)
     profiles = load_profiles(settings.profiles_file)
-    name, _ = resolve_profile(profiles, requested=profile, class_default=note.doctype.llm_profile)
+    try:
+        name, _ = resolve_profile(profiles, requested=profile, class_default=note.doctype.llm_profile)
+    except UnknownProfile as e:
+        typer.echo(f"profile problem: {e}", err=True)
+        raise typer.Exit(2) from e
     request = LlmRequest(
         task=note.doctype.task,
         input=prompt_input(note, load_tags()),
@@ -90,19 +130,20 @@ def reason_cmd(staged_note: Path, profile: ProfileOpt = None) -> None:
 
 @app.command()
 def render(
-    staged_note: Path,
+    document: Path,
     docs: DocsOpt = None,
     profile: ProfileOpt = None,
     no_review: Annotated[bool, typer.Option("--no-review", help="skip the YouTube reviewer")] = False,
 ) -> None:
-    """Summarize one staged note and write its page into the docs checkout (no archive, no git)."""
+    """Summarize one document and write its page into the docs checkout (no inbox change, no git)."""
     settings = Settings()
     docs_repo = docs or settings.docs_repo
-    note = load_staged_note(staged_note)
+    note = read_note(document)
+    note.name = f"{calculated_stem(str(note.doc.fm['captured']), secrets.token_hex(3), name_title(note))}.md"
     opts = ProcessOptions(profile=profile, review=not no_review, docs_repo=docs_repo)
     try:
         processed = process_note(note, default_services(settings), opts)
-    except LlmError as e:
+    except (LlmError, UnknownProfile) as e:
         typer.echo(f"LLM step failed: {e}", err=True)
         raise typer.Exit(2) from e
     for problem in processed.problems:
@@ -132,21 +173,26 @@ def run_pipeline_cmd(
     no_review: Annotated[bool, typer.Option("--no-review", help="skip the YouTube reviewer")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="change no files, commit nothing")] = False,
     push: Annotated[bool, typer.Option("--push", help="push both repos (off by default)")] = False,
-    limit: Annotated[int | None, typer.Option("--limit", help="process at most N staged notes")] = None,
+    limit: Annotated[int | None, typer.Option("--limit", help="process at most N notes")] = None,
+    file: FileOpt = None,
 ) -> None:
-    """Stage the inbox, summarize, publish pages, archive and commit."""
+    """Process the documents in inbox/: publish pages, file failures and duplicates, and commit."""
     settings = Settings()
-    opts = RunOptions(profile=profile, review=not no_review, dry_run=dry_run, push=push, limit=limit)
+    opts = RunOptions(
+        profile=profile, review=not no_review, dry_run=dry_run, push=push, limit=limit, only=file
+    )
     report = run_pipeline(
         ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
     )
     for item in report.items:
         detail = " ".join(part for part in (item.page or "", item.message) if part)
         typer.echo(f"{item.status:<14} {item.doc_class:<15} {item.doc_id:<24} {detail}")
-    for rel, error in report.staging_errors.items():
-        typer.echo(f"{'stage-error':<14} {rel}: {error}")
+    for rel, error in report.unreadable.items():
+        typer.echo(f"{'unreadable':<14} {rel}: {error}")
+    for query in report.not_found:
+        typer.echo(f'{"not-found":<14} no document named "{query}" in inbox/')
     typer.echo(f"summary: {report.counts()} committed={report.committed} pushed={report.pushed}")
-    failed = bool(report.staging_errors) or report.counts().get("failed", 0) > 0
+    failed = bool(report.unreadable or report.not_found) or report.counts().get("failed", 0) > 0
     raise typer.Exit(1 if failed else 0)
 
 

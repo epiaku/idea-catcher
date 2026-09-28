@@ -10,12 +10,18 @@ from catcher.modules.llm.backends.fake import FakeBackend
 from catcher.modules.llm.profiles import Profile, ProfilesConfig
 from catcher.modules.llm.service import LlmResult, Usage
 from catcher.modules.pipeline.doctypes import DOC_TYPES
+from catcher.modules.pipeline.inbox import Note
 from catcher.modules.pipeline.process import Services
-from catcher.modules.pipeline.staging import StagedNote
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, YoutubeFacts
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _ignore_the_real_dotenv(monkeypatch):
+    """Tests must never read the developer's real .env (it holds API keys and machine paths)."""
+    monkeypatch.setattr("catcher.cli.load_dotenv", lambda *args, **kwargs: False)
 
 
 @pytest.fixture
@@ -41,20 +47,19 @@ def make_note():
         body: str = "An idea.\n",
         root: Path | None = None,
         **fm: Any,
-    ) -> StagedNote:
+    ) -> Note:
         base = {
             "id": doc_id,
             "class": doctype,
             "captured": "2026-09-27",
             "source_file": f"inbox/notes/{doc_id}.md",
-            "staged_at": "2026-09-27T18:00:00+00:00",
         }
         doc = Doc({**base, **fm}, body)
-        path = (root / "staging" / f"{doc_id}.md") if root else Path("staging") / f"{doc_id}.md"
+        path = (root / "inbox/notes" / f"{doc_id}.md") if root else Path("inbox/notes") / f"{doc_id}.md"
         if root:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(dump(doc), encoding="utf-8")
-        return StagedNote(doc_id, DOC_TYPES[doctype], doc, path)
+        return Note(doc_id, DOC_TYPES[doctype], doc, path)
 
     return _make
 
@@ -76,13 +81,13 @@ def make_result():
 
 def _profiles_for_tests() -> ProfilesConfig:
     return ProfilesConfig(
-        default="free-fast",
-        review_profile="claude-sub-evening",
+        default="notes",
+        review_profile="youtube",
         profiles={
-            "free-fast": Profile(backend="fake"),
+            "notes": Profile(backend="fake"),
             "fake": Profile(backend="fake"),
-            "claude-sub-evening": Profile(backend="claude-code", model="sonnet", when="evening"),
-            "claude-sub-now": Profile(backend="claude-code", model="sonnet"),
+            "clippings": Profile(backend="openai", model="gpt-test"),
+            "youtube": Profile(backend="openai", model="gpt-test"),
         },
     )
 
@@ -103,7 +108,7 @@ def make_services():
         return Services(
             settings=Settings(),
             profiles=_profiles_for_tests(),
-            backends=lambda p: chats if p.backend == "claude-code" else notes,
+            backends=lambda p: chats if p.backend == "openai" else notes,
             tags=load_tags(),
             facts=facts or _no_network,
         )

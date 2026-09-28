@@ -6,7 +6,6 @@ from catcher.core.frontmatter import Doc, dump, parse
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.pipeline.doctypes import YOUTUBE
 from catcher.modules.pipeline.process import ProcessOptions, process_note
-from catcher.modules.pipeline.staging import facts_sidecar
 from catcher.modules.youtube.facts import FactsUnavailable
 
 GEMINI = "https://gemini.google.com/app/925d9b0b4ca21b63?is_sa=1"
@@ -42,7 +41,9 @@ def test_youtube_page_has_python_metrics_and_embed(make_note, make_services, yt_
     assert "[6:50] I plan my week in Obsidian every Sunday." in chats.prompts[0]
 
 
-def test_facts_are_saved_next_to_the_note_and_reused(make_note, make_services, yt_facts, tmp_path):
+def test_the_facts_come_back_with_the_page_and_nothing_is_written(
+    make_note, make_services, yt_facts, tmp_path
+):
     calls = []
 
     def fetch(vid):
@@ -50,17 +51,9 @@ def test_facts_are_saved_next_to_the_note_and_reused(make_note, make_services, y
         return yt_facts
 
     note = youtube_note(make_note, tmp_path)
-    svc = make_services(facts=fetch)
-    first = process_note(note, svc, NO_REVIEW)
-    assert first.written == [facts_sidecar(note.path)]
-    second = process_note(note, svc, NO_REVIEW)
-    assert calls == ["MBPHU7aaklM"] and second.written == []
-
-
-def test_dry_run_does_not_write_facts(make_note, make_services, yt_facts, tmp_path):
-    note = youtube_note(make_note, tmp_path)
-    process_note(note, make_services(facts=lambda vid: yt_facts), ProcessOptions(review=False, dry_run=True))
-    assert not facts_sidecar(note.path).exists()
+    processed = process_note(note, make_services(facts=fetch), NO_REVIEW)
+    assert processed.facts == yt_facts and calls == ["MBPHU7aaklM"]
+    assert sorted(p.name for p in note.path.parent.iterdir()) == [note.path.name]
 
 
 def test_no_transcript_is_said_on_the_page(make_note, make_services, yt_facts, tmp_path):

@@ -12,11 +12,14 @@ class Settings(BaseSettings):
     freellmapi_url: str = "http://localhost:3001/v1"
     freellmapi_model: str = "auto"
     freellmapi_api_key: str = "not-needed"
-    claude_bin: str = "claude"
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
     llm_timeout_s: int = 600
     transcript_languages: str = "en"
     git_author_name: str = "idea-catcher"
     git_author_email: str = "idea-catcher@users.noreply.github.com"
+    log_level: str = "INFO"
+    log_file: Path | None = None
 
     @property
     def transcript_language_list(self) -> list[str]:

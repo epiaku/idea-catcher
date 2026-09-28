@@ -7,20 +7,21 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict
 
-BackendName = Literal["freellmapi", "claude-code", "fake"]
+BackendName = Literal["freellmapi", "openai", "fake"]
 
 
 class Profile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     backend: BackendName
     model: str | None = None
-    when: Literal["now", "evening"] = "now"
 
 
 class ProfilesConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     default: str
-    review_profile: str = "claude-sub-evening"
+    review_profile: str = "youtube"
     profiles: dict[str, Profile]
 
 
@@ -50,4 +51,10 @@ def resolve_profile(
     name = requested or class_default or cfg.default
     if name not in cfg.profiles:
         raise UnknownProfile(f"unknown LLM profile {name!r}; known: {', '.join(sorted(cfg.profiles))}")
-    return name, cfg.profiles[name]
+    profile = cfg.profiles[name]
+    if profile.backend == "openai" and not profile.model:
+        raise UnknownProfile(
+            f"profile {name!r} uses the openai backend but has no model: set its model variable in .env "
+            "(see profiles.yaml)"
+        )
+    return name, profile

@@ -1,10 +1,10 @@
-default: free-fast
-review_profile: claude-sub-evening
-evening_window: { start: "21:00", end: "06:00" }   # used from stage B; stage A runs every profile immediately
-retry_time: "08:00"
-stuck_after_days: 3
+default: notes
+review_profile: youtube            # the reviewer uses this profile unless the run says otherwise
+retry_delay: 60m                   # used from stage B: a deferred job is tried again after this
+budget_retry_delay: 6h             # used from stage B: same, when the API key's budget is used up
+stuck_after_days: 3                # used from stage B
 profiles:
-  free-fast:          { backend: freellmapi,  model: "${FREELLMAPI_MODEL:-auto}", when: now }
-  claude-sub-evening: { backend: claude-code, model: sonnet, when: evening }
-  claude-sub-now:     { backend: claude-code, model: sonnet, when: now }
-  fake:               { backend: fake, when: now }
+  notes:     { backend: freellmapi, model: "${FREELLMAPI_MODEL:-auto}" }
+  clippings: { backend: openai,     model: "${OPENAI_MODEL_CLIPPINGS}" }   # AI chats
+  youtube:   { backend: openai,     model: "${OPENAI_MODEL_YOUTUBE}" }     # both YouTube classes and the reviewer
+  fake:      { backend: fake }

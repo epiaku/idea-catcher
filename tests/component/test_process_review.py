@@ -95,7 +95,7 @@ def test_gemini_chat_without_review_is_converted(make_note, make_services, yt_fa
 def test_blocked_review_backend_is_not_called(make_note, make_services, yt_facts, tmp_path):
     notes, chats = FakeBackend(), FakeBackend()
     services = make_services(note_backend=notes, chat_backend=chats, facts=lambda v: yt_facts)
-    opts = ProcessOptions(profile="fake", blocked_backends=frozenset({"claude-code"}))
+    opts = ProcessOptions(profile="fake", blocked_backends=frozenset({"openai"}))
     with pytest.raises(UsageLimitReached):
         process_note(youtube_note(make_note, tmp_path), services, opts)
     assert notes.prompts == [] and chats.prompts == []

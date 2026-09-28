@@ -16,22 +16,18 @@ class DocType:
     schema_name: str
     template: str
     out_dir: str
-    archive_dir: str
     llm_profile: str
     reviewed: bool = False
 
 
-NOTE = DocType(
-    "note", "note", "NoteSummary", "note.md.j2", f"{DOCS_ROOT}/notes", "archive/notes", "free-fast"
-)
+NOTE = DocType("note", "note", "NoteSummary", "note.md.j2", f"{DOCS_ROOT}/notes", "notes")
 AI_CHAT = DocType(
     "ai-chat",
     "ai-chat",
     "ChatSummary",
     "ai-chat.md.j2",
     f"{DOCS_ROOT}/clipping",
-    "archive/clippings",
-    "claude-sub-evening",
+    "clippings",
 )
 YOUTUBE = DocType(
     "youtube",
@@ -39,8 +35,7 @@ YOUTUBE = DocType(
     "YoutubeSummary",
     "youtube.md.j2",
     f"{DOCS_ROOT}/youtube",
-    "archive/youtube",
-    "claude-sub-evening",
+    "youtube",
     reviewed=True,
 )
 YOUTUBE_GEMINI = DocType(
@@ -49,8 +44,7 @@ YOUTUBE_GEMINI = DocType(
     "YoutubeSummary",
     "youtube.md.j2",
     f"{DOCS_ROOT}/youtube",
-    "archive/youtube",
-    "claude-sub-evening",
+    "youtube",
     reviewed=True,
 )
 DOC_TYPES: dict[str, DocType] = {t.name: t for t in (NOTE, AI_CHAT, YOUTUBE, YOUTUBE_GEMINI)}
