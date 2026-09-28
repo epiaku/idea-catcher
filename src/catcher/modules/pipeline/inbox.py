@@ -4,6 +4,7 @@ import re
 import secrets
 import shutil
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,10 @@ log = logging.getLogger("catcher.inbox")
 MAX_NAME = 128  # the longest file name we derive from a document name, sidecars and .error.txt included
 _LONGEST_SUFFIX = ".youtube.json"
 MAX_STEM = MAX_NAME - len(_LONGEST_SUFFIX)
+ARTIFACTS_DIR = "artifacts"  # archive/artifacts/ and <epiaku-docs>/idea-bucket/artifacts/
+_NAMED = re.compile(r"^\d{8}-[0-9a-f]{6}-")  # a name that already has its date and guid
+_JUNK = frozenset({"thumbs.db", "desktop.ini"})
+_ILLEGAL = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 ORIGINAL_KEY = "original_filename"
 CALCULATED_KEY = "calculated_filename"
 
@@ -57,8 +62,25 @@ class Note:
 
 
 @dataclass
+class Artifact:
+    """A file in `inbox/` that is not markdown (a PDF, an image...). It is only renamed and copied."""
+
+    path: Path  # the inbox file
+    name: str | None = None  # `YYYYMMDD-<guid>-<original name>`, once it has one
+
+    @property
+    def original_name(self) -> str:
+        return _NAMED.sub("", self.path.name, count=1) if _NAMED.match(self.path.name) else self.path.name
+
+    @property
+    def size(self) -> int:
+        return self.path.stat().st_size
+
+
+@dataclass
 class ScanResult:
     notes: list[Note] = field(default_factory=list)
+    artifacts: list[Artifact] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)  # unreadable files: inbox-relative path -> reason
     matched: set[str] = field(default_factory=set)  # the `only` names that found an inbox file
 
@@ -207,6 +229,54 @@ def with_filename_fields(raw: str, original: str, calculated: str) -> str:
     return f"{bom}---{newline}{lines(set())}---{newline}{text}"
 
 
+def artifact_name(original: str, now: datetime, taken: Callable[[str], bool]) -> str:
+    """`YYYYMMDD-<short guid>-<original name>`. A name that already starts like that is kept.
+
+    The original name and extension stay as they are (we know nothing about the content), apart from
+    characters that are illegal in file names, and the whole name is cut to 128 characters.
+    """
+    if _NAMED.match(original):
+        return original
+    cleaned = _ILLEGAL.sub("_", original).strip() or "file"
+    suffix = Path(cleaned).suffix
+    stem = cleaned[: len(cleaned) - len(suffix)]
+    for _ in range(50):
+        prefix = f"{now.strftime('%Y%m%d')}-{secrets.token_hex(3)}-"
+        room = MAX_NAME - len(prefix) - len(suffix)
+        name = f"{prefix}{stem[:room].rstrip()}{suffix}"
+        if not taken(name):
+            return name
+    raise RuntimeError("could not find an unused file name")
+
+
+def copy_artifact(
+    ideas_repo: Path, docs_repo: Path, artifact: Artifact, now: datetime | None = None
+) -> tuple[list[Path], list[Path]]:
+    """Archive the file and copy it to epiaku-docs, both under `YYYYMMDD-<guid>-<original name>`, and take it
+    out of `inbox/`. Returns the touched paths of the idea-bucket repo and of the epiaku-docs repo.
+    """
+    now = now or datetime.now().astimezone()
+    archive_dir = ideas_repo / "archive" / ARTIFACTS_DIR
+    docs_dir = docs_repo / "idea-bucket" / ARTIFACTS_DIR
+    artifact.name = artifact.name or artifact_name(
+        artifact.path.name, now, lambda n: (archive_dir / n).exists() or (docs_dir / n).exists()
+    )  # a name that already has its date and guid (a requeued file) is kept
+    archived, published = archive_dir / artifact.name, docs_dir / artifact.name
+    for dest in (archived, published):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact.path, dest)
+    artifact.path.unlink()
+    log.info(
+        "artifact %s -> archive/%s/%s and idea-bucket/%s/%s",
+        artifact.original_name,
+        ARTIFACTS_DIR,
+        artifact.name,
+        ARTIFACTS_DIR,
+        artifact.name,
+    )
+    return [archived, artifact.path], [published]
+
+
 def rel_in_inbox(ideas_repo: Path, src: Path) -> Path:
     return src.resolve().relative_to((ideas_repo / "inbox").resolve())
 
@@ -351,20 +421,27 @@ def _analyse(path: Path, doc: Doc, source_file: str, now: datetime) -> Note:
 
 
 def scan_inbox(ideas_repo: Path, *, now: datetime | None = None, only: list[str] | None = None) -> ScanResult:
-    """Read the inbox and work out each document's class and id. Writes nothing and moves nothing."""
+    """Read the inbox: markdown documents (class and id in memory) and other files (artifacts).
+
+    Writes nothing and moves nothing.
+    """
     now = now or datetime.now().astimezone()
     inbox = ideas_repo / "inbox"
     result = ScanResult()
-    for path in sorted(inbox.rglob("*.md")) if inbox.is_dir() else []:
+    for path in sorted(inbox.rglob("*")) if inbox.is_dir() else []:
         rel = path.relative_to(inbox)
-        if any(part.startswith(".") for part in rel.parts):
+        if not path.is_file() or any(part.startswith(".") for part in rel.parts):
             continue
+        if path.name.lower() in _JUNK:
+            continue
+        is_note = path.suffix.lower() == ".md"
         doc: Doc | None = None
         error: str | None = None
-        try:
-            doc = load(path)
-        except (FrontmatterError, UnicodeDecodeError) as e:
-            error = str(e)
+        if is_note:
+            try:
+                doc = load(path)
+            except (FrontmatterError, UnicodeDecodeError) as e:
+                error = str(e)
         if only is not None:
             names = [
                 rel
@@ -372,10 +449,15 @@ def scan_inbox(ideas_repo: Path, *, now: datetime | None = None, only: list[str]
             original = doc.fm.get(ORIGINAL_KEY) if doc else None
             if isinstance(original, str) and original:
                 names.append(rel.parent / original)
+            if not is_note and _NAMED.match(rel.name):
+                names.append(rel.parent / _NAMED.sub("", rel.name, count=1))
             hits = {query for query in only if any(name_matches(query, name) for name in names)}
             if not hits:
                 continue
             result.matched |= hits
+        if not is_note:
+            result.artifacts.append(Artifact(path))
+            continue
         if doc is None:
             result.errors[f"inbox/{rel.as_posix()}"] = error or "unreadable"
             log.error("cannot read inbox/%s: %s", rel.as_posix(), error)

@@ -1,0 +1,1 @@
+Create a YouTube video show how I get my best ideas for example walking with my dog exercising like feet was spinning relaxing under the shower or doing yoga most importantly I have my workflow to capture dictate ideas with Obsidian and then catch all the ideas in my workflow and for those two documents in my site, Park do

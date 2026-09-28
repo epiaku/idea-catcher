@@ -30,7 +30,7 @@ uv run catcher run pipeline --push                                   # 3. full r
 ## The commands
 
 - **`run pipeline`**: the whole flow, in one go. This is the one you use.
-- **`scan`**: lists what is in `inbox/` and what a run would do with it. It changes nothing.
+- **`scan`**: lists what is in `inbox/` and what a run would do with it: markdown documents and artifacts. It changes nothing.
 - **`reason`**: sends one document to the LLM and prints the answer. Nothing is written.
 - **`render`**: makes the page for one document and writes it into `epiaku-docs`. No commit.
 - **`youtube facts`**: prints the counts and transcript of one YouTube video.
@@ -52,6 +52,7 @@ What one run does, in order:
 4. Sends the document to the LLM (and for YouTube, to the reviewer).
 5. When it is ready, writes the page to `epiaku-docs` and over the working copy in `output/`, under the same calculated name.
 6. Moves a document to `failed/` if it cannot be processed for good.
+   Files that are not markdown (PDFs, images) are **artifacts**: they are renamed `YYYYMMDD-<guid>-<original name>`, copied to `archive/artifacts/` and to `idea-bucket/artifacts/` in the root of epiaku-docs, and removed from `inbox/`. No LLM is used, and `--limit` does not apply.
 7. Leaves the working copy in `output/` with `stage: deferred` if the problem is temporary.
 8. Commits both repos. It pushes only when you ask.
 
@@ -201,7 +202,8 @@ The status in the first column is one of:
 - **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting.
 - **`failed`**: could not be processed for good, for example invalid LLM output twice or an invalid page. The note moves to `failed/` with a `.error.txt` that says why.
 - **`duplicate`**: an earlier snapshot of a longer clip. Moved to `duplicates/`, no LLM call.
-- **`skipped`**: left for the next run because of `--limit`.
+- **`skipped`**: left for the next run because of `--limit`, or an artifact over the size limit.
+- **`artifact`**: a file that is not markdown was renamed, archived and copied to epiaku-docs (`would_copy` in a `--dry-run`).
 
 The last line shows the counts, and whether both repos were committed and pushed.
 
@@ -244,17 +246,47 @@ git -C ../epiaku-docs log --stat -1               # look at what it wrote
 uv run catcher run pipeline --push                # process the rest and push
 ```
 
-### Run on copies, so the real repos are safe
+### Test on clean copies of the test data
+
+This makes **fresh test repos on this laptop**, in `/tmp/ic`, from test data that is committed in this repo. You run the Idea Catcher on those test repos, so your real `idea-bucket` and `epiaku-docs` are never touched, and the test data is always the same, even when your real repos change.
 
 ```bash
-git clone --no-hardlinks ../idea-bucket /tmp/ic/idea-bucket
-git clone --no-hardlinks ../epiaku-docs /tmp/ic/epiaku-docs
-git -C /tmp/ic/idea-bucket remote remove origin
-git -C /tmp/ic/epiaku-docs remote remove origin
+uv run catcher testdata reset
 uv run catcher run pipeline --ideas /tmp/ic/idea-bucket --docs /tmp/ic/epiaku-docs --profile fake
 ```
 
-Without a remote, nothing can be pulled or pushed by mistake.
+The first command:
+
+1. Deletes `/tmp/ic` if it is there. It only deletes a folder that a previous `testdata reset` made. If `/tmp/ic` came from somewhere else (for example an old `git clone`), it stops and tells you to remove it yourself: `rm -rf /tmp/ic`.
+2. Copies the test data into `/tmp/ic/idea-bucket` and `/tmp/ic/epiaku-docs`.
+3. Turns each into a git repo with one commit and **no remote**, so nothing can be pulled or pushed by mistake.
+
+Run it again whenever you want to start over. Options: `--target PATH` to make the repos somewhere else.
+
+**What the test data is.** It lives in `tests/data/` in the idea-catcher repo and holds only the folders the Idea Catcher reads and writes, not the full repos:
+
+- `tests/data/idea-bucket/inbox/`: the captures (47 markdown files, including a chat that was clipped several times as it grew, Gemini video chats and dictated notes) and one tiny fake PDF (`sample-report.pdf`) to try artifacts.
+- `tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/`: the pages that were already published, so overwrite-by-id and the sibling links can be tried.
+- `tests/data/epiaku-docs/idea-bucket/artifacts/`: the folder in the root of epiaku-docs where artifacts (files that are not markdown) are sent. It is empty apart from a `.gitkeep` file, because Git does not keep empty folders.
+
+Nothing else from the real repos is needed: no Hugo theme or site config, no `README`, no templates, no `.obsidian`, and none of the result folders (`archive/`, `output/`, `failed/`, `duplicates/`), which the run creates.
+
+**The test suite uses the same data.** `test_testdata_run.py` runs the whole pipeline on it with the fake LLM, so a change that breaks the flow on real-looking captures is caught.
+
+**Refresh the test data** (rarely, for example to add a new kind of capture). Copy the folders from your real repos, look at the result, and commit it:
+
+```bash
+rsync -a --delete --exclude='.DS_Store' --exclude='.*/' ../idea-bucket/inbox/ tests/data/idea-bucket/inbox/
+rsync -a --delete --exclude='.DS_Store' ../epiaku-docs/hugo/content/en/docs/idea-bucket/ \
+  tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/
+git status tests/data          # check what changed
+```
+
+The data contains real notes, so read it before you commit, and never put secrets in it. The numbers in `test_testdata_run.py` are loose on purpose (there must be duplicates, one artifact and no failures), so refreshing the data does not break it.
+
+### Send a PDF or an image to epiaku-docs
+
+Drop the file in `inbox/` (not in `notes/` or `clippings/`) and run the pipeline. It is renamed `YYYYMMDD-<guid>-<original name>` and copied to `archive/artifacts/` and to `idea-bucket/artifacts/` in the root of epiaku-docs. To do it again, move it from `archive/artifacts/` back into `inbox/`: it keeps its name and overwrites the same files. Files over 25 MB (`ARTIFACT_MAX_MB`) stay in `inbox/` with a warning.
 
 ### Retry a stalled note
 
@@ -295,6 +327,7 @@ mv "../idea-bucket/duplicates/clippings/20260925-a1b2c3-new-chat.md" "../idea-bu
 ## Where things end up
 
 - **`inbox/`**: new captures. The only place a run looks for work. A document leaves it when work on it starts.
+- **`archive/artifacts/`**: files that are not markdown, renamed, and the same files are in `idea-bucket/artifacts/` in the root of epiaku-docs.
 - **`archive/`**: the original of every document that was worked on, under its calculated name. The text is as captured; two lines were added to its frontmatter (`original_filename`, `calculated_filename`).
 - **`output/`**: the working copy (`stage: analyzed` or `deferred`) while it is worked on or stalled, then the final page, the same text as in `epiaku-docs`. A run never reads it.
 - **`failed/`**: files that could not be processed, with the reason.

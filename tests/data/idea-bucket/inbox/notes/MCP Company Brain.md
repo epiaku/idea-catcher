@@ -1,0 +1,1 @@
+When we have our second brain can we also move it to a separate running mcp

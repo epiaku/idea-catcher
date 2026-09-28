@@ -342,6 +342,8 @@ A run is up to four kinds of jobs: one `pipeline.run`, one `llm.reason` per note
       • youtube / youtube-gemini → yt-dlp counts + transcript (with fetch date)
       • youtube-gemini → also extract the video URL and Gemini's answer
       • no transcript → mark "no transcript", use title + description
+      • files that are not markdown (artifacts) → renamed YYYYMMDD-<guid>-<original name>,
+        copied to archive/artifacts/ and epiaku-docs idea-bucket/artifacts/ (no LLM job)
    3. per remaining document (respecting --limit / --file) right before its LLM step:
       calculated name YYYYMMDD-<short guid>-<title>.md (kept if it already has one),
       original → archive/<sub>/ (+ 2 frontmatter lines), working copy (stage: analyzed)
@@ -611,6 +613,7 @@ tests/
 ```
 
 - **Recorded, not generated:** fixtures are captured once from real runs (a `catcher fixtures record` helper) and then committed, so tests reflect real formats.
+- **Test data from the real repos:** `tests/data/` holds a committed copy of only the folders the Idea Catcher uses (`idea-bucket/inbox/` and the Hugo `idea-bucket` pages of `epiaku-docs`). `catcher testdata reset` turns it into fresh git repos without a remote in `/tmp/ic`, for manual tries, and the test suite runs the whole pipeline on the same data.
 - **Snapshots** of rendered pages make template changes visible in the diff. Update them on purpose with `pytest --snapshot-update`.
 - **Postgres for tests:** a session-scoped fixture starts the `pgvector/pgvector:pg17` container (with `testcontainers`, or the `db` service from `compose.test.yaml`). It runs the Alembic migrations once, and gives each test a clean database (truncate between tests).
 

@@ -1,0 +1,1 @@
+To create YouTube demo to show how to run a database in a container in Azure for this we need NFS file shares and we need vnet private points show in this demo how people can run their own type of database like SQLlight, postgres or neo4J 

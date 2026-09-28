@@ -1,0 +1,1 @@
+Create a YouTube demo to show how to run a super base database in a container in Azure container apps combine it as well with ruining an API in a container and a redis cache in a container to make a solution more secure and more scalable for the demo as well create a very simple iPhone and android app using react in a web app to do some great operations or user authentication

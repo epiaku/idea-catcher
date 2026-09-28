@@ -1,0 +1,1 @@
+Create a YouTube demo showing decoration of a landing zonein Azure for example with the front end and the back end I make the front end available as a Web app

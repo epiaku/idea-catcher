@@ -1,0 +1,1 @@
+Create a YouTube example video how you can create a development documentation site you should you go from that site create a second brain +2nd brain we will serve in an MCP server and this way we can show how to use the MCP surfer to directly chat second brain in the Developer documentation site with as well use CMCP surfer in your VS coat for coding or other harnesses

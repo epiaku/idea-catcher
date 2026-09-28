@@ -6327,3 +6327,36 @@ Expected: `pushed=True`. GitHub shows one `idea-catcher: publish N page(s)` comm
 **Known limits (documented):** the guid is random, so a name cannot be predicted; a re-clip of one conversation gets its own name, so `output/` can hold several copies for one page in `epiaku-docs`; requeueing an edited file overwrites its archive copy; a note duplicated in Obsidian keeps the copied `calculated_filename` and would overwrite the original's archive file.
 
 **Files:** `inbox.py` (`calculated_stem`, `slugify_title`, `name_title`, `first_words`, `assign_name`, `with_filename_fields`, `Note.name`, `Note.original`, `Note.target_rel`), `publish.py` (`write_output` uses the calculated name), `render.py` (`page_name`, `source_file`), `cli.py`, tests `tests/component/test_inbox.py` and `tests/integration/git/test_run.py`. Docs: the pipeline page (new "File names" section), the architecture, how-to-run pages.
+
+---
+
+### Task 25: Artifacts (files that are not markdown)
+
+> **Status: implemented (2026-09-28), not yet committed.** 228 tests pass. Decision from the user: the run processes `.md` files; other files are sent on, renamed, without any LLM step.
+
+**Rules:**
+
+1. **Every non-markdown file in `inbox/`** (at any depth, hidden files and `Thumbs.db` / `desktop.ini` excluded) is an `Artifact`, found by `scan_inbox()` (`ScanResult.artifacts`).
+2. **Name:** `YYYYMMDD-<6 hex guid>-<original name>`, the date being the processing day. The original name and extension stay, illegal characters become `_`, the name is cut to 128 characters keeping the extension, and the guid is redrawn until the name is free in `archive/artifacts/` and `idea-bucket/artifacts/`. A name that already matches `^\d{8}-[0-9a-f]{6}-` is kept, so a file moved back from the archive is a retry that overwrites the same files. The rule applies **only to artifacts**; markdown keeps using the `calculated_filename` frontmatter line.
+3. **`copy_artifact()`:** copy to `archive/artifacts/<name>` and to `<epiaku-docs>/idea-bucket/artifacts/<name>` (the root of the docs repo, outside `hugo/`), then remove the inbox file. Nothing goes to `output/`. A copy error (`OSError`) leaves the file in `inbox/` and reports `failed`.
+4. **Size limit:** more than `ARTIFACT_MAX_MB` (default 25) is skipped with a `WARNING`, reported as `skipped`, and stays in `inbox/`.
+5. **`--limit` does not apply** (no LLM cost). `--file` matches the file name, the name without its prefix, and the path. A dry run reports `would_copy` and changes nothing. The docs commit message becomes `idea-catcher: publish N page(s) and M artifact(s)` when there are artifacts.
+6. **`catcher scan`** lists artifacts (`would copy`, or `would skip` when over the limit).
+
+**Files:** `inbox.py` (`Artifact`, `artifact_name`, `copy_artifact`, `scan_inbox`), `run.py` (`copy_artifacts`, statuses `artifact` and `would_copy`), `core/config.py` and `.env.example` (`ARTIFACT_MAX_MB`), `cli.py`, tests in `tests/component/test_inbox.py` and `tests/integration/git/test_run.py`. Docs: the pipeline page (new "Artifacts" section), how-to-run, configuration and architecture pages.
+
+---
+
+### Task 26: Committed test data and `catcher testdata reset`
+
+> **Status: implemented (2026-09-28), not yet committed.** 235 tests pass. Reason: manual tests used fresh clones of `idea-bucket` and `epiaku-docs`, so when those repos change there would be no test data left.
+
+**Rules:**
+
+1. **Only the needed folders** are copied into `tests/data/` (1.2 MB): `idea-bucket/inbox/` (47 markdown captures, plus one tiny fake `sample-report.pdf` to try artifacts) and `epiaku-docs/hugo/content/en/docs/idea-bucket/` (the already published pages), plus the empty folder `epiaku-docs/idea-bucket/artifacts/` (a `.gitkeep`) where artifacts are sent. The pipeline reads and writes nothing else. Hidden files (`.DS_Store`, `.trash`) are left out, and the data was scanned for secrets before it was committed (none found).
+2. **`reset_test_repos(target=/tmp/ic, source=tests/data)`** deletes the target, copies the data, and makes two git repos (one commit, **no remote**). It only deletes a target that has the marker file `.catcher-testdata` (written when it made it) and refuses anything else, so a wrong `--target` cannot delete real work.
+3. **`catcher testdata reset [--target] [--source]`** calls it and prints the run command. Exit code 2 when it refuses.
+4. **The suite uses the data too:** `tests/component/test_testdata.py` (what the data holds, fresh every time, no remote, refusal to delete a foreign folder, the command) and `tests/integration/git/test_testdata_run.py` (the whole pipeline on the data with the fake LLM: no failures, one artifact, duplicates found, YouTube clips stalled because facts cannot be fetched in tests, both repos clean afterwards). The assertions are deliberately loose, so refreshing the data does not break them.
+5. **The how-to page** has the new commands, what the data is, and how to refresh it.
+
+**Files:** `src/catcher/core/testdata.py`, `src/catcher/cli.py` (`testdata reset`), `tests/data/**`, the two test files above. Docs: how-to-run and architecture pages.

@@ -337,7 +337,8 @@ idea-bucket/
 │                             AI chats, YouTube links, web articles (classified by `source`)
 ├── archive/               ← the original, under its calculated name, for reference and replay
 │   ├── notes/
-│   └── clippings/
+│   ├── clippings/
+│   └── artifacts/         ← files that are not markdown (PDFs, images), renamed
 ├── output/                ← the working copy while it is worked on, and the final result
 │   ├── notes/
 │   └── clippings/
@@ -354,6 +355,18 @@ idea-bucket/
 - **`output/`**: the working copy (with a `stage` in its frontmatter) while it is worked on, and the **final page** when it is ready: identical to the page written to `epiaku-docs`. For YouTube, `<name>.youtube.json` sits next to the final page with the counts and transcript the summary was checked against.
 - **`failed/`**: the document, next to `<name>.error.txt` with the reason. See [Failures](#failed-folder).
 - **`duplicates/`**: an earlier snapshot of a longer clip, with `duplicate_of: <subfolder>/<longest file name>` in its frontmatter. See [Duplicates](#duplicates-folder).
+
+### Artifacts: files that are not markdown {#artifacts}
+
+A file in `inbox/` that is **not** `.md` (a PDF, an image, a `.txt`, a `.csv`) is an **artifact**. We know nothing about it, so there is no LLM step, no working copy and no page. It is only renamed and copied:
+
+- **Name:** `YYYYMMDD-<short guid>-<original file name>`, for example `20260928-a1b2c3-Quarterly report (final).pdf`. The original name and extension stay as they are, except for characters that are illegal in file names (`/ \ : * ? " < > |` become `_`), and the whole name is cut to 128 characters, keeping the extension. The date is the day of processing.
+- **Where it goes:** a copy to `archive/artifacts/` (flat: artifacts arrive in `inbox/`, not in `notes/` or `clippings/`), and a copy to the **root of the epiaku-docs repo**, in `idea-bucket/artifacts/`. Not to the Hugo content folders: Hugo cannot turn a PDF or an image into a page, and the pipeline does not know whether it should be on the site. If you want one on the site, copy it to Hugo's `static/` folder yourself.
+- **Then it leaves `inbox/`.** Nothing is written to `output/`.
+- **A name that already starts with `YYYYMMDD-<guid>-`** (8 digits, 6 hex characters) is **not renamed**. So a file you move from `archive/artifacts/` back into `inbox/` keeps its name and overwrites the same files in `archive/artifacts/` and `idea-bucket/artifacts/`. That is the retry.
+- **Size limit:** a file over **25 MB** (`ARTIFACT_MAX_MB`) is skipped with a warning and stays in `inbox/`, because epiaku-docs is a Git repo and GitHub rejects files over 100 MB.
+- **`--limit` does not apply**, because artifacts cost nothing. `--file` finds an artifact by its file name or by the name it was captured under. `scan` lists them (`would copy`, or `would skip` when too large).
+- **Hidden files** (`.DS_Store`) and `Thumbs.db` / `desktop.ini` are ignored.
 
 ### File names {#file-names}
 

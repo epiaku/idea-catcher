@@ -469,3 +469,72 @@ def test_a_failed_note_keeps_its_archive_copy_and_leaves_no_working_copy(repos, 
     assert failed.name == archived.name
     assert load(archived).body == load(failed).body  # the text is untouched
     assert absent(repos.ideas, "output", "clippings", "systeme.md")
+
+
+def add_artifact(repos, name: str = "report.pdf", data: bytes = b"%PDF-1.7 binary \x00\x01") -> Path:
+    path = repos.ideas / "inbox" / name
+    path.write_bytes(data)
+    return path
+
+
+def test_an_artifact_is_archived_and_copied_to_epiaku_docs_and_committed(repos, make_services, sh):
+    src = add_artifact(repos)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert report.counts() == {"published": 2, "artifact": 1}
+    [archived] = list((repos.ideas / "archive/artifacts").iterdir())
+    [published] = list((repos.docs / "idea-bucket/artifacts").iterdir())
+    assert archived.name == published.name and archived.name.endswith("-report.pdf")
+    assert archived.read_bytes() == published.read_bytes() == b"%PDF-1.7 binary \x00\x01"
+    assert not src.exists() and not (repos.ideas / "output/artifacts").exists()
+    assert sh(repos.docs, "status", "--porcelain") == "" and sh(repos.ideas, "status", "--porcelain") == ""
+    assert (
+        sh(repos.docs, "log", "-1", "--format=%s").strip()
+        == "idea-catcher: publish 2 page(s) and 1 artifact(s)"
+    )
+    assert not list((repos.docs / "hugo").rglob("*.pdf"))  # nothing goes into the Hugo content
+
+
+def test_a_requeued_artifact_keeps_its_name(repos, make_services):
+    add_artifact(repos)
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    [archived] = list((repos.ideas / "archive/artifacts").iterdir())
+    archived.replace(repos.ideas / "inbox" / archived.name)  # the manual retry
+    again = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert again.counts() == {"artifact": 1}
+    assert [p.name for p in (repos.ideas / "archive/artifacts").iterdir()] == [archived.name]
+    assert [p.name for p in (repos.docs / "idea-bucket/artifacts").iterdir()] == [archived.name]
+
+
+def test_a_file_over_the_size_limit_is_skipped_with_a_warning_and_stays_in_the_inbox(
+    repos, make_services, caplog
+):
+    src = add_artifact(repos)
+    services = make_services()
+    services.settings.artifact_max_mb = 0
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    assert report.counts() == {"published": 2, "skipped": 1}
+    assert src.exists() and not (repos.ideas / "archive/artifacts").exists()
+    assert not (repos.docs / "idea-bucket").exists()
+    assert any(r.levelname == "WARNING" and "ARTIFACT_MAX_MB" in r.getMessage() for r in caplog.records)
+
+
+def test_a_dry_run_only_reports_the_artifact(repos, make_services):
+    src = add_artifact(repos)
+    before = files(repos.ideas)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), make_services())
+    assert report.counts() == {"would_publish": 2, "would_copy": 1}
+    assert src.exists() and files(repos.ideas) == before and not (repos.docs / "idea-bucket").exists()
+
+
+def test_limit_does_not_apply_to_artifacts_and_file_can_select_only_one(repos, make_services):
+    add_artifact(repos, "one.pdf")
+    add_artifact(repos, "two.png", b"\x89PNG")
+    limited = run_pipeline(repos.ideas, repos.docs, RunOptions(limit=1), make_services())
+    assert limited.counts() == {"published": 1, "skipped": 1, "artifact": 2}
+
+
+def test_file_can_name_just_an_artifact(repos, make_services):
+    add_artifact(repos)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(only=["report.pdf"]), make_services())
+    assert report.counts() == {"artifact": 1}
+    assert (repos.ideas / "inbox/notes/YouTube walks.md").exists()  # the notes were not selected

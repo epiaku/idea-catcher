@@ -63,6 +63,7 @@ If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ER
 
 ### Other
 
+- `ARTIFACT_MAX_MB` (default `25`): files in `inbox/` that are not markdown (PDFs, images) are copied to epiaku-docs. Files over this size are skipped with a warning and stay in `inbox/`.
 - `LLM_TIMEOUT_S` (default `600`): seconds to wait for one LLM answer before it counts as unavailable.
 - `TRANSCRIPT_LANGUAGES` (default `en`): preferred YouTube transcript languages, comma-separated, for example `en, nl`.
 - `GIT_AUTHOR_NAME` (default `idea-catcher`): author name on the commits the pipeline makes.

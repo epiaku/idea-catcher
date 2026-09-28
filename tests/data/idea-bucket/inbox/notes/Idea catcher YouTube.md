@@ -1,0 +1,1 @@
+To the ID catcher be used for Obsidian to receive files also check if the file is a YouTube link if it’s a YouTube link then already create cards for the APR oxides by finding description and create a card in the format that we need

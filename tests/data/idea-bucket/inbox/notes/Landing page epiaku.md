@@ -1,0 +1,1 @@
+G’day to landing page showing that we’re starting a new company soon at Bert. People can sign up from email list to get notified. We also that link to our YouTube channel. We might even show a grid of cards with all available videos on the YouTube sites.

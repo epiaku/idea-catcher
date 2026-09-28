@@ -1,0 +1,1 @@
+Can you add react plugins to Hugo to build pieces of code for example to talk to a database

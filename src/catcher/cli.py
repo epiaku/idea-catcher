@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from catcher import __version__
 from catcher.core.config import Settings
 from catcher.core.log import configure_logging
+from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError, reset_test_repos
 from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import UnknownProfile, load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
@@ -86,6 +87,11 @@ def scan(ideas: IdeasOpt = None, file: FileOpt = None) -> None:
         dup = note is not winner and is_snapshot_of(note.doc.body, winner.doc.body)
         status = f"duplicate of {winner.rel.as_posix()}" if dup else "would process"
         typer.echo(f"{status:<14} {note.doctype.name:<15} {note.doc_id:<24} <- {note.doc.fm['source_file']}")
+    for artifact in result.artifacts:
+        size = f"{artifact.size / 1024:,.0f} KB"
+        too_big = artifact.size > settings.artifact_max_mb * 1024 * 1024
+        status = "would skip" if too_big else "would copy"  # over ARTIFACT_MAX_MB it stays in inbox/
+        typer.echo(f"{status:<14} {'artifact':<15} {size:<24} <- {artifact.path.name}")
     for rel, error in result.errors.items():
         typer.echo(f"{'unreadable':<14} {rel}: {error}", err=True)
     missing = [q for q in file or [] if q not in result.matched]
@@ -215,3 +221,31 @@ def youtube_facts(url: str) -> None:
         typer.echo(str(e), err=True)
         raise typer.Exit(2) from e
     typer.echo(facts.model_dump_json(indent=2))
+
+
+testdata_app = typer.Typer(no_args_is_help=True, help="Test data for trying the Idea Catcher on copies.")
+app.add_typer(testdata_app, name="testdata")
+
+
+@testdata_app.callback()
+def testdata_group() -> None:
+    """Test data for trying the Idea Catcher on copies."""
+
+
+@testdata_app.command("reset")
+def testdata_reset(
+    target: Annotated[Path, typer.Option("--target", help="where the test repos are made")] = DEFAULT_TARGET,
+    source: Annotated[Path, typer.Option("--source", help="the committed test data")] = DEFAULT_SOURCE,
+) -> None:
+    """Delete the test repos and make fresh ones (idea-bucket, epiaku-docs) from the committed test data."""
+    try:
+        repos = reset_test_repos(target, source)
+    except TestDataError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(2) from e
+    for path in repos.values():
+        typer.echo(f"made {path}")
+    typer.echo(
+        f"run on them: uv run catcher run pipeline --ideas {repos['idea-bucket']} "
+        f"--docs {repos['epiaku-docs']} --profile fake"
+    )

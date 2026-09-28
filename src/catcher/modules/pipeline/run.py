@@ -9,6 +9,8 @@ from catcher.modules.llm.profiles import UnknownProfile
 from catcher.modules.llm.service import BackendUnavailable, BudgetExhausted, InvalidOutput, UsageLimitReached
 from catcher.modules.pipeline.inbox import (
     Note,
+    ScanResult,
+    copy_artifact,
     is_snapshot_of,
     mark_deferred,
     move_to_duplicates,
@@ -23,7 +25,9 @@ from catcher.modules.youtube.facts import FactsUnavailable
 
 log = logging.getLogger("catcher.run")
 
-Status = Literal["published", "would_publish", "deferred", "failed", "skipped", "duplicate"]
+Status = Literal[
+    "published", "would_publish", "deferred", "failed", "skipped", "duplicate", "artifact", "would_copy"
+]
 
 
 @dataclass
@@ -64,6 +68,49 @@ def finish(ideas: Path, note: Note, processed: ProcessedPage) -> list[Path]:
     """The document is ready: the working copy in `output/` becomes the final page."""
     facts_json = processed.facts.model_dump_json(indent=2) if processed.facts else None
     return write_output(ideas, note, processed.page, facts_json)
+
+
+def copy_artifacts(
+    scan: ScanResult,
+    ideas: Path,
+    docs: Path,
+    opts: RunOptions,
+    svc: Services,
+    report: RunReport,
+    touched_ideas: list[Path],
+    touched_docs: list[Path],
+) -> None:
+    """Files in `inbox/` that are not markdown: rename, archive, copy to epiaku-docs. No LLM, so `--limit`
+    does not apply."""
+    limit_mb = svc.settings.artifact_max_mb
+    for artifact in scan.artifacts:
+        item = ItemReport(artifact.original_name, "artifact", "skipped")
+        report.items.append(item)
+        size_mb = artifact.size / (1024 * 1024)
+        if size_mb > limit_mb:
+            item.message = f"{size_mb:.1f} MB is over the {limit_mb} MB limit (ARTIFACT_MAX_MB)"
+            log.warning(
+                'artifact "%s": skipped, %s; it stays in inbox/', artifact.original_name, item.message
+            )
+            continue
+        if opts.dry_run:
+            item.status, item.message = (
+                "would_copy",
+                "to archive/artifacts/ and epiaku-docs idea-bucket/artifacts/",
+            )
+            log.info(
+                'artifact "%s": would copy to archive/artifacts/ and epiaku-docs', artifact.original_name
+            )
+            continue
+        try:
+            ideas_paths, docs_paths = copy_artifact(ideas, docs, artifact)
+        except OSError as e:
+            item.status, item.message = "failed", f"could not copy: {e}"
+            log.error('artifact "%s": %s; it stays in inbox/', artifact.original_name, item.message)
+            continue
+        touched_ideas += ideas_paths
+        touched_docs += docs_paths
+        item.status, item.page = "artifact", artifact.name
 
 
 def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
@@ -244,6 +291,7 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             backend,
             waiting,
         )
+    copy_artifacts(scan, ideas, docs, opts, svc, report, touched_ideas, touched_docs)
     counts = report.counts()
     log.info(
         "processed %d/%d: %s",
@@ -254,9 +302,11 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
     if not opts.dry_run:
         author = (svc.settings.git_author_name, svc.settings.git_author_email)
         published = report.counts().get("published", 0)
-        report.committed["docs"] = commit_paths(
-            docs, touched_docs, f"idea-catcher: publish {published} page(s)", author=author
-        )
+        artifacts = report.counts().get("artifact", 0)
+        docs_message = f"idea-catcher: publish {published} page(s)"
+        if artifacts:
+            docs_message += f" and {artifacts} artifact(s)"
+        report.committed["docs"] = commit_paths(docs, touched_docs, docs_message, author=author)
         report.committed["ideas"] = commit_paths(
             ideas,
             touched_ideas,

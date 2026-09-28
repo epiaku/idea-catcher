@@ -7,9 +7,12 @@ from typer.testing import CliRunner
 from catcher.cli import app
 from catcher.core.frontmatter import load
 from catcher.modules.pipeline.inbox import (
+    Artifact,
     archive_copy,
+    artifact_name,
     assign_name,
     calculated_stem,
+    copy_artifact,
     facts_sidecar,
     is_snapshot_of,
     mark_deferred,
@@ -375,3 +378,87 @@ def test_scan_command_warns_about_an_unknown_name(tmp_path):
     result = CliRunner().invoke(app, ["scan", "--ideas", str(tmp_path), "--file", "Nope"])
     assert result.exit_code == 1
     assert 'not-found      no document named "Nope" in inbox/' in result.output
+
+
+def test_files_that_are_not_markdown_are_artifacts_and_junk_is_ignored(tmp_path):
+    put(tmp_path, "inbox/notes/idea.md", "An idea\n")
+    (tmp_path / "inbox/report.pdf").write_bytes(b"%PDF-1.7 fake")
+    (tmp_path / "inbox/photo.PNG").write_bytes(b"\x89PNG")
+    (tmp_path / "inbox/.DS_Store").write_bytes(b"junk")
+    (tmp_path / "inbox/Thumbs.db").write_bytes(b"junk")
+    put(tmp_path, "inbox/.trash/old.pdf", "gone")
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    result = scan_inbox(tmp_path, now=NOW)
+    assert [n.path.name for n in result.notes] == ["idea.md"]
+    assert sorted(a.path.name for a in result.artifacts) == ["photo.PNG", "report.pdf"]
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before  # writes nothing
+
+
+def test_an_artifact_name_is_date_guid_and_the_original_name(tmp_path):
+    name = artifact_name("My Report (final).pdf", NOW, lambda n: False)
+    assert re.fullmatch(r"20260927-[0-9a-f]{6}-My Report \(final\)\.pdf", name)
+
+
+def test_an_artifact_name_replaces_illegal_characters_and_is_cut_to_128_keeping_the_extension():
+    name = artifact_name('a/b:c*"d.pdf', NOW, lambda n: False)
+    assert name.endswith("-a_b_c__d.pdf")
+    long = artifact_name("x" * 300 + ".pdf", NOW, lambda n: False)
+    assert len(long) == 128 and long.endswith(".pdf") and long.startswith("20260927-")
+
+
+def test_a_name_that_already_has_date_and_guid_is_kept():
+    assert artifact_name("20260925-a1b2c3-report.pdf", NOW, lambda n: False) == "20260925-a1b2c3-report.pdf"
+    assert artifact_name("2026925-a1b2c3-report.pdf", NOW, lambda n: False) != "2026925-a1b2c3-report.pdf"
+    assert artifact_name("20260925-ZZZZZZ-report.pdf", NOW, lambda n: False) != "20260925-ZZZZZZ-report.pdf"
+
+
+def test_an_artifact_name_is_never_reused():
+    seen = []
+
+    def taken(name: str) -> bool:
+        seen.append(name)
+        return len(seen) < 3
+
+    assert artifact_name("a.pdf", NOW, taken) == seen[-1] and len(set(seen)) == 3
+
+
+def test_copy_artifact_archives_publishes_and_removes_it_from_the_inbox(tmp_path):
+    ideas, docs = tmp_path / "ideas", tmp_path / "docs"
+    src = ideas / "inbox/report.pdf"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"%PDF-1.7 \x00\x01 binary")
+    artifact = Artifact(src)
+    ideas_paths, docs_paths = copy_artifact(ideas, docs, artifact, now=NOW)
+    name = artifact.name
+    assert name and name.startswith("20260927-") and name.endswith("-report.pdf")
+    assert (ideas / "archive/artifacts" / name).read_bytes() == b"%PDF-1.7 \x00\x01 binary"
+    assert (docs / "idea-bucket/artifacts" / name).read_bytes() == b"%PDF-1.7 \x00\x01 binary"
+    assert not src.exists()
+    assert ideas / "archive/artifacts" / name in ideas_paths and src in ideas_paths
+    assert docs_paths == [docs / "idea-bucket/artifacts" / name]
+
+
+def test_a_requeued_artifact_keeps_its_name_and_overwrites_the_same_files(tmp_path):
+    ideas, docs = tmp_path / "ideas", tmp_path / "docs"
+    (ideas / "archive/artifacts").mkdir(parents=True)
+    (docs / "idea-bucket/artifacts").mkdir(parents=True)
+    name = "20260925-a1b2c3-report.pdf"
+    (ideas / "archive/artifacts" / name).write_bytes(b"old")
+    (docs / "idea-bucket/artifacts" / name).write_bytes(b"old")
+    src = ideas / "inbox" / name
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"new")
+    copy_artifact(ideas, docs, Artifact(src), now=NOW)
+    assert sorted(p.name for p in (ideas / "archive/artifacts").iterdir()) == [name]
+    assert (ideas / "archive/artifacts" / name).read_bytes() == b"new"
+    assert (docs / "idea-bucket/artifacts" / name).read_bytes() == b"new"
+
+
+def test_file_finds_an_artifact_by_its_original_name_too(tmp_path):
+    (tmp_path / "inbox").mkdir()
+    (tmp_path / "inbox/20260925-a1b2c3-report.pdf").write_bytes(b"x")
+    (tmp_path / "inbox/other.pdf").write_bytes(b"x")
+    for query in ("report.pdf", "report", "20260925-a1b2c3-report.pdf"):
+        assert [a.path.name for a in scan_inbox(tmp_path, now=NOW, only=[query]).artifacts] == [
+            "20260925-a1b2c3-report.pdf"
+        ], query

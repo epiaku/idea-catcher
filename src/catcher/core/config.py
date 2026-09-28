@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     transcript_languages: str = "en"
     git_author_name: str = "idea-catcher"
     git_author_email: str = "idea-catcher@users.noreply.github.com"
+    artifact_max_mb: int = 25
     log_level: str = "INFO"
     log_file: Path | None = None
 
