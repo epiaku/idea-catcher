@@ -66,6 +66,16 @@ def test_note_page(make_note, make_result, snapshot):
     assert page == snapshot
 
 
+def test_source_file_and_original_filename_once_the_note_has_a_calculated_name(make_note, make_result):
+    note = make_note("note", source_file="notes/Walk and talk.md")
+    note.name = "20260927-abc123-walk-and-talk-videos.md"
+    summary = NoteSummary(title="Walk-and-talk videos", description="d", body="b", tags=["youtube-idea"])
+    ctx = PageContext(note, summary, ["youtube-idea"], make_result(summary))
+    doc = parse(render_page(ctx))
+    assert doc.fm["source_file"] == "notes/20260927-abc123-walk-and-talk-videos.md"
+    assert doc.fm["original_filename"] == "a7b2c9.md"  # note.original is unset: falls back to the file name
+
+
 def test_chat_page_sections_and_canonical_source(make_note, make_result, snapshot):
     note = make_note(
         "ai-chat",

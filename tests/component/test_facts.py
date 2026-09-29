@@ -51,14 +51,45 @@ def test_yt_dlp_failure_is_facts_unavailable(monkeypatch):
         fetch_facts("MBPHU7aaklM")
 
 
-def test_blocked_transcript_is_facts_unavailable(monkeypatch):
+def test_blocked_transcript_falls_back_to_ytdlp(monkeypatch):
     def blocked(vid, langs):
         raise RuntimeError("IpBlocked")
 
     monkeypatch.setattr(facts_mod, "_extract_info", lambda url: INFO)
     monkeypatch.setattr(facts_mod, "_fetch_transcript", blocked)
-    with pytest.raises(FactsUnavailable, match="transcript"):
-        fetch_facts("MBPHU7aaklM")
+    monkeypatch.setattr(
+        facts_mod, "_fetch_transcript_via_ytdlp", lambda vid, langs: [Segment(start_s=0, text="from yt-dlp")]
+    )
+    facts = fetch_facts("MBPHU7aaklM")
+    assert facts.transcript_text() == "[0:00] from yt-dlp"
+
+
+def test_blocked_transcript_continues_without_one_when_the_fallback_also_fails(monkeypatch, caplog):
+    def blocked(vid, langs):
+        raise RuntimeError("IpBlocked")
+
+    monkeypatch.setattr(facts_mod, "_extract_info", lambda url: INFO)
+    monkeypatch.setattr(facts_mod, "_fetch_transcript", blocked)
+    monkeypatch.setattr(facts_mod, "_fetch_transcript_via_ytdlp", lambda vid, langs: None)
+    caplog.set_level("WARNING", logger="catcher.youtube")
+    facts = fetch_facts("MBPHU7aaklM")  # not raised: the page is written from title/description instead
+    assert facts.transcript is None
+    assert facts.title == "T"  # the rest of the facts (from yt-dlp) are still there
+    assert any("IpBlocked" in r.getMessage() for r in caplog.records)
+
+
+def test_blocked_transcript_continues_without_one_when_the_fallback_also_raises(monkeypatch):
+    def blocked(vid, langs):
+        raise RuntimeError("IpBlocked")
+
+    def also_blocked(vid, langs):
+        raise RuntimeError("also blocked")
+
+    monkeypatch.setattr(facts_mod, "_extract_info", lambda url: INFO)
+    monkeypatch.setattr(facts_mod, "_fetch_transcript", blocked)
+    monkeypatch.setattr(facts_mod, "_fetch_transcript_via_ytdlp", also_blocked)
+    facts = fetch_facts("MBPHU7aaklM")
+    assert facts.transcript is None
 
 
 def test_fmt_ts():
@@ -71,3 +102,21 @@ def test_cli_prints_facts_json(monkeypatch):
     result = CliRunner().invoke(cli.app, ["youtube", "facts", "https://youtu.be/MBPHU7aaklM"])
     assert result.exit_code == 0, result.output
     assert '"video_id": "MBPHU7aaklM"' in result.output
+
+
+def test_parse_json3_captions_concatenates_segments_and_skips_empty_events():
+    data = {
+        "events": [
+            {"tStartMs": 0, "segs": [{"utf8": "hi"}]},
+            {"tStartMs": 4100, "segs": [{"utf8": "there"}, {"utf8": " again"}]},
+            {"tStartMs": 8000},  # a positioning event with no text: skipped
+        ]
+    }
+    assert facts_mod._parse_json3_captions(data) == [
+        Segment(start_s=0.0, text="hi"),
+        Segment(start_s=4.1, text="there again"),
+    ]
+
+
+def test_parse_json3_captions_on_no_events_is_empty():
+    assert facts_mod._parse_json3_captions({}) == []

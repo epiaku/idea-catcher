@@ -106,8 +106,8 @@ def reason_cmd(document: Path, profile: ProfileOpt = None) -> None:
     """Run the LLM step on one document and print the validated JSON. Writes nothing."""
     settings = Settings()
     note = read_note(document)
-    if note.doctype.name in ("youtube", "youtube-gemini"):
-        typer.echo("YouTube notes need facts first: use `catcher render` for them.")
+    if note.doctype.name == "youtube":
+        typer.echo("youtube notes need facts first: use `catcher render` for them.")
         raise typer.Exit(2)
     profiles = load_profiles(settings.profiles_file)
     try:
@@ -151,6 +151,9 @@ def render(
         processed = process_note(note, default_services(settings), opts)
     except (LlmError, UnknownProfile) as e:
         typer.echo(f"LLM step failed: {e}", err=True)
+        raise typer.Exit(2) from e
+    except FactsUnavailable as e:
+        typer.echo(f"YouTube facts unavailable: {e}", err=True)
         raise typer.Exit(2) from e
     for problem in processed.problems:
         typer.echo(f"problem: {problem}", err=True)

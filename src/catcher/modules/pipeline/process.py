@@ -19,8 +19,6 @@ from catcher.modules.youtube.checks import SummaryWarning, check_summary
 from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, YoutubeFacts, fetch_facts
 from catcher.modules.youtube.urls import video_id
 
-YOUTUBE_CLASSES = ("youtube", "youtube-gemini")
-
 log = logging.getLogger("catcher.process")
 
 
@@ -67,16 +65,6 @@ def default_services(settings: Settings) -> Services:
 def check_not_blocked(profile: Profile, opts: ProcessOptions) -> None:
     if profile.backend in opts.blocked_backends:
         raise UsageLimitReached("usage limit was reached earlier in this run", backend=profile.backend)
-
-
-def youtube_video_id(note: Note) -> str:
-    if note.doctype.name == "youtube":
-        vid = video_id(str(note.doc.fm.get("source") or ""))
-    else:
-        vid = gemini_video_id(note.doc.body)
-    if not vid:
-        raise FactsUnavailable(f"{note.doc_id}: no YouTube video id found")
-    return vid
 
 
 def facts_for(note: Note, vid: str, svc: Services) -> YoutubeFacts:
@@ -145,10 +133,15 @@ def _process_text(note: Note, svc: Services, profile_name: str) -> ProcessedPage
 
 
 def _process_youtube(note: Note, svc: Services, opts: ProcessOptions, profile_name: str) -> ProcessedPage:
-    """One LLM call, whatever the class: `youtube` summarizes the transcript, `youtube-gemini` checks and
-    reformats Gemini's answer against it. Free, non-LLM checks run on the result either way."""
-    vid = youtube_video_id(note)
+    """The `youtube` class: one LLM call summarizing the real transcript, plus the free, non-LLM checks
+    against the fetched facts. Without a transcript there is nothing worth paying for an LLM call over
+    (just a title and description), so that defers the document instead of asking the LLM."""
+    vid = video_id(str(note.doc.fm.get("source") or ""))
+    if not vid:
+        raise FactsUnavailable(f"{note.doc_id}: no YouTube video id found")
     facts = facts_for(note, vid, svc)
+    if not facts.transcript:
+        raise FactsUnavailable(f"{note.doc_id}: no transcript available for {vid}")
     result = _reason(note, svc, profile_name, facts)
     summary = cast(YoutubeSummary, result.output)
     warnings = check_summary(summary, facts)
@@ -171,11 +164,38 @@ def _process_youtube(note: Note, svc: Services, opts: ProcessOptions, profile_na
     return ProcessedPage(note, page_name(ctx), page, problems, result, tag_result.dropped, warnings, facts)
 
 
+def _process_youtube_gemini(
+    note: Note, svc: Services, opts: ProcessOptions, profile_name: str
+) -> ProcessedPage:
+    """The `youtube-gemini` class: reformats Gemini's own answer with no YouTube API call at all, not
+    even for the video id (which is parsed straight out of the chat text). One LLM call, no facts, no
+    free checks (there is nothing to check the summary against) and no metrics table on the page."""
+    vid = gemini_video_id(note.doc.body)
+    if not vid:
+        raise FactsUnavailable(f"{note.doc_id}: no YouTube video id found in the Gemini chat")
+    result = _reason(note, svc, profile_name)
+    summary = cast(YoutubeSummary, result.output)
+    tag_result = normalize_tags([*summary.tags, *capture_tags(note)], svc.tags)
+    ctx = PageContext(note=note, summary=summary, tags=tag_result.tags, llm=result)
+    page = render_page(
+        ctx,
+        extra_fm={"video_id": vid},
+        facts=None,
+        warnings=[],
+        embed=youtube_embed(vid, summary.title),
+        **sibling_link(note, vid, opts),
+    )
+    problems = validate_page(page, svc.tags)
+    return ProcessedPage(note, page_name(ctx), page, problems, result, tag_result.dropped)
+
+
 def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPage:
     profile_name, profile = resolve_profile(
         svc.profiles, requested=opts.profile, class_default=note.doctype.llm_profile
     )
     check_not_blocked(profile, opts)
-    if note.doctype.name in YOUTUBE_CLASSES:
+    if note.doctype.name == "youtube":
         return _process_youtube(note, svc, opts, profile_name)
+    if note.doctype.name == "youtube-gemini":
+        return _process_youtube_gemini(note, svc, opts, profile_name)
     return _process_text(note, svc, profile_name)

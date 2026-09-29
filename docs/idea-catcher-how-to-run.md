@@ -26,7 +26,7 @@ This page shows how to **run** the Idea Catcher (Stage A, the local CLI). The se
 ```bash
 uv run catcher testdata reset                                        # 0. fresh test repos in tmp/ic
 uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs --profile fake   # 0. run on them
-uv run catcher run pipeline --profile fake --no-review --dry-run     # 1. free check (real repos)
+uv run catcher run pipeline --profile fake --dry-run                 # 1. free check (real repos)
 uv run catcher run pipeline --limit 3                                # 2. small real run
 uv run catcher run pipeline --push                                   # 3. full run and push
 ```
@@ -53,7 +53,7 @@ What one run does, in order:
 1. Reads the documents in `inbox/` (nothing is written yet).
 2. Moves earlier snapshots of a longer clip to `duplicates/`. They get no LLM call.
 3. For each remaining document, right before its LLM step: gives it its calculated name, copies the original to `archive/` (with two frontmatter lines added), writes a working copy to `output/`, and removes it from `inbox/`. With `--limit` or `--file`, only those documents leave `inbox/`.
-4. Sends the document to the LLM (and for YouTube, to the reviewer).
+4. Sends the document to the LLM.
 5. When it is ready, writes the page to `epiaku-docs` and over the working copy in `output/`, under the same calculated name.
 6. Moves a document to `failed/` if it cannot be processed for good.
    Files that are not markdown (PDFs, images) are **artifacts**: they are renamed `YYYYMMDD-<guid>-<original name>`, copied to `archive/artifacts/` and to `idea-bucket/artifacts/` in the root of epiaku-docs, and removed from `inbox/`. No LLM is used, and `--limit` does not apply.
@@ -67,12 +67,6 @@ What one run does, in order:
   ```bash
   uv run catcher run pipeline --profile fake         # canned answers, costs nothing
   uv run catcher run pipeline --profile clippings    # force the clippings profile for every note
-  ```
-
-- **`--no-review`**: skip the YouTube reviewer. This saves one LLM call per video, but the summary is then not checked against the transcript.
-
-  ```bash
-  uv run catcher run pipeline --no-review
   ```
 
 - **`--limit N`**: process at most N notes. The rest wait for the next run. Use it to control spend.
@@ -123,11 +117,10 @@ What one run does, in order:
 ### What your example means
 
 ```bash
-uv run catcher run pipeline --profile fake --no-review --dry-run
+uv run catcher run pipeline --profile fake --dry-run
 ```
 
 - `--profile fake`: use the fake profile, so no LLM is called.
-- `--no-review`: skip the YouTube reviewer.
 - `--dry-run`: change nothing and commit nothing.
 
 Together they read both repos, show what would happen, and cost nothing.
@@ -166,14 +159,14 @@ This is the best first real test of a profile, because it is one small call.
 ### `render`
 
 ```bash
-uv run catcher render DOCUMENT [--docs PATH] [--profile NAME] [--no-review]
+uv run catcher render DOCUMENT [--docs PATH] [--profile NAME]
 ```
 
 Makes the page for one document and writes it into `epiaku-docs`. It does not touch the document in `inbox/`, and it does not commit. You can look at the result before you commit anything.
 
 ```bash
 uv run catcher render "../idea-bucket/inbox/clippings/New chat.md" --profile clippings
-uv run catcher render "../idea-bucket/inbox/clippings/A video.md" --no-review
+uv run catcher render "../idea-bucket/inbox/clippings/A video.md"
 ```
 
 ### `youtube facts`
@@ -222,7 +215,7 @@ The recipes use your real repos (`../idea-bucket`). To try one on the test data,
 ### Check the setup for free
 
 ```bash
-uv run catcher run pipeline --profile fake --no-review --dry-run
+uv run catcher run pipeline --profile fake --dry-run
 ```
 
 ### See what is in the inbox
@@ -364,6 +357,117 @@ uv run catcher run pipeline --profile notes
 
 ```bash
 mv "../idea-bucket/duplicates/clippings/20260925-a1b2c3-new-chat.md" "../idea-bucket/inbox/clippings/"
+```
+
+## Recipes on the test data
+
+The same recipes as above, rewritten to run on `tmp/ic` instead of your real repos. Nothing here touches `../idea-bucket` or `../epiaku-docs`.
+
+Start every session with a fresh copy, then set the two environment variables so the commands below need no `--ideas`/`--docs`:
+
+```bash
+uv run catcher testdata reset
+export IDEAS_REPO=tmp/ic/idea-bucket
+export DOCS_REPO=tmp/ic/epiaku-docs
+```
+
+`unset IDEAS_REPO DOCS_REPO` when you are done, so a later command does not run on the test repos by accident. `catcher reason` and `catcher render` always take a document path directly, so those still need the full `tmp/ic/...` path even with the variables set.
+
+### Check the setup for free
+
+```bash
+uv run catcher run pipeline --profile fake --dry-run
+```
+
+### See what is in the inbox
+
+```bash
+uv run catcher scan
+```
+
+### Try one note for real
+
+```bash
+uv run catcher reason "tmp/ic/idea-bucket/inbox/notes/YouTube walks.md" --profile notes
+```
+
+### Test one specific document
+
+```bash
+uv run catcher run pipeline --file "YouTube walks" --profile fake --dry-run     # free
+uv run catcher run pipeline --file "YouTube walks"                              # for real
+```
+
+### Try a direct YouTube clip, for real
+
+A `youtube` document needs its facts (transcript, counts) before the LLM step, so use `render`, not `reason`. This calls the real `youtube` profile (OpenAI) and fetches the real transcript from YouTube — it is not free and not a dry run.
+
+```bash
+uv run catcher render "tmp/ic/idea-bucket/inbox/clippings/RAG + Langchain Python Project Easy AIChat For Your Docs.md" --docs tmp/ic/epiaku-docs
+```
+
+### Try a Gemini video chat, for real
+
+Same idea, for the `youtube-gemini` class: Gemini's answer is reformatted into our page format on the `youtube` profile — nothing else. This class makes no YouTube API call at all (no `yt-dlp`, no transcript fetch), so it always works, whatever the state of YouTube's endpoints. Because it needs no facts first, `reason` works for it too, not just `render`.
+
+```bash
+uv run catcher render "tmp/ic/idea-bucket/inbox/clippings/RAG + Langchain Python Project Easy AIChat For Your Docs 1.md" --docs tmp/ic/epiaku-docs
+```
+
+Both clips are about the same video, so after running both you can open the two pages in `tmp/ic/epiaku-docs/hugo/content/en/docs/idea-bucket/youtube/` and compare them — each links to the other.
+
+### A small first run, then publish
+
+```bash
+uv run catcher run pipeline --limit 3             # commits locally, pushes nothing
+git -C tmp/ic/epiaku-docs log --stat -1           # look at what it wrote
+uv run catcher run pipeline --push                # process the rest; --push is a no-op here, tmp/ic has no remote
+```
+
+### Send a PDF or an image to epiaku-docs
+
+The test data already has one: `tmp/ic/idea-bucket/inbox/sample-report.pdf`. Just run the pipeline and look for it in `tmp/ic/idea-bucket/archive/artifacts/` and `tmp/ic/epiaku-docs/idea-bucket/artifacts/`. To try your own file, copy it into `tmp/ic/idea-bucket/inbox/` first.
+
+```bash
+uv run catcher run pipeline --file "sample-report.pdf"
+```
+
+### Retry a stalled note
+
+The calculated file name is a random guid, so list the folder to find it rather than typing a fixed name:
+
+```bash
+uv run catcher run pipeline                              # let something stall (e.g. a YouTube video)
+ls tmp/ic/idea-bucket/output/clippings/                  # find the stalled file (stage: deferred)
+mv tmp/ic/idea-bucket/archive/clippings/<the-file>.md tmp/ic/idea-bucket/inbox/clippings/
+uv run catcher run pipeline --file "<the-file>"           # or the note's original name
+```
+
+**Possible later:** a helper such as `catcher requeue`, which would move all stalled notes back in one go. It is not built yet.
+
+### Retry a failed note
+
+```bash
+ls tmp/ic/idea-bucket/failed/                                       # find it and its .error.txt
+mv tmp/ic/idea-bucket/failed/notes/<the-file>.md tmp/ic/idea-bucket/inbox/notes/
+rm tmp/ic/idea-bucket/failed/notes/<the-file>.error.txt
+uv run catcher run pipeline
+```
+
+### Redo a note with another model
+
+```bash
+cp tmp/ic/idea-bucket/archive/notes/20260928-51bcb0-youtube-walks.md tmp/ic/idea-bucket/inbox/notes/
+uv run catcher run pipeline --profile notes
+```
+
+(That exact file name only exists after you have run the note through once — `ls tmp/ic/idea-bucket/archive/notes/` to see what is there.)
+
+### Bring back a file from `duplicates/`
+
+```bash
+ls tmp/ic/idea-bucket/duplicates/clippings/                          # find it
+mv tmp/ic/idea-bucket/duplicates/clippings/<the-file>.md tmp/ic/idea-bucket/inbox/clippings/
 ```
 
 ## Where things end up

@@ -110,6 +110,7 @@ def test_run_publishes_archives_and_commits(repos, make_services, sh):
     assert (repos.docs / CLIPPING / final.name).read_text().startswith("---\n")  # ... and in epiaku-docs
     assert load(repos.docs / CLIPPING / final.name).fm["id"] == "cf81e40b020519ef"
     assert load(final).fm["source_file"] == f"clippings/{final.name}"
+    assert load(final).fm["original_filename"] == "systeme.md"
     assert "stage" not in load(final).fm
     assert report.committed == {"docs": True, "ideas": True}
     assert sh(repos.docs, "status", "--porcelain") == ""

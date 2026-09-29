@@ -42,7 +42,7 @@ def test_youtube_page_has_python_metrics_and_embed(make_note, make_services, yt_
     assert "| Metrics As Of       | 2026-09-27 |" in doc.body
     assert "{{< youtube-lite MBPHU7aaklM `Success Is Hard Until You Build Systems Like This` >}}" in doc.body
     assert "[6:50] I plan my week in Obsidian every Sunday." in chats.prompts[0]
-    assert processed.llm.prompt_version == "youtube-1"
+    assert processed.llm.prompt_version == "youtube-2"
 
 
 def test_the_facts_come_back_with_the_page_and_nothing_is_written(
@@ -60,15 +60,13 @@ def test_the_facts_come_back_with_the_page_and_nothing_is_written(
     assert sorted(p.name for p in note.path.parent.iterdir()) == [note.path.name]
 
 
-def test_no_transcript_is_said_on_the_page(make_note, make_services, yt_facts, tmp_path):
+def test_no_transcript_defers_without_calling_the_llm(make_note, make_services, yt_facts, tmp_path):
     no_captions = yt_facts.model_copy(update={"transcript": None})
     chats = FakeBackend()
     note = youtube_note(make_note, tmp_path)
-    processed = process_note(
-        note, make_services(chat_backend=chats, facts=lambda vid: no_captions), ProcessOptions()
-    )
-    assert "No transcript was available" in processed.page
-    assert "There is NO transcript" in chats.prompts[0]
+    with pytest.raises(FactsUnavailable):
+        process_note(note, make_services(chat_backend=chats, facts=lambda vid: no_captions), ProcessOptions())
+    assert chats.prompts == []  # no transcript, no point paying for an LLM call
 
 
 def test_facts_failure_propagates(make_note, make_services, tmp_path):
@@ -84,23 +82,39 @@ def test_table_cells_are_escaped(make_note, make_services, yt_facts, tmp_path):
     assert "| Use A \\| B | line one line two | x |" in processed.page
 
 
-def test_gemini_youtube_chat_is_converted_and_checked_in_one_call(
-    make_note, make_services, yt_facts, tmp_path
+def test_gemini_youtube_chat_is_converted_in_one_call_with_no_youtube_api_call_at_all(
+    make_note, make_services, tmp_path
 ):
     chats = FakeBackend()
+
+    def no_facts(vid):
+        raise AssertionError("youtube-gemini must never call the facts fetcher")
+
     note = make_note(
         "youtube-gemini", doc_id="MBPHU7aaklM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT
     )
-    processed = process_note(
-        note, make_services(chat_backend=chats, facts=lambda vid: yt_facts), ProcessOptions()
-    )
+    processed = process_note(note, make_services(chat_backend=chats, facts=no_facts), ProcessOptions())
     assert processed.problems == []
     assert len(chats.prompts) == 1
     assert "Gemini web chat" in chats.prompts[0]
     assert "| Views | 99M |" in chats.prompts[0]
-    assert "| Views               | 1,400,000 |" in processed.page
+    assert "facts" not in chats.prompts[0].lower()
+    assert "Metrics" not in processed.page  # no facts, so no metrics table on the page
+    assert processed.facts is None
     assert parse(processed.page).fm["video_id"] == "MBPHU7aaklM"
-    assert processed.llm.prompt_version == "youtube-gemini-1"
+    assert processed.llm.prompt_version == "youtube-gemini-2"
+
+
+def test_gemini_note_with_no_video_id_fails(make_note, make_services, tmp_path):
+    note = make_note(
+        "youtube-gemini",
+        doc_id="no-video",
+        root=tmp_path,
+        source=GEMINI,
+        body="**You**\n\nSummarize this\n\n---\n\n**Gemini**\n\nno video here\n",
+    )
+    with pytest.raises(FactsUnavailable):
+        process_note(note, make_services(), ProcessOptions())
 
 
 def test_a_warning_from_the_free_checks_shows_an_alert_on_the_page(

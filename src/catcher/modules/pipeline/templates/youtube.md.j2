@@ -12,14 +12,11 @@ A free, automatic check found something worth a look:
 {% endif %}
 **{{ s.title }}** by _{{ s.creator }}_
 
-{% if not facts.transcript %}
-> ⚠️ No transcript was available for this video, so this summary is based on the title and description only.
-
-{% endif %}
 ## 📝 Summary
 
 {{ s.summary | trim }}
 
+{% if facts %}
 ## 📊 Metrics
 
 | Metric              | Value |
@@ -29,6 +26,7 @@ A free, automatic check found something worth a look:
 | Likes               | {{ facts.likes | num }} |
 | Channel Subscribers | {{ facts.subscribers | num }} |
 
+{% endif %}
 ## 🎯 Main Purpose
 
 {{ s.main_purpose | trim }}

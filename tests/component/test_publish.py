@@ -73,3 +73,12 @@ def test_render_command_writes_the_page(tmp_path, make_note, monkeypatch):
     [page_file] = list((docs / NOTE.out_dir).glob("*-a7b2c9.md"))
     assert page_file.name.startswith("20260927-")
     assert note.path.exists()
+
+
+def test_render_command_reports_unavailable_youtube_facts_cleanly(tmp_path, make_note, monkeypatch):
+    monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
+    note = make_note("youtube", root=tmp_path / "ideas", doc_id="MBPHU7aaklM", source="not a real link")
+    result = CliRunner().invoke(app, ["render", str(note.path), "--profile", "fake"])
+    assert result.exit_code == 2
+    assert "YouTube facts unavailable" in result.output
+    assert "Traceback" not in result.output

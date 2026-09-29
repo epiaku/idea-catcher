@@ -1,5 +1,5 @@
 ---
-version: youtube-1
+version: youtube-2
 ---
 You summarize a YouTube video for the Epiaku documentation site. You cannot watch the video: work only from the facts and the transcript below. Never invent views, likes, subscriber counts or dates, because code adds those.
 
@@ -17,13 +17,9 @@ Video facts:
 {{ facts.description or "" }}
 </description>
 
-{% if transcript %}
 <transcript>
 {{ transcript }}
 </transcript>
-{% else %}
-There is NO transcript for this video. Summarize from the title and description only, and say so in the summary.
-{% endif %}
 
 Fill in:
 - title: the video's title as it appears on YouTube.

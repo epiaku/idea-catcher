@@ -43,7 +43,6 @@ class OpenAiCompatibleBackend:
             response = self.client.chat.completions.create(
                 model=model or "auto",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
                 response_format=response_format,  # type: ignore[arg-type]
             )
         except openai.RateLimitError as e:

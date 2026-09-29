@@ -76,6 +76,7 @@ def build_frontmatter(ctx: PageContext, extra_fm: dict[str, Any] | None = None) 
         fm["source"] = source
     if ctx.note.name:  # points from the published page to its archive and output files
         fm["source_file"] = ctx.note.target_rel.as_posix()
+        fm["original_filename"] = ctx.note.original_name  # the name it had when it first entered inbox/
     fm.update(extra_fm or {})
     fm["llm"] = {
         "profile": ctx.llm.profile,

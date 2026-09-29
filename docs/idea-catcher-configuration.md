@@ -57,7 +57,7 @@ Run the commands from the repo root, because `.env` and `profiles.yaml` are foun
 - `OPENAI_API_KEY` (default empty): **secret**. Needed for AI chats and YouTube. Without it those notes are deferred with `OPENAI_API_KEY is not set`.
 - `OPENAI_BASE_URL` (default `https://api.openai.com/v1`): only change this to use another OpenAI-compatible service.
 - `OPENAI_MODEL_CLIPPINGS`: model for AI chats. The model ids are listed in `.env.example`.
-- `OPENAI_MODEL_YOUTUBE`: model for both YouTube classes **and the reviewer**.
+- `OPENAI_MODEL_YOUTUBE`: model for both YouTube classes.
 
 If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ERROR`**. It is not moved to `failed/`.
 
@@ -89,7 +89,7 @@ profiles:
 
 - **`notes`**: short dictated notes. Provider: FreeLLMApi. Uses `FREELLMAPI_URL`, `FREELLMAPI_MODEL` and `FREELLMAPI_API_KEY`.
 - **`clippings`**: AI chats (Gemini and Claude clips that are not YouTube) **and web clips** (articles and other pages). Provider: OpenAI. Uses `OPENAI_API_KEY` and `OPENAI_MODEL_CLIPPINGS`.
-- **`youtube`**: YouTube clips, Gemini video chats and the **reviewer**. Provider: OpenAI. Uses `OPENAI_API_KEY` and `OPENAI_MODEL_YOUTUBE`.
+- **`youtube`**: direct YouTube clips (`youtube`) and Gemini video-summary chats (`youtube-gemini`, reformatted only — no YouTube API call for that class). Provider: OpenAI. Uses `OPENAI_API_KEY` and `OPENAI_MODEL_YOUTUBE`.
 - **`fake`**: returns canned JSON and calls nothing. Use it for free dry runs and tests.
 
 ### How it works
@@ -108,7 +108,6 @@ The lines `retry_delay`, `budget_retry_delay` and `stuck_after_days` in the file
 - **`--ideas PATH`** (`scan`, `run pipeline`): use this `idea-bucket` checkout instead of `IDEAS_REPO`. Handy for a run on copies.
 - **`--docs PATH`** (`run pipeline`, `render`): use this `epiaku-docs` checkout instead of `DOCS_REPO`.
 - **`--profile NAME`** (`run pipeline`, `render`, `reason`): use this profile for every note. `--profile fake` costs nothing.
-- **`--no-review`** (`run pipeline`, `render`): skip the YouTube reviewer. This saves one LLM call per video.
 - **`--limit N`** (`run pipeline`): process at most N notes. Use it to cap spend.
 - **`--file NAME`** (`run pipeline`, `scan`): process only the named document from `inbox/`, for example `--file "New chat"`. Repeat it for more. A name that matches nothing gives a warning. See [How to run](../idea-catcher-how-to-run/).
 - **`--dry-run`** (`run pipeline`): change no files and commit nothing. **With a real profile it still calls the LLM.**
@@ -127,7 +126,7 @@ The lines `retry_delay`, `budget_retry_delay` and `stuck_after_days` in the file
 ## Check your setup without spending tokens
 
 ```bash
-uv run catcher run pipeline --profile fake --no-review --dry-run
+uv run catcher run pipeline --profile fake --dry-run
 uv run catcher --log-level DEBUG scan
 ```
 

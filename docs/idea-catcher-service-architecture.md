@@ -100,7 +100,7 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | API             | Health, start a run, list runs and items. Polling for progress.                           | Metrics, replay, cancel, YouTube, profiles, schedules, keys. Live progress stream.                      |
 | API keys        | Listed in `.env` with scopes                                                               | Stored hashed in the DB, managed from the API                                                            |
 | Metrics         | Stored: runs, items, events, tokens                                                        | Aggregation endpoints + React dashboards                                                                 |
-| YouTube         | Facts (counts, transcript) for **clips** in the inbox, then the LLM step                  | Endpoint, cache, extra verify checks, Gemini for videos without captions                                |
+| YouTube         | Facts (counts, transcript) for direct **clips** only, then the LLM step (`youtube-gemini` makes no YouTube API call at all) | Endpoint, cache, extra verify checks, Gemini for videos without captions                                |
 | Long inputs     | Sent whole (the OpenAI models have a 1M context)                                          | Map-reduce chunking, needed for free models on long texts                                                |
 | Front end       | None (Swagger UI at `/docs`, `curl`)                                                       | React web components in the docs site                                                                    |
 | Fact-checking   | Free, non-LLM checks on both YouTube classes (timestamp and tool checks against the transcript) | An agentic checker with tools (for example open the video page or search) for any class                  |
@@ -230,7 +230,7 @@ The same function handles notes, AI chats and YouTube clips now, and the YouTube
 | ----------- | ------------ | -------------------------------------------- | ----------------------------------------------------------------- |
 | `notes`     | `freellmapi` | `$FREELLMAPI_MODEL` (starts as `auto`)       | **Notes** (`note`)                                                |
 | `clippings` | `openai`     | `$OPENAI_MODEL_CLIPPINGS` (e.g. `gpt-6-sol`) | **AI chats** (`ai-chat`: Gemini and Claude clips that are not YouTube) and **web clips** (`web-clip`: any other clipped page) |
-| `youtube`   | `openai`     | `$OPENAI_MODEL_YOUTUBE` (e.g. `gpt-6-sol`)   | **`youtube` and `youtube-gemini`**                                |
+| `youtube`   | `openai`     | `$OPENAI_MODEL_YOUTUBE` (e.g. `gpt-6-sol`)   | **`youtube` and `youtube-gemini`** (the latter makes no YouTube API call — it only reformats Gemini's own answer) |
 | `fake`      | `fake`       | –                                            | Tests and local development                                       |
 
 ```yaml
@@ -280,18 +280,18 @@ Every document class works the same way: one detection rule picks the class, the
 | `ai-chat`        | Gemini/Claude chat, not about a video              | `ai-chat.md`          | `clippings` (OpenAI)       | 1         |
 | `web-clip`       | any other clipped web page                         | `web-clip.md`         | `clippings` (OpenAI)       | 1         |
 | `youtube`        | a direct YouTube clip                              | `youtube.md`, given Python's transcript, title, counts | `youtube` (OpenAI) | 1         |
-| `youtube-gemini` | a Gemini chat that summarized a video              | `youtube-gemini.md`, given Gemini's answer plus Python's transcript and facts (checks and reformats in one call) | `youtube` (OpenAI) | 1         |
+| `youtube-gemini` | a Gemini chat that summarized a video              | `youtube-gemini.md`, given only Gemini's own answer — no facts, no transcript, no YouTube API call | `youtube` (OpenAI) | 1         |
 
-This replaces an earlier design where `youtube` got a second, separate "reviewer" LLM call that re-checked a summary already built from the real transcript — extra cost with no new source of truth. `youtube-gemini` always needed only one call (Gemini's answer had to be checked against our transcript somehow), so it is unchanged in spirit, just renamed to its own prompt file instead of sharing a generic `review` task.
+This replaces an earlier design where `youtube` got a second, separate "reviewer" LLM call that re-checked a summary already built from the real transcript — extra cost with no new source of truth. `youtube-gemini` was originally designed to check Gemini's answer against our own transcript, which meant it needed the same YouTube API calls `youtube` needs and could get stuck with nothing published when that endpoint was blocked. It is now treated purely as a clipping-reformatting task: Gemini already produced a good, human-made summary, so `youtube-gemini` takes that summary as its only source, restructures it into the page schema, and never calls the YouTube API — not `yt-dlp`, not the transcript endpoint, not even for the video's own counts.
 
-**Free checks stay, without a second LLM call.** For either YouTube class, Python checks the finished summary against the facts it was given — a timestamp later than the end of the video, or a tool named that isn't in the transcript, title or description — and reports them as warnings in the page's frontmatter. Nothing is "fixed" by a second model call; the warning just tells you where to look. Views, likes, subscribers and dates always come from `yt-dlp`, never from the model.
+**Free checks apply only to `youtube`.** Python checks that class's finished summary against the facts it was given — a timestamp later than the end of the video, or a tool named that isn't in the transcript, title or description — and reports them as warnings in the page's frontmatter. Nothing is "fixed" by a second model call; the warning just tells you where to look. Views, likes, subscribers and dates always come from `yt-dlp`, never from the model. `youtube-gemini` has no facts to check against, so it runs no free checks and its page has no metrics table.
 
 **Two YouTube classes:**
 
 | Class            | Comes from                                                                                              | Steps                                                                                                                                                                                             |
 | ---------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `youtube`        | A YouTube link clipped in Obsidian                                                                      | Ingest fetches the facts + transcript → `llm.reason` (`youtube.md`) writes the summary → publish                                                                                                  |
-| `youtube-gemini` | A **Gemini web chat** that ran the YouTube summary prompt, clipped in Obsidian (`source` is gemini.google.com and the **first user message contains a YouTube URL**, or an explicit `type: youtube-gemini`) | Ingest extracts the video URL and Gemini's final answer, and fetches the facts + transcript → `llm.reason` (`youtube-gemini.md`) checks Gemini's answer **and** returns it in the `YoutubeSummary` schema → publish. |
+| `youtube-gemini` | A **Gemini web chat** that ran the YouTube summary prompt, clipped in Obsidian (`source` is gemini.google.com and the **first user message contains a YouTube URL**, or an explicit `type: youtube-gemini`) | Ingest parses the video ID straight out of the YouTube URL in Gemini's own chat text (no network call) → `llm.reason` (`youtube-gemini.md`) reformats Gemini's final answer into the page format → publish. No YouTube API call anywhere in this path. |
 
 Both classes write to `idea-bucket/youtube/`, and **both pages are kept** when the same video arrives both ways. The page ID is the video ID for `youtube` and `<video-id>-gemini` for `youtube-gemini`. This rarely happens, and when it does the two summaries can be compared side by side. Each page links to the other when both exist.
 
@@ -308,9 +308,11 @@ A run is up to three kinds of jobs: one `pipeline.run`, one `llm.reason` per not
    2. scan inbox/ (read-only): per document work out class and id in memory
       • unreadable file → archive + failed/<sub>/ + .error.txt
       • earlier snapshots of a longer clip (same id) → archive + duplicates/<sub>/
-      • youtube / youtube-gemini → yt-dlp counts + transcript (with fetch date)
-      • youtube-gemini → also extract the video URL and Gemini's answer
-      • no transcript → mark "no transcript", use title + description
+      • youtube → yt-dlp counts + transcript (with fetch date)
+      • youtube-gemini → extract the video URL from Gemini's own chat text only
+        (no yt-dlp, no transcript call, no YouTube API of any kind)
+      • no transcript (youtube only) → defer (FactsUnavailable), never call the LLM
+        on title + description alone
       • files that are not markdown (artifacts) → renamed YYYYMMDD-<guid>-<original name>,
         copied to archive/artifacts/ and epiaku-docs idea-bucket/artifacts/ (no LLM job)
    3. per remaining document (respecting --limit / --file) right before its LLM step:
@@ -323,8 +325,8 @@ A run is up to three kinds of jobs: one `pipeline.run`, one `llm.reason` per not
         ▼
  llm.reason  (llm queue, run_after = now)
    5. reason(): the class's own prompt template → backend → validated JSON
-      (youtube: transcript + facts in; youtube-gemini: Gemini's answer +
-      transcript + facts in, checked and reformatted in this one call)
+      (youtube: transcript + facts in; youtube-gemini: only Gemini's answer
+      in, reformatted, no facts of any kind)
    6. store result + usage on the note's job_item
    7. enqueue pipeline.publish (folded: at most one queued)
         │                         failure → deferred to the next day
