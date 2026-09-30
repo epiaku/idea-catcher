@@ -108,6 +108,15 @@ def test_server_errors_are_backend_unavailable_and_do_not_block(status):
 
 
 @respx.mock
+def test_a_gateway_error_that_mentions_a_retry_budget_is_not_a_budget_problem():
+    message = "All 2 routed attempt(s) failed (stopped early: retry time budget 45s exceeded)"
+    respx.post(URL).mock(return_value=error(502, message))
+    with pytest.raises(BackendUnavailable) as info:
+        openai_backend().complete("p", model="m", task="ai-chat")
+    assert not isinstance(info.value, UsageLimitReached)
+
+
+@respx.mock
 def test_a_connection_error_is_backend_unavailable():
     respx.post(URL).mock(side_effect=httpx.ConnectError("no route"))
     with pytest.raises(BackendUnavailable, match="unreachable"):

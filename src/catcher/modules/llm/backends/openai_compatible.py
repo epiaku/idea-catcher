@@ -21,8 +21,8 @@ _KEY_VARIABLES = {"openai": "OPENAI_API_KEY", "freellmapi": "FREELLMAPI_API_KEY"
 
 def _is_budget_problem(error: openai.APIStatusError) -> bool:
     code = str(getattr(error, "code", "") or "")
-    if code == "rate_limit_exceeded":
-        return False
+    if code == "rate_limit_exceeded" or error.status_code >= 500:
+        return False  # a server error that merely mentions a "retry budget" is not an empty wallet
     return error.status_code == 402 or bool(_BUDGET_WORDS.search(f"{code} {error.message}"))
 
 
