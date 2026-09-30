@@ -258,7 +258,7 @@ profiles:
 | **Budget reached** (`insufficient_quota`, billing or spend limit) | The API key's budget is used up, so the backend cannot answer **until the budget is raised or renewed**. The job is `deferred` with `run_after = now + budget_retry_delay` (default 6 hours, so we notice a raised budget the same day without hammering the API). The backend is **blocked for the rest of the run**, and the log gets **one `ERROR` per backend** with the number of waiting notes: `openai budget reached: 4 note(s) waiting; raise the key's budget or point the profile at another provider`. Nothing is lost: the notes stay in `output/` and go through as soon as calls work again. |
 | Failing on **3 days** (`stuck_after_days`)              | The note's item is flagged **`stuck`**, with a warning event. It **keeps retrying**. `GET /items?status=stuck` lists these notes, so you can pick another profile with `catcher items requeue <doc_id> --profile …`. |
 
-The working copy stays in `output/` (`stage: deferred`, with the reason) and the untouched original is in `archive/`, so nothing is lost. In Stage A you retry by moving the file back into `inbox/`.
+The working copy stays in `output/` (`stage: deferred`, with the reason) and the untouched original is in `archive/`, so nothing is lost. In Stage A you retry with `catcher run pipeline --requeue NAME`, which moves the original from `archive/` back into `inbox/` (clearing the stale `output/` copy) and runs it again (or by moving the file back by hand).
 
 **MVP backends:**
 
@@ -576,7 +576,7 @@ tests/
 ```
 
 - **Recorded, not generated:** fixtures are captured once from real runs (a `catcher fixtures record` helper) and then committed, so tests reflect real formats.
-- **Test data from the real repos:** `tests/data/` holds a committed copy of only the folders the Idea Catcher uses (`idea-bucket/inbox/` and the Hugo `idea-bucket` pages of `epiaku-docs`). `catcher testdata reset` turns it into fresh git repos without a remote in `tmp/ic`, for manual tries, and the test suite runs the whole pipeline on the same data.
+- **Test data from the real repos:** `tests/data/` holds a committed copy of only the folders the Idea Catcher uses (`idea-bucket/inbox/` with the captures, and the empty Hugo `idea-bucket` output folders of `epiaku-docs`). `catcher testdata reset` turns it into fresh git repos without a remote in `tmp/ic`, for manual tries, and the test suite runs the whole pipeline on the same data.
 - **Snapshots** of rendered pages make template changes visible in the diff. Update them on purpose with `pytest --snapshot-update`.
 - **Postgres for tests:** a session-scoped fixture starts the `pgvector/pgvector:pg17` container (with `testcontainers`, or the `db` service from `compose.test.yaml`). It runs the Alembic migrations once, and gives each test a clean database (truncate between tests).
 

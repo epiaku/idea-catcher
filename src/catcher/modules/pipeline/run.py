@@ -9,6 +9,7 @@ from catcher.modules.llm.profiles import UnknownProfile
 from catcher.modules.llm.service import BackendUnavailable, BudgetExhausted, InvalidOutput, UsageLimitReached
 from catcher.modules.pipeline.inbox import (
     Note,
+    Requeued,
     ScanResult,
     copy_artifact,
     is_snapshot_of,
@@ -16,6 +17,7 @@ from catcher.modules.pipeline.inbox import (
     move_to_duplicates,
     move_to_failed,
     note_label,
+    requeue_from_archive,
     scan_inbox,
     start_work,
 )
@@ -26,7 +28,16 @@ from catcher.modules.youtube.facts import FactsUnavailable
 log = logging.getLogger("catcher.run")
 
 Status = Literal[
-    "published", "would_publish", "deferred", "failed", "skipped", "duplicate", "artifact", "would_copy"
+    "published",
+    "would_publish",
+    "deferred",
+    "failed",
+    "skipped",
+    "duplicate",
+    "artifact",
+    "would_copy",
+    "requeued",
+    "would_requeue",
 ]
 
 
@@ -48,6 +59,9 @@ class RunOptions:
     push: bool = False
     limit: int | None = None
     only: list[str] | None = None  # process only the documents with these names
+    requeue: list[str] | None = (
+        None  # first copy these documents from archive/ back into inbox/, then run them
+    )
 
 
 @dataclass
@@ -55,6 +69,9 @@ class RunReport:
     items: list[ItemReport] = field(default_factory=list)
     unreadable: dict[str, str] = field(default_factory=dict)  # files that could not be read, now in failed/
     not_found: list[str] = field(default_factory=list)  # `--file` names that matched no inbox document
+    not_in_archive: list[str] = field(
+        default_factory=list
+    )  # `--requeue` names that matched no archive document
     committed: dict[str, bool] = field(default_factory=dict)
     pushed: bool = False
 
@@ -126,9 +143,23 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
         pull(ideas)
         pull(docs)
 
-    scan = scan_inbox(ideas, only=opts.only)
     touched_ideas: list[Path] = []
     touched_docs: list[Path] = []
+    requeued: list[Requeued] = []
+    if opts.requeue:
+        requeued, report.not_in_archive = requeue_from_archive(ideas, opts.requeue, dry_run=opts.dry_run)
+        for query in report.not_in_archive:
+            log.warning('no document named "%s" found in archive/: nothing to requeue', query)
+        for item in requeued:
+            status: Status = "requeued" if item.copied else "would_requeue" if opts.dry_run else "skipped"
+            touched_ideas += item.touched
+            message = f"archive/{item.rel.as_posix()} -> inbox/"
+            if status == "skipped":
+                message = f"inbox/{item.rel.as_posix()} already exists, not overwritten"
+            report.items.append(ItemReport(item.doc_id, item.doc_class, status, message))
+    # `--requeue` runs only the requeued documents, like `--file` does for the ones it names
+    only = None if opts.only is None and not opts.requeue else [*(opts.only or []), *(opts.requeue or [])]
+    scan = scan_inbox(ideas, only=only)
     for rel, reason in scan.errors.items():  # unreadable: archive it and move it to failed/
         report.unreadable[rel] = reason
         if not opts.dry_run:
@@ -142,7 +173,8 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             report.not_found.append(query)
             log.warning(
                 'no document named "%s" found in inbox/. Only inbox/ is searched: '
-                "to run a document from archive/, failed/ or duplicates/ again, move it into inbox/",
+                "to run a document from archive/ again, use --requeue; from failed/ or duplicates/, "
+                "move it into inbox/",
                 query,
             )
 

@@ -13,7 +13,8 @@ This page shows how to **run** the Idea Catcher (Stage A, the local CLI). The se
 - Work from the `idea-catcher` repo root, with the virtual environment active or with `uv run` in front of every command.
 - Copy `.env.example` to `.env` and fill it in. See the [configuration page](../idea-catcher-configuration/).
 - Make sure `IDEAS_REPO` and `DOCS_REPO` point to your local checkouts of `idea-bucket` and `epiaku-docs`.
-- **To try things without any risk, first make test repos:** `uv run catcher testdata reset` (see [Test on clean copies of the test data](#test-on-clean-copies-of-the-test-data)). It makes fresh copies in `tmp/ic`, from test data that is committed in this repo, and you run the Idea Catcher on them.
+- **To try things without any risk, first make test repos:** `uv run catcher testdata reset` (see [Recipes on the test data](#recipes-on-the-test-data)). It makes fresh copies in `tmp/ic`, from test data that is committed in this repo, and you run the Idea Catcher on them.
+- **zsh and `# comments`:** many commands below have a `# comment` after them. A default interactive zsh does not treat `#` as a comment, so the words after it are passed to the command as extra arguments (and a `;` in a comment starts a new command, giving errors like `zsh: command not found: the`). Fix it once by adding `setopt interactive_comments` to `~/.zshrc`, then open a new terminal (or run that line once in the current one). In this page, keep any `;` out of the inline comments.
 - Every command below starts with `uv run catcher`. `uv run catcher --help` lists all commands.
 
 ## The usual order
@@ -40,7 +41,7 @@ uv run catcher run pipeline --push                                   # 3. full r
 - **`youtube facts`**: prints the counts and transcript of one YouTube video.
 - **`version`**: prints the version.
 
-**A run only looks at `inbox/` to find work.** When work on a document starts, it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`) and leaves `inbox/`: the original goes to `archive/` and a working copy to `output/`, both under that name. If something temporary goes wrong (the LLM is down, a budget is used up), the working copy stays in `output/` with `stage: deferred` and the reason. The run never reads `output/`, so **to retry, move the file from `archive/` back into `inbox/`**. It keeps its calculated name, so the next run overwrites the stalled copy.
+**A run only looks at `inbox/` to find work.** When work on a document starts, it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`) and leaves `inbox/`: the original goes to `archive/` and a working copy to `output/`, both under that name. If something temporary goes wrong (the LLM is down, a budget is used up), the working copy stays in `output/` with `stage: deferred` and the reason. The run never reads `output/`, so **to retry, use `--requeue NAME`** (it moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again), or move the file back by hand. It keeps its calculated name, so the next run overwrites the stalled copy.
 
 ## `run pipeline`: the whole flow
 
@@ -88,6 +89,21 @@ What one run does, in order:
   - **If no document has that name, you get a warning** and nothing is processed for that name: `no document named "typo" found in inbox/`. The command then ends with exit code 1.
   - It works together with `--limit`, which then applies to the named documents.
   - The duplicate check only compares the documents you named. If you name a short clip and not its longer copy, the short clip is processed on its own.
+
+- **`--requeue NAME`**: run a document **again**. It **moves** the archived original from `archive/` back into `inbox/` (same subfolder, same calculated name), deletes the stale working copy in `output/` (and its `.youtube.json` facts file), then processes only that document. So the document is in one place only, `inbox/`, until the run starts on it. Use it to retry a stalled (`deferred`) note, or to redo a published one, for example with another model. Repeat it for more.
+
+  ```bash
+  uv run catcher run pipeline --requeue "YouTube walks"
+  uv run catcher run pipeline --requeue "YouTube walks" --profile notes
+  ```
+
+  - The name forms are the same as for `--file`: the name it was captured under, or the calculated name (`notes/20260930-1f8b47-youtube-walks.md`).
+  - It looks in `archive/`, the almost untouched original (only the two file name fields were added). `output/` and `archive/` use the same file name, so either finds the same note.
+  - The run then writes `archive/` and `output/` again under the same name, and overwrites the page in `epiaku-docs` (not duplicated). If the run stalls again, the working copy in `output/` is `deferred` again. The page in `epiaku-docs` is only replaced when the new run succeeds.
+  - If `inbox/` already holds a file with that name, nothing is moved or deleted: it is reported as `skipped` and the file that is there is processed.
+  - An unknown name gives `no document named "..." in archive/` and exit code 1.
+  - With `--dry-run` nothing is moved or deleted, and you only see `would_requeue`.
+  - `failed/` and `duplicates/` are not searched: move those back by hand (see the recipes).
 
 - **`--dry-run`**: change no files and commit nothing. Note that with a real profile a dry run **still calls the LLM**. Combine it with `--profile fake` for a free check.
 
@@ -196,7 +212,8 @@ The status in the first column is one of:
 
 - **`published`**: the page is written to `epiaku-docs` and to `output/`, the original is in `archive/`, and the document is gone from `inbox/`.
 - **`would_publish`**: the same, in a `--dry-run`. Nothing was written.
-- **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting.
+- **`requeued`** / **`would_requeue`**: `--requeue` moved the original from `archive/` back into `inbox/` (`would_requeue` in a `--dry-run`: nothing moved).
+- **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, run it again with `--requeue NAME`, or move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting.
 - **`failed`**: could not be processed for good, for example invalid LLM output twice or an invalid page. The note moves to `failed/` with a `.error.txt` that says why.
 - **`duplicate`**: an earlier snapshot of a longer clip. Moved to `duplicates/`, no LLM call.
 - **`skipped`**: left for the next run because of `--limit`, or an artifact over the size limit.
@@ -208,80 +225,39 @@ The last line shows the counts, and whether both repos were committed and pushed
 
 **The log** goes to the terminal (and to `LOG_FILE` if set), one line per file and step, with progress like `(2/15)`, and a final `processed 15/15` line. Errors are always logged.
 
-## Recipes
+## Using the test data
 
-The recipes use your real repos (`../idea-bucket`). To try one on the test data, run `uv run catcher testdata reset` and set `IDEAS_REPO=tmp/ic/idea-bucket` and `DOCS_REPO=tmp/ic/epiaku-docs` first, and use `tmp/ic/idea-bucket` in place of `../idea-bucket` in the paths. See [the shortcut](#test-on-clean-copies-of-the-test-data).
+Start here. Everything in this section runs on fresh test repos in the `tmp/ic` folder of this project, made from test data that is committed in this repo. Your real `idea-bucket` and `epiaku-docs` are never touched, and the data is always the same, even when your real repos change.
 
-### Check the setup for free
-
-```bash
-uv run catcher run pipeline --profile fake --dry-run
-```
-
-### See what is in the inbox
-
-```bash
-uv run catcher scan
-```
-
-### Try one note for real
-
-```bash
-uv run catcher reason "../idea-bucket/inbox/notes/YouTube walks.md" --profile notes
-```
-
-### Test one specific document
-
-```bash
-uv run catcher run pipeline --file "YouTube walks" --profile fake --dry-run     # free
-uv run catcher run pipeline --file "YouTube walks"                              # for real
-```
-
-### A small first run, then publish
-
-```bash
-uv run catcher run pipeline --limit 3             # commits locally, pushes nothing
-git -C ../epiaku-docs log --stat -1               # look at what it wrote
-uv run catcher run pipeline --push                # process the rest and push
-```
-
-### Test on clean copies of the test data
-
-This makes **fresh test repos in the `tmp/ic` folder of this project**, from test data that is committed in this repo. You run the Idea Catcher on those test repos, so your real `idea-bucket` and `epiaku-docs` are never touched, and the test data is always the same, even when your real repos change.
-
-```bash
-uv run catcher testdata reset
-uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs --profile fake
-```
-
-The first command:
-
-1. Deletes `tmp/ic` if it is there. It only deletes a folder that a previous `testdata reset` made. If `tmp/ic` came from somewhere else (for example an old `git clone`), it stops and tells you to remove it yourself: `rm -rf tmp/ic`.
-2. Copies the test data into `tmp/ic/idea-bucket` and `tmp/ic/epiaku-docs`.
-3. Turns each into a git repo with one commit and **no remote**, so nothing can be pulled or pushed by mistake.
-
-Run it again whenever you want to start over. Options: `--target PATH` to make the repos somewhere else. The default, `tmp/ic`, is in the project root whatever folder you run the command from, and `tmp/` is not tracked by Git.
-
-**A shortcut for a whole terminal session.** Instead of adding `--ideas` and `--docs` to every command, set two environment variables. They win over `.env`, so every command in that terminal uses the test repos:
+### Set up the test repos
 
 ```bash
 uv run catcher testdata reset
 export IDEAS_REPO=tmp/ic/idea-bucket
 export DOCS_REPO=tmp/ic/epiaku-docs
-uv run catcher scan                                       # lists the test inbox
-uv run catcher run pipeline --profile fake                # runs on the test repos
-unset IDEAS_REPO DOCS_REPO                                # back to your real repos
 ```
 
-Every recipe on this page then works on the test data. Reset again to start over, and close the terminal (or `unset`) when you are done, so you don't run on the test repos by accident.
+`testdata reset`:
 
-**What the test data is.** It lives in `tests/data/` in the idea-catcher repo and holds only the folders the Idea Catcher reads and writes, not the full repos:
+1. Deletes `tmp/ic` if it is there. It only deletes a folder that a previous `testdata reset` made. If `tmp/ic` came from somewhere else (for example an old `git clone`), it stops and tells you to remove it yourself: `rm -rf tmp/ic`.
+2. Copies the test data into `tmp/ic/idea-bucket` and `tmp/ic/epiaku-docs`.
+3. Turns each into a git repo with one commit and **no remote**, so nothing can be pulled or pushed by mistake.
 
-- `tests/data/idea-bucket/inbox/`: the captures (48 markdown files, including a chat that was clipped several times as it grew, Gemini video chats, one clipped web article and dictated notes) and one tiny fake PDF (`sample-report.pdf`) to try artifacts.
-- `tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/`: the pages that were already published (including the empty `web-clips/` section page), so overwrite-by-id and the sibling links can be tried.
-- `tests/data/epiaku-docs/idea-bucket/artifacts/`: the folder in the root of epiaku-docs where artifacts (files that are not markdown) are sent. It is empty apart from a `.gitkeep` file, because Git does not keep empty folders.
+Run it again whenever you want to start over. `--target PATH` makes the repos somewhere else. The default, `tmp/ic`, is in the project root whatever folder you run the command from, and `tmp/` is not tracked by Git.
+
+The two `export` lines make every command in this terminal use the test repos, so the recipes below need no `--ideas`/`--docs`. They win over `.env`. Run `unset IDEAS_REPO DOCS_REPO` when you are done, so a later command does not run on the test repos by accident. `catcher reason` and `catcher render` take a document path directly, so those always need the full `tmp/ic/...` path.
+
+### What the test data is
+
+It lives in `tests/data/` in the idea-catcher repo and holds only the folders the Idea Catcher reads and writes, not the full repos:
+
+- `tests/data/idea-bucket/inbox/`: the captures (notes, clippings, Gemini video chats, a web article, YouTube clips) and one tiny fake PDF (`sample-report.pdf`) to try artifacts.
+- `tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/`: the output folders (`notes/`, `clippings/`, `youtube/`, `web-clips/`). They start empty, each with a `.gitkeep` file because Git does not keep empty folders. The pages you make in `tmp/ic` appear here; the files in `tests/data/` are not needed for a run.
+- `tests/data/epiaku-docs/idea-bucket/artifacts/`: the folder in the root of epiaku-docs where artifacts (files that are not markdown) are sent. Empty apart from a `.gitkeep`.
 
 Nothing else from the real repos is needed: no Hugo theme or site config, no `README`, no templates, no `.obsidian`, and none of the result folders (`archive/`, `output/`, `failed/`, `duplicates/`), which the run creates.
+
+**Refreshing it.** Add, remove or replace captures in `tests/data/idea-bucket/inbox/` and commit. The test `test_testdata.py` does not hardcode what is in there: it scans `tests/data/` when it runs and checks that `testdata reset` copies exactly that, so changing the captures or folders does not break it. Keep the `.gitkeep` files, or the empty folders are lost. To keep a set of real data for later, copy the folders you need into `tests/data/` this way.
 
 **The test suite uses the same data.** `test_testdata_run.py` runs the whole pipeline on it with the fake LLM, so a change that breaks the flow on real-looking captures is caught.
 
@@ -317,53 +293,11 @@ Good to know:
 - **Step 4 is what makes it safe.** Without a remote, nothing can be pushed by mistake.
 - **Switching between the two.** `testdata reset` only replaces a folder it made itself. A folder made with `git clone` is not recognised, so the command stops and tells you to run `rm -rf tmp/ic` first. That is step 1 above, so switching in either direction is one `rm -rf tmp/ic` followed by the other set of commands.
 - **Everything in the real repos is copied**, including any results of earlier real runs (`archive/`, `output/` and so on). Look in `tmp/ic/idea-bucket/inbox/` to see what will be processed.
-- **To keep a set of real data for later:** copy the folders you need into `tests/data/` as described under "Refresh the test data" above, and commit it.
+- **To keep a set of real data for later:** copy what you need into `tests/data/` as described under "Refreshing it" in "What the test data is", and commit it.
 
-### Send a PDF or an image to epiaku-docs
+### Recipes on test data
 
-Drop the file in `inbox/` (not in `notes/` or `clippings/`) and run the pipeline. It is renamed `YYYYMMDD-<guid>-<original name>` and copied to `archive/artifacts/` and to `idea-bucket/artifacts/` in the root of epiaku-docs. To do it again, move it from `archive/artifacts/` back into `inbox/`: it keeps its name and overwrites the same files. Files over 25 MB (`ARTIFACT_MAX_MB`) stay in `inbox/` with a warning.
-
-### Retry a stalled note
-
-A note that stalled (`stage: deferred` in `output/`) is retried by moving its original from `archive/` back into `inbox/`. It has the same file name in both folders, and it keeps that name, so the next run overwrites the stalled copy.
-
-```bash
-mv "../idea-bucket/archive/clippings/20260925-a1b2c3-sell-bundles.md" "../idea-bucket/inbox/clippings/"
-uv run catcher run pipeline --file "New chat"      # the original name works too
-```
-
-**Possible later:** a helper such as `catcher requeue`, which would move all stalled notes back in one go. It is not built yet.
-
-### Retry a failed note
-
-Find it in `failed/`, read its `.error.txt`, fix the cause, then move the `.md` file back into `inbox/` (same subfolder) and run again.
-
-```bash
-mv "../idea-bucket/failed/clippings/20260925-a1b2c3-new-chat.md" "../idea-bucket/inbox/clippings/"
-rm "../idea-bucket/failed/clippings/20260925-a1b2c3-new-chat.error.txt"
-uv run catcher run pipeline
-```
-
-### Redo a note with another model
-
-Copy its file from `archive/` into `inbox/`, then run with the profile you want.
-
-```bash
-cp "../idea-bucket/archive/notes/20260928-51bcb0-youtube-walks.md" "../idea-bucket/inbox/notes/"
-uv run catcher run pipeline --profile notes
-```
-
-### Bring back a file from `duplicates/`
-
-```bash
-mv "../idea-bucket/duplicates/clippings/20260925-a1b2c3-new-chat.md" "../idea-bucket/inbox/clippings/"
-```
-
-## Recipes on the test data
-
-The same recipes as above, rewritten to run on `tmp/ic` instead of your real repos. Nothing here touches `../idea-bucket` or `../epiaku-docs`.
-
-Start every session with a fresh copy, then set the two environment variables so the commands below need no `--ideas`/`--docs`:
+#### Set up the test repos
 
 ```bash
 uv run catcher testdata reset
@@ -371,42 +305,47 @@ export IDEAS_REPO=tmp/ic/idea-bucket
 export DOCS_REPO=tmp/ic/epiaku-docs
 ```
 
-`unset IDEAS_REPO DOCS_REPO` when you are done, so a later command does not run on the test repos by accident. `catcher reason` and `catcher render` always take a document path directly, so those still need the full `tmp/ic/...` path even with the variables set.
+Each one says what it tests.
 
-### Check the setup for free
+#### Check the setup for free
 
 ```bash
 uv run catcher run pipeline --profile fake --dry-run
 ```
 
-### See what is in the inbox
+#### See what is in the inbox
 
 ```bash
 uv run catcher scan
 ```
 
-### Try one note for real
+#### Try only the LLM step on one note (nothing is written)
+
+Tests just the LLM call and its JSON check: reads the note, calls the real `notes` profile and prints the JSON. It writes no page, archives nothing, commits nothing and copies nothing to `epiaku-docs`. It works for every class except `youtube`, which needs facts first (use `render`).
 
 ```bash
 uv run catcher reason "tmp/ic/idea-bucket/inbox/notes/YouTube walks.md" --profile notes
 ```
 
-### Test one specific document
+#### Run the whole pipeline on one document
+
+Tests the full flow for one document: read it, fetch YouTube facts (`youtube` class only), call the LLM, write the page to `tmp/ic/epiaku-docs`, archive the note in `tmp/ic/idea-bucket` and commit both repos locally. Nothing is pushed.
 
 ```bash
 uv run catcher run pipeline --file "YouTube walks" --profile fake --dry-run     # free
 uv run catcher run pipeline --file "YouTube walks"                              # for real
+uv run catcher run pipeline --requeue "YouTube walks"                     # requeue if it failed
 ```
 
-### Try a direct YouTube clip, for real
+#### Try a direct YouTube clip: facts, LLM and page, no commit
 
-A `youtube` document needs its facts (transcript, counts) before the LLM step, so use `render`, not `reason`. This calls the real `youtube` profile (OpenAI) and fetches the real transcript from YouTube — it is not free and not a dry run.
+A `youtube` document needs its facts (transcript, counts) before the LLM step, so use `render`, not `reason`. `render` fetches the facts, calls the LLM and writes the page into `epiaku-docs`, but leaves the inbox note alone and makes no commit. This calls the real `youtube` profile (OpenAI) and fetches the real transcript from YouTube — it is not free and not a dry run.
 
 ```bash
 uv run catcher render "tmp/ic/idea-bucket/inbox/clippings/RAG + Langchain Python Project Easy AIChat For Your Docs.md" --docs tmp/ic/epiaku-docs
 ```
 
-### Try a Gemini video chat, for real
+#### Try a Gemini video chat: LLM and page, no commit
 
 Same idea, for the `youtube-gemini` class: Gemini's answer is reformatted into our page format on the `youtube` profile — nothing else. This class makes no YouTube API call at all (no `yt-dlp`, no transcript fetch), so it always works, whatever the state of YouTube's endpoints. Because it needs no facts first, `reason` works for it too, not just `render`.
 
@@ -416,7 +355,7 @@ uv run catcher render "tmp/ic/idea-bucket/inbox/clippings/RAG + Langchain Python
 
 Both clips are about the same video, so after running both you can open the two pages in `tmp/ic/epiaku-docs/hugo/content/en/docs/idea-bucket/youtube/` and compare them — each links to the other.
 
-### A small first run, then publish
+#### A small first run, then publish
 
 ```bash
 uv run catcher run pipeline --limit 3             # commits locally, pushes nothing
@@ -424,7 +363,7 @@ git -C tmp/ic/epiaku-docs log --stat -1           # look at what it wrote
 uv run catcher run pipeline --push                # process the rest; --push is a no-op here, tmp/ic has no remote
 ```
 
-### Send a PDF or an image to epiaku-docs
+#### Send a PDF or an image to epiaku-docs
 
 The test data already has one: `tmp/ic/idea-bucket/inbox/sample-report.pdf`. Just run the pipeline and look for it in `tmp/ic/idea-bucket/archive/artifacts/` and `tmp/ic/epiaku-docs/idea-bucket/artifacts/`. To try your own file, copy it into `tmp/ic/idea-bucket/inbox/` first.
 
@@ -432,20 +371,15 @@ The test data already has one: `tmp/ic/idea-bucket/inbox/sample-report.pdf`. Jus
 uv run catcher run pipeline --file "sample-report.pdf"
 ```
 
-### Retry a stalled note
-
-The calculated file name is a random guid, so list the folder to find it rather than typing a fixed name:
+#### Retry a stalled note
 
 ```bash
-uv run catcher run pipeline                              # let something stall (e.g. a YouTube video)
-ls tmp/ic/idea-bucket/output/clippings/                  # find the stalled file (stage: deferred)
-mv tmp/ic/idea-bucket/archive/clippings/<the-file>.md tmp/ic/idea-bucket/inbox/clippings/
-uv run catcher run pipeline --file "<the-file>"           # or the note's original name
+uv run catcher run pipeline                                  # let something stall (e.g. a YouTube video)
+ls tmp/ic/idea-bucket/output/clippings/                      # see the stalled file (stage: deferred)
+uv run catcher run pipeline --requeue "<the-file>"           # the original name works, or the calculated name
 ```
 
-**Possible later:** a helper such as `catcher requeue`, which would move all stalled notes back in one go. It is not built yet.
-
-### Retry a failed note
+#### Retry a failed note
 
 ```bash
 ls tmp/ic/idea-bucket/failed/                                       # find it and its .error.txt
@@ -454,20 +388,65 @@ rm tmp/ic/idea-bucket/failed/notes/<the-file>.error.txt
 uv run catcher run pipeline
 ```
 
-### Redo a note with another model
+#### Redo a note with another model
 
 ```bash
-cp tmp/ic/idea-bucket/archive/notes/20260928-51bcb0-youtube-walks.md tmp/ic/idea-bucket/inbox/notes/
-uv run catcher run pipeline --profile notes
+uv run catcher run pipeline --requeue "YouTube walks" --profile notes
 ```
 
-(That exact file name only exists after you have run the note through once — `ls tmp/ic/idea-bucket/archive/notes/` to see what is there.)
-
-### Bring back a file from `duplicates/`
+#### Bring back a file from `duplicates/`
 
 ```bash
 ls tmp/ic/idea-bucket/duplicates/clippings/                          # find it
 mv tmp/ic/idea-bucket/duplicates/clippings/<the-file>.md tmp/ic/idea-bucket/inbox/clippings/
+```
+
+## Recipes on real repos
+
+The same recipes on your real `idea-bucket` and `epiaku-docs` (siblings of this project). The test-data section above explains each one; only the paths differ. A real run changes your real repos, so do the free `--dry-run` first.
+
+First switch back to the real repos. If you exported the test repos earlier in this terminal, remove those variables so the paths in `.env` are used again (or close the terminal):
+
+```bash
+unset IDEAS_REPO DOCS_REPO
+printenv IDEAS_REPO DOCS_REPO    # prints nothing when unset; the paths then come from .env
+```
+
+Then the recipes:
+
+```bash
+# Check the setup for free, then see what is in the inbox
+uv run catcher run pipeline --profile fake --dry-run
+uv run catcher scan
+
+# Only the LLM step on one note (writes nothing)
+uv run catcher reason "../idea-bucket/inbox/notes/YouTube walks.md" --profile notes
+
+# The whole pipeline on one document
+uv run catcher run pipeline --file "YouTube walks" --profile fake --dry-run     # free
+uv run catcher run pipeline --file "YouTube walks"                              # for real
+
+# A small first run, then publish
+uv run catcher run pipeline --limit 3             # commits locally, pushes nothing
+git -C ../epiaku-docs log --stat -1               # look at what it wrote
+uv run catcher run pipeline --push                # process the rest and push
+```
+
+**Send a PDF or an image to epiaku-docs.** Drop the file in `inbox/` (not in `notes/` or `clippings/`) and run the pipeline. It is renamed `YYYYMMDD-<guid>-<original name>` and copied to `archive/artifacts/` and to `idea-bucket/artifacts/` in the root of epiaku-docs. To do it again, move it from `archive/artifacts/` back into `inbox/`: it keeps its name and overwrites the same files. Files over 25 MB (`ARTIFACT_MAX_MB`) stay in `inbox/` with a warning.
+
+**Retry a stalled note** (`stage: deferred` in `output/`) **or redo one with another model:** `--requeue` moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again.
+
+```bash
+uv run catcher run pipeline --requeue "YouTube walks"                    # stalled or published: run it again
+uv run catcher run pipeline --requeue "YouTube walks" --profile notes    # ... with another profile
+```
+
+**A failed note, or a duplicate:** these are not searched by `--requeue`. Move the file back into `inbox/` (same subfolder) and run again. The name is a random guid, so `ls` the folder to find it.
+
+```bash
+mv "../idea-bucket/failed/clippings/<the-file>.md" "../idea-bucket/inbox/clippings/"     # failed: read its .error.txt, fix the cause, then rm the .error.txt
+mv "../idea-bucket/duplicates/clippings/<the-file>.md" "../idea-bucket/inbox/clippings/" # duplicate
+uv run catcher run pipeline --file "<the-file>"
 ```
 
 ## Where things end up

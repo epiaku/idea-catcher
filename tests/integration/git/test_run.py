@@ -11,6 +11,7 @@ from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import BudgetExhausted, UsageLimitReached
 from catcher.modules.pipeline.inbox import slugify_title
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
+from catcher.modules.youtube.facts import FactsUnavailable
 
 REPO = Path(__file__).parents[3]
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
@@ -539,3 +540,108 @@ def test_file_can_name_just_an_artifact(repos, make_services):
     report = run_pipeline(repos.ideas, repos.docs, RunOptions(only=["report.pdf"]), make_services())
     assert report.counts() == {"artifact": 1}
     assert (repos.ideas / "inbox/notes/YouTube walks.md").exists()  # the notes were not selected
+
+
+def test_requeue_brings_a_stalled_document_back_and_runs_it_again(repos, make_services, yt_facts):
+    (repos.ideas / "inbox/clippings/yt.md").write_text(YT_CLIP)
+    first = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert {i.doc_id: i.status for i in first.items}["nGVZS_wUDGM"] == "deferred"
+    stalled_name = find(repos.ideas, "output", "clippings", "yt.md").name
+
+    opts = RunOptions(requeue=["yt"])  # the name it was captured under, no manual move needed
+    second = run_pipeline(repos.ideas, repos.docs, opts, make_services(facts=lambda vid: yt_facts))
+    assert second.counts() == {"requeued": 1, "published": 1}  # only that document ran
+    assert second.not_in_archive == []
+    assert not list((repos.ideas / "inbox").rglob("yt*.md"))
+    final = find(repos.ideas, "output", "clippings", "yt.md")
+    assert final.name == stalled_name and "stage" not in load(final).fm  # overwrote the stalled copy
+    assert (repos.ideas / "archive/clippings" / stalled_name).exists()  # archived again, same name
+
+
+def test_requeue_by_calculated_name_reruns_a_published_note_with_the_same_page(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    pages = sorted(p.name for p in (repos.docs / NOTES).glob("*.md"))
+    archived = find(repos.ideas, "archive", "notes", "YouTube walks.md")
+    chats = FakeBackend()
+    report = run_pipeline(
+        repos.ideas,
+        repos.docs,
+        RunOptions(requeue=[f"notes/{archived.name}"], profile="fake"),
+        make_services(chat_backend=chats, note_backend=chats),
+    )
+    assert report.counts() == {"requeued": 1, "published": 1}
+    assert sorted(p.name for p in (repos.docs / NOTES).glob("*.md")) == pages  # overwritten, not duplicated
+    assert not list((repos.ideas / "inbox").rglob("*.md"))
+    assert len(chats.prompts) == 1  # the systeme clipping was not touched
+
+
+def test_requeue_of_an_unknown_name_is_not_found_and_runs_nothing(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["Nope"]), make_services())
+    assert report.not_in_archive == ["Nope"] and report.items == []
+    assert not list((repos.ideas / "inbox").rglob("*.md"))
+
+
+def test_requeue_dry_run_copies_nothing(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    before = (files(repos.ideas), files(repos.docs))
+    report = run_pipeline(
+        repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"], dry_run=True), make_services()
+    )
+    assert report.counts() == {"would_requeue": 1}
+    assert (files(repos.ideas), files(repos.docs)) == before
+
+
+def test_requeue_does_not_overwrite_a_file_already_in_the_inbox(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    archived = find(repos.ideas, "archive", "notes", "YouTube walks.md")
+    waiting = repos.ideas / "inbox/notes" / archived.name
+    waiting.write_text(archived.read_text() + "\nEdited since.\n")
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"]), make_services())
+    [item] = [i for i in report.items if i.status != "published"]
+    assert item.status == "skipped" and "already exists" in item.message
+    assert (
+        "Edited since." in load(find(repos.ideas, "archive", "notes", "YouTube walks.md")).body
+    )  # the edit was used
+
+
+def test_requeue_flag_on_the_command_line(repos, make_services, monkeypatch):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())
+    base = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs)]
+    ok = CliRunner().invoke(app, [*base, "--requeue", "YouTube walks"])
+    assert ok.exit_code == 0, ok.output
+    assert "requeued" in ok.output and "published" in ok.output
+    missing = CliRunner().invoke(app, [*base, "--requeue", "Nope"])
+    assert missing.exit_code == 1 and 'no document named "Nope" in archive/' in missing.output
+
+
+def test_requeue_moves_the_original_and_clears_the_stale_output_so_the_document_is_in_one_place(
+    repos, make_services, yt_facts, sh
+):
+    (repos.ideas / "inbox/clippings/yt.md").write_text(YT_CLIP)
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(facts=lambda vid: yt_facts))
+    archived = find(repos.ideas, "archive", "clippings", "yt.md")
+    output = find(repos.ideas, "output", "clippings", "yt.md")
+    sidecar = output.with_suffix(".youtube.json")
+    assert sidecar.exists()
+
+    def unavailable(vid):
+        raise FactsUnavailable("blocked")  # the run starts, then stalls again
+
+    run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["yt"]), make_services(facts=unavailable))
+    assert not list((repos.ideas / "inbox").rglob("yt*.md"))  # the run took it out of inbox/ ...
+    assert archived.exists() and load(output).fm["stage"] == "deferred"  # ... and wrote both folders again
+    assert not sidecar.exists()  # the old facts file did not survive the requeue
+    assert sh(repos.ideas, "status", "--porcelain") == ""  # every move and delete was committed
+
+
+def test_requeue_dry_run_and_a_blocked_name_leave_archive_and_output_alone(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    archived = find(repos.ideas, "archive", "notes", "YouTube walks.md")
+    output = find(repos.ideas, "output", "notes", "YouTube walks.md")
+    (repos.ideas / "inbox/notes" / archived.name).write_text("already waiting\n")
+    run_pipeline(
+        repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"], dry_run=True), make_services()
+    )
+    assert archived.exists() and output.exists()

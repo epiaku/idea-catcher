@@ -466,6 +466,66 @@ def scan_inbox(ideas_repo: Path, *, now: datetime | None = None, only: list[str]
     return result
 
 
+@dataclass
+class Requeued:
+    """A document from `archive/` that `--requeue` put (or would put) back into `inbox/`."""
+
+    rel: Path  # the path under archive/ and inbox/: subfolder plus calculated name
+    doc_id: str
+    doc_class: str
+    copied: bool  # False in a dry run, or when inbox/ already had a file with that name
+    touched: list[Path] = field(default_factory=list)  # every path it was moved from or to, for the commit
+
+
+def requeue_from_archive(
+    ideas_repo: Path, queries: list[str], *, dry_run: bool = False
+) -> tuple[list[Requeued], list[str]]:
+    """Move the archived original of each named document back into `inbox/`, so the pipeline starts on it
+    from scratch. Returns what was found and the queries that matched nothing in `archive/`.
+
+    The move keeps the subfolder and the calculated name, and the stale working copy in `output/` (with its
+    facts file) is deleted, so the document is in one place only, `inbox/`, until the run starts on it.
+    The run then writes `archive/` and `output/` again under the same name, and overwrites the page in
+    epiaku-docs. A name that `inbox/` already holds is left alone.
+    """
+    archive = ideas_repo / "archive"
+    found: list[Requeued] = []
+    matched: set[str] = set()
+    for path in sorted(archive.rglob("*.md")) if archive.is_dir() else []:
+        rel = path.relative_to(archive)
+        if rel.parts[0] == ARTIFACTS_DIR or any(part.startswith(".") for part in rel.parts):
+            continue
+        try:
+            doc = load(path)
+        except (FrontmatterError, UnicodeDecodeError):
+            continue
+        names = [rel]  # found by its calculated name or by the name it was captured under
+        original = doc.fm.get(ORIGINAL_KEY)
+        if isinstance(original, str) and original:
+            names.append(rel.parent / original)
+        hits = {q for q in queries if any(name_matches(q, name) for name in names)}
+        if not hits:
+            continue
+        matched |= hits
+        dest = ideas_repo / "inbox" / rel
+        output = ideas_repo / "output" / rel
+        moved = not dry_run and not dest.exists()
+        touched: list[Path] = []
+        if moved:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(path, dest)
+            touched = [path, dest]
+            for stale in (output, facts_sidecar(output)):
+                if stale.exists():
+                    stale.unlink()
+                    touched.append(stale)
+            log.info("requeued archive/%s -> inbox/%s", rel.as_posix(), rel.as_posix())
+        elif dest.exists():
+            log.warning("inbox/%s already exists: not overwritten", rel.as_posix())
+        found.append(Requeued(rel, str(doc.fm.get("id", "")), str(doc.fm.get("class", "")), moved, touched))
+    return found, [q for q in queries if q not in matched]
+
+
 def read_note(path: Path, now: datetime | None = None) -> Note:
     """Read one document from anywhere, for `reason` and `render`."""
     return _analyse(path, load(path), path.as_posix(), now or datetime.now().astimezone())

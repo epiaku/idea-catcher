@@ -45,6 +45,14 @@ FileOpt = Annotated[
         help="process only this document (file name, name without .md, or subfolder/name). Repeat for more",
     ),
 ]
+RequeueOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--requeue",
+        help="copy this document from archive/ back into inbox/, then process it again "
+        "(same name forms as --file). Repeat for more",
+    ),
+]
 ProfileOpt = Annotated[
     str | None,
     typer.Option(
@@ -183,10 +191,11 @@ def run_pipeline_cmd(
     push: Annotated[bool, typer.Option("--push", help="push both repos (off by default)")] = False,
     limit: Annotated[int | None, typer.Option("--limit", help="process at most N notes")] = None,
     file: FileOpt = None,
+    requeue: RequeueOpt = None,
 ) -> None:
     """Process the documents in inbox/: publish pages, file failures and duplicates, and commit."""
     settings = Settings()
-    opts = RunOptions(profile=profile, dry_run=dry_run, push=push, limit=limit, only=file)
+    opts = RunOptions(profile=profile, dry_run=dry_run, push=push, limit=limit, only=file, requeue=requeue)
     report = run_pipeline(
         ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
     )
@@ -197,8 +206,13 @@ def run_pipeline_cmd(
         typer.echo(f"{'unreadable':<14} {rel}: {error}")
     for query in report.not_found:
         typer.echo(f'{"not-found":<14} no document named "{query}" in inbox/')
+    for query in report.not_in_archive:
+        typer.echo(f'{"not-found":<14} no document named "{query}" in archive/')
     typer.echo(f"summary: {report.counts()} committed={report.committed} pushed={report.pushed}")
-    failed = bool(report.unreadable or report.not_found) or report.counts().get("failed", 0) > 0
+    failed = (
+        bool(report.unreadable or report.not_found or report.not_in_archive)
+        or report.counts().get("failed", 0) > 0
+    )
     raise typer.Exit(1 if failed else 0)
 
 

@@ -388,7 +388,7 @@ The **same name** is used for the copy in `archive/`, the working copy and final
 - **The frontmatter is edited as text**: the two lines are inserted into the existing frontmatter and everything else stays byte for byte. A file without frontmatter gets a small block, and its text is unchanged.
 - **An unreadable file** (its frontmatter cannot be parsed) cannot be edited. It is only renamed: archived and moved to `failed/` under a calculated name with its bytes unchanged. The `.error.txt` records the original and the calculated name.
 - **The `id` is not the file name.** The `id` (from the chat or video address, or the note) identifies the *content*, so a re-clip overwrites the page. Five clips of one chat share one `id` and have five different file names.
-- **Requeue keeps the name.** A file moved from `archive/` back into `inbox/` already has `calculated_filename` in its frontmatter, so it keeps its name. It overwrites the same-named files in `archive/` and `output/` (a stalled working copy).
+- **Requeue keeps the name.** `catcher run pipeline --requeue NAME` moves the archived original back into `inbox/` (and clears the stale `output/` copy) and runs it again; moving it back by hand works too. A file moved from `archive/` back into `inbox/` already has `calculated_filename` in its frontmatter, so it keeps its name. It overwrites the same-named files in `archive/` and `output/` (a stalled working copy).
 - **`--file` finds a document by either name**: the calculated name or the original name.
 
 The body of a document is never changed. Only the archive copy's frontmatter gets the two lines.
