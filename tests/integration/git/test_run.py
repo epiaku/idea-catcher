@@ -199,7 +199,7 @@ def test_cli_run_pipeline(repos, monkeypatch):
 
 
 YT_CLIP = (
-    '---\nsource : "https://www.youtube.com/watch?v=MBPHU7aaklM&list=PL1&t=1s"\n'
+    '---\nsource : "https://www.youtube.com/watch?v=nGVZS_wUDGM&list=PL1&t=1s"\n'
     "created: 2026-09-25\n---\nclip\n"
 )
 
@@ -207,7 +207,7 @@ YT_CLIP = (
 def test_youtube_without_facts_is_deferred_then_published(repos, make_services, yt_facts):
     (repos.ideas / "inbox/clippings/yt.md").write_text(YT_CLIP)
     first = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
-    assert {i.doc_id: i.status for i in first.items}["MBPHU7aaklM"] == "deferred"
+    assert {i.doc_id: i.status for i in first.items}["nGVZS_wUDGM"] == "deferred"
     stalled_path = find(repos.ideas, "output", "clippings", "yt.md")
     stalled = load(stalled_path)
     assert stalled.fm["stage"] == "deferred" and "facts" in stalled.fm["deferred_reason"]
@@ -217,7 +217,7 @@ def test_youtube_without_facts_is_deferred_then_published(repos, make_services, 
     assert run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services()).items == []
     retry(repos.ideas, "clippings", "yt.md")
     second = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(facts=lambda vid: yt_facts))
-    assert {i.doc_id: i.status for i in second.items}["MBPHU7aaklM"] == "published"
+    assert {i.doc_id: i.status for i in second.items}["nGVZS_wUDGM"] == "published"
     final = find(repos.ideas, "output", "clippings", "yt.md")
     assert (
         final.name == stalled_path.name

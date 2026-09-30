@@ -10,7 +10,7 @@ _YOUTUBE = {
     "main_purpose": "Show a repeatable system.",
     "key_examples": ["Example one"],
     "action_plan": ["Do step one"],
-    "tools": ["Obsidian"],
+    "tools": ["YouTube"],
     "tips": [{"tip": "Start small", "explanation": "Small steps stick.", "how_to_apply": "Pick one habit."}],
     "channel_application": "Use it for a demo video.",
     "tags": ["youtube-idea", "content-creation"],

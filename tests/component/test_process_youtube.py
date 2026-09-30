@@ -11,7 +11,7 @@ from catcher.modules.youtube.facts import FactsUnavailable
 
 GEMINI = "https://gemini.google.com/app/925d9b0b4ca21b63?is_sa=1"
 YT_CHAT = (
-    "**You**\n\nSummarize this YouTube video: https://www.youtube.com/watch?v=MBPHU7aaklM\n\n---\n\n"
+    "**You**\n\nSummarize this YouTube video: https://www.youtube.com/watch?v=nGVZS_wUDGM\n\n---\n\n"
     "**Gemini**\n\n**Success Is Hard** by *Someone*\n\n| Views | 99M |\n"
 )
 
@@ -19,9 +19,9 @@ YT_CHAT = (
 def youtube_note(make_note, tmp_path):
     return make_note(
         "youtube",
-        doc_id="MBPHU7aaklM",
+        doc_id="nGVZS_wUDGM",
         root=tmp_path,
-        source="https://www.youtube.com/watch?v=MBPHU7aaklM&list=PL1&t=1s",
+        source="https://www.youtube.com/watch?v=nGVZS_wUDGM&list=PL1&t=1s",
         body="page scrape\n",
     )
 
@@ -35,13 +35,15 @@ def test_youtube_page_has_python_metrics_and_embed(make_note, make_services, yt_
     assert processed.problems == []
     assert len(chats.prompts) == 1  # one call, whatever the class
     doc = parse(processed.page)
-    assert doc.fm["video_id"] == "MBPHU7aaklM"
-    assert doc.fm["source"] == "https://www.youtube.com/watch?v=MBPHU7aaklM"
-    assert "| Views               | 1,400,000 |" in doc.body
-    assert "| Channel Subscribers | 2,260,000 |" in doc.body
-    assert "| Metrics As Of       | 2026-09-27 |" in doc.body
-    assert "{{< youtube-lite MBPHU7aaklM `Success Is Hard Until You Build Systems Like This` >}}" in doc.body
-    assert "[6:50] I plan my week in Obsidian every Sunday." in chats.prompts[0]
+    assert doc.fm["video_id"] == "nGVZS_wUDGM"
+    assert doc.fm["source"] == "https://www.youtube.com/watch?v=nGVZS_wUDGM"
+    assert "| Views               | 8,901 |" in doc.body
+    assert "| Channel Subscribers | 131,000 |" in doc.body
+    assert "| Metrics As Of       | 2026-09-30 |" in doc.body
+    assert (
+        "{{< youtube-lite nGVZS_wUDGM `I blew up a coaching business to prove its not luck` >}}" in doc.body
+    )
+    assert "[6:50] stadium, and make a video about getting" in chats.prompts[0]
     assert processed.llm.prompt_version == "youtube-2"
 
 
@@ -56,7 +58,7 @@ def test_the_facts_come_back_with_the_page_and_nothing_is_written(
 
     note = youtube_note(make_note, tmp_path)
     processed = process_note(note, make_services(facts=fetch), ProcessOptions())
-    assert processed.facts == yt_facts and calls == ["MBPHU7aaklM"]
+    assert processed.facts == yt_facts and calls == ["nGVZS_wUDGM"]
     assert sorted(p.name for p in note.path.parent.iterdir()) == [note.path.name]
 
 
@@ -91,7 +93,7 @@ def test_gemini_youtube_chat_is_converted_in_one_call_with_no_youtube_api_call_a
         raise AssertionError("youtube-gemini must never call the facts fetcher")
 
     note = make_note(
-        "youtube-gemini", doc_id="MBPHU7aaklM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT
+        "youtube-gemini", doc_id="nGVZS_wUDGM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT
     )
     processed = process_note(note, make_services(chat_backend=chats, facts=no_facts), ProcessOptions())
     assert processed.problems == []
@@ -101,7 +103,7 @@ def test_gemini_youtube_chat_is_converted_in_one_call_with_no_youtube_api_call_a
     assert "facts" not in chats.prompts[0].lower()
     assert "Metrics" not in processed.page  # no facts, so no metrics table on the page
     assert processed.facts is None
-    assert parse(processed.page).fm["video_id"] == "MBPHU7aaklM"
+    assert parse(processed.page).fm["video_id"] == "nGVZS_wUDGM"
     assert processed.llm.prompt_version == "youtube-gemini-2"
 
 
@@ -162,10 +164,10 @@ def test_a_blocked_backend_stops_before_fetching_facts(make_note, make_services,
 
 def test_sibling_page_is_linked(make_note, make_services, yt_facts, tmp_path):
     docs = tmp_path / "docs"
-    other = docs / YOUTUBE.out_dir / "20260927_MBPHU7aaklM-gemini_success.md"
+    other = docs / YOUTUBE.out_dir / "20260927_nGVZS_wUDGM-gemini_success.md"
     other.parent.mkdir(parents=True)
-    other.write_text(dump(Doc({"title": "x", "id": "MBPHU7aaklM-gemini"}, "x\n")))
+    other.write_text(dump(Doc({"title": "x", "id": "nGVZS_wUDGM-gemini"}, "x\n")))
     note = youtube_note(make_note, tmp_path)
     opts = ProcessOptions(docs_repo=docs)
     processed = process_note(note, make_services(facts=lambda vid: yt_facts), opts)
-    assert "(../20260927_mbphu7aaklm-gemini_success/)" in processed.page
+    assert "(../20260927_ngvzs_wudgm-gemini_success/)" in processed.page

@@ -1,3 +1,5 @@
+import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -117,4 +119,13 @@ def make_services():
 
 @pytest.fixture
 def yt_facts() -> YoutubeFacts:
-    return YoutubeFacts.model_validate_json((FIXTURES / "youtube" / "MBPHU7aaklM.json").read_text())
+    """Facts for nGVZS_wUDGM, built from its saved yt-dlp info and auto-captions (no network)."""
+    from catcher.modules.youtube import facts as facts_mod
+
+    folder = FIXTURES / "youtube"
+    info = json.loads((folder / "nGVZS_wUDGM.info.json").read_text())
+    captions = facts_mod._parse_vtt_captions((folder / "nGVZS_wUDGM.en.vtt").read_text())
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(facts_mod, "_extract_info", lambda url: info)
+        mp.setattr(facts_mod, "_fetch_transcript", lambda vid, langs: captions)
+        return facts_mod.fetch_facts("nGVZS_wUDGM", today=date(2026, 9, 30))

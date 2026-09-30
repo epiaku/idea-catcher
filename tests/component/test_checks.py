@@ -13,11 +13,11 @@ def test_flags_timestamps_after_the_end_of_the_video(yt_facts):
     summary = SUMMARY.model_copy(update={"action_plan": ["At 25:00 do the review"]})
     [warning] = check_summary(summary, yt_facts)
     assert warning.kind == "wrong_timestamp"
-    assert "25:00" in warning.fix and "21:00" in warning.fix
+    assert "25:00" in warning.fix and "11:50" in warning.fix
 
 
 def test_flags_tools_that_are_not_in_the_transcript(yt_facts):
-    summary = SUMMARY.model_copy(update={"tools": ["Obsidian", "Notion"]})
+    summary = SUMMARY.model_copy(update={"tools": ["YouTube", "Notion"]})
     [warning] = check_summary(summary, yt_facts)
     assert (warning.kind, warning.severity, warning.excerpt) == ("unsupported_claim", "low", "Notion")
 

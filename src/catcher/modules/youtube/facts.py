@@ -1,4 +1,6 @@
+import html
 import logging
+import re
 from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any, cast
@@ -78,6 +80,28 @@ def _parse_json3_captions(data: dict[str, Any]) -> list[Segment]:
         for event in data.get("events", [])
         if (text := "".join(seg.get("utf8", "") for seg in event.get("segs", []) if "utf8" in seg).strip())
     ]
+
+
+_VTT_CUE_TIME = re.compile(r"^(\d+):(\d{2}):(\d{2})\.(\d{3}) -->")
+_VTT_TAG = re.compile(r"<[^>]*>")
+
+
+def _parse_vtt_captions(vtt: str) -> list[Segment]:
+    """YouTube's auto-caption WebVTT. Each cue repeats the previous line and adds the new one
+    (rolling captions, with inline word timestamps), so keep only the last text line of each cue
+    and skip it when it just repeats the one before."""
+    segments: list[Segment] = []
+    for block in re.split(r"\n\n", vtt):
+        lines = block.strip().splitlines()
+        match = next((m for line in lines if (m := _VTT_CUE_TIME.match(line))), None)
+        if match is None:
+            continue
+        hours, minutes, secs, millis = (int(g) for g in match.groups())
+        text_lines = [html.unescape(_VTT_TAG.sub("", line)).strip() for line in lines if "-->" not in line]
+        text = next((t for t in reversed(text_lines) if t), "")
+        if text and (not segments or segments[-1].text != text):
+            segments.append(Segment(start_s=hours * 3600 + minutes * 60 + secs + millis / 1000, text=text))
+    return segments
 
 
 def _fetch_transcript_via_ytdlp(video_id: str, languages: Sequence[str]) -> list[Segment] | None:

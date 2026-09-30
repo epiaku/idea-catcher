@@ -1,4 +1,6 @@
+import json
 from datetime import date
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -120,3 +122,41 @@ def test_parse_json3_captions_concatenates_segments_and_skips_empty_events():
 
 def test_parse_json3_captions_on_no_events_is_empty():
     assert facts_mod._parse_json3_captions({}) == []
+
+
+VTT_FIXTURE = Path(__file__).parent.parent / "fixtures" / "youtube" / "nGVZS_wUDGM.en.vtt"
+
+
+def test_parse_vtt_captions_on_a_real_auto_caption_file():
+    segments = facts_mod._parse_vtt_captions(VTT_FIXTURE.read_text())
+    assert segments[0] == Segment(start_s=0.0, text="This is Marine and she is a rockstar")
+    assert segments[1].text == "with a YouTube channel that teaches"
+    assert segments[-1].text == "it."
+    assert 11 * 60 + 40 < segments[-1].start_s < 12 * 60
+    texts = [s.text for s in segments]
+    assert all(a != b for a, b in zip(texts, texts[1:], strict=False))  # rolling repeats are gone
+    assert not any("<" in t for t in texts)  # inline word timestamps are stripped
+    assert [s.start_s for s in segments] == sorted(s.start_s for s in segments)
+
+
+def test_parse_vtt_captions_decodes_entities_and_ignores_the_header():
+    vtt = "WEBVTT\nKind: captions\n\n00:00:01.000 --> 00:00:02.000\nfish &amp; chips\n"
+    assert facts_mod._parse_vtt_captions(vtt) == [Segment(start_s=1.0, text="fish & chips")]
+
+
+def test_fetch_facts_on_a_real_video_from_its_saved_info_and_captions(monkeypatch):
+    """Both files are from the same video (nGVZS_wUDGM); yt-dlp output trimmed to the fields we read."""
+    fixtures = VTT_FIXTURE.parent
+    info = json.loads((fixtures / "nGVZS_wUDGM.info.json").read_text())
+    captions = facts_mod._parse_vtt_captions(VTT_FIXTURE.read_text())
+    monkeypatch.setattr(facts_mod, "_extract_info", lambda url: info)
+    monkeypatch.setattr(facts_mod, "_fetch_transcript", lambda vid, langs: captions)
+    facts = fetch_facts("nGVZS_wUDGM", today=date(2026, 9, 30))
+    assert facts.title == "I blew up a coaching business to prove its not luck"
+    assert facts.channel == "Ed Lawrence"
+    assert (facts.subscribers, facts.views, facts.likes) == (131000, 8901, 146)
+    assert (facts.upload_date, facts.duration_s) == ("2026-09-28", 710)
+    assert facts.chapters == []
+    assert (facts.transcript_text() or "").startswith(
+        "[0:00] This is Marine and she is a rockstar\n[0:02] with"
+    )
