@@ -36,7 +36,9 @@ def prompt_input(
         "tags": tags.as_prompt_dict(),
         "capture_tags": capture_tags(note),
         "glossary": glossary.as_prompt_list() if glossary else [],
-        "context": context,
+        "context": context
+        if note.doctype.name == "youtube"
+        else "",  # a Gemini page only restructures Gemini
     }
     if facts is not None:
         data["facts"] = facts.model_dump(exclude={"transcript"})

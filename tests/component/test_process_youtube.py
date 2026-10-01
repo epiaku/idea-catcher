@@ -44,7 +44,7 @@ def test_youtube_page_has_python_metrics_and_embed(make_note, make_services, yt_
         "{{< youtube-lite nGVZS_wUDGM `I blew up a coaching business to prove its not luck` >}}" in doc.body
     )
     assert "[6:50] stadium, and make a video about getting" in chats.prompts[0]
-    assert processed.llm.prompt_version == "youtube-4"
+    assert processed.llm.prompt_version == "youtube-5"
     assert "## 🛠️ Tech Stack" in doc.body and "Tools and Services" not in doc.body
 
 
@@ -105,7 +105,7 @@ def test_gemini_youtube_chat_is_converted_in_one_call_with_no_youtube_api_call_a
     assert "Metrics" not in processed.page  # no facts, so no metrics table on the page
     assert processed.facts is None
     assert parse(processed.page).fm["video_id"] == "nGVZS_wUDGM"
-    assert processed.llm.prompt_version == "youtube-gemini-5"
+    assert processed.llm.prompt_version == "youtube-gemini-6"
     assert "## 🛠️ Tech Stack" in processed.page and "Tools and Services" not in processed.page
 
 
@@ -261,7 +261,7 @@ def test_the_gemini_page_has_no_chapters_or_links_and_its_prompt_keeps_advice_ou
 CONTEXT = "- Epiaku makes Vibe Coding Tech Stack demos for solo builders."
 
 
-def test_both_youtube_prompts_get_the_business_context_for_channel_application(
+def test_only_the_direct_youtube_prompt_gets_the_business_context(
     make_note, make_services, yt_facts, tmp_path
 ):
     direct = FakeBackend()
@@ -272,6 +272,7 @@ def test_both_youtube_prompts_get_the_business_context_for_channel_application(
     assert f"About Epiaku (only for channel_application):\n{CONTEXT}" in prompt
     assert "using the context about Epiaku above" in prompt
     assert "Give 2 to 4 concrete suggestions" in prompt and "instead of forcing a fit" in prompt
+    assert "as a Markdown bulleted list" in prompt
 
     gemini = FakeBackend()
     services = make_services(chat_backend=gemini)
@@ -280,8 +281,10 @@ def test_both_youtube_prompts_get_the_business_context_for_channel_application(
         "youtube-gemini", doc_id="nGVZS_wUDGM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT
     )
     process_note(note, services, ProcessOptions())
-    assert f"About Epiaku (only for channel_application):\n{CONTEXT}" in gemini.prompts[0]
-    assert gemini.prompts[0].index("About Epiaku") > gemini.prompts[0].index("</chat>")  # outside the chat
+    text = gemini.prompts[0]
+    assert "About Epiaku" not in text and CONTEXT not in text  # Gemini's advice is only restructured
+    assert "Gemini's own advice for applying the video to Epiaku, in Gemini's words" in text
+    assert "Do not add ideas of your own" in text and "as a Markdown bulleted list" in text
 
 
 def test_without_a_context_the_prompts_keep_the_one_line_description(
@@ -399,3 +402,26 @@ def test_the_summary_prompt_ignores_promotional_descriptions_and_uses_the_transc
     assert "only links, a free offer" in prompt and "ignore them completely" in prompt
     assert "from the transcript and not from the description" in prompt
     assert "YouTube's own description condensed" not in prompt
+
+
+def test_the_gemini_prompt_writes_about_the_video_and_lists_only_named_tools(
+    make_note, make_services, tmp_path
+):
+    gemini = FakeBackend()
+    note = make_note(
+        "youtube-gemini", doc_id="nGVZS_wUDGM-gemini", root=tmp_path, source=GEMINI, body=YT_CHAT
+    )
+    process_note(note, make_services(chat_backend=gemini), ProcessOptions())
+    text = gemini.prompts[0]
+    assert 'do not write "Gemini says", "Gemini describes" or "Gemini suggests"' in text
+    assert "never generic categories such as" in text
+
+
+def test_the_direct_prompt_also_lists_only_named_tools(make_note, make_services, yt_facts, tmp_path):
+    direct = FakeBackend()
+    process_note(
+        youtube_note(make_note, tmp_path),
+        make_services(chat_backend=direct, facts=lambda vid: yt_facts),
+        ProcessOptions(),
+    )
+    assert "never generic categories such as" in direct.prompts[0]
