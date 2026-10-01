@@ -22,9 +22,35 @@ A free, automatic check found something worth a look:
 | Metric              | Value |
 | ------------------- | ----- |
 | Metrics As Of       | {{ facts.fetched_at }} |
+| Published           | {{ facts.upload_date or "Not available" }} |
 | Views               | {{ facts.views | num }} |
 | Likes               | {{ facts.likes | num }} |
 | Channel Subscribers | {{ facts.subscribers | num }} |
+
+{% elif s.metrics and s.metrics.has_values %}
+## 📊 Metrics
+
+| Metric              | Value |
+| ------------------- | ----- |
+| Metrics As Of       | {{ s.metrics.as_of or "Not available" }} |
+| Views               | {{ s.metrics.views or "Not available" }} |
+| Likes               | {{ s.metrics.likes or "Not available" }} |
+| Channel Subscribers | {{ s.metrics.subscribers or "Not available" }} |
+
+{% endif %}
+{% if facts and facts.chapters %}
+## 🗂️ Chapters
+
+{% for c in facts.chapters %}
+- {{ c.start_s | ts }} {{ c.title }}
+{% endfor %}
+
+{% elif s.chapters %}
+## 🗂️ Chapters
+
+{% for c in s.chapters %}
+- {{ c.time }} {{ c.title | md_cell }}
+{% endfor %}
 
 {% endif %}
 ## 🎯 Main Purpose
@@ -47,7 +73,7 @@ Not available.
 Not available.
 {% endfor %}
 
-## 🛠️ Tools and Services
+## 🛠️ Tech Stack
 
 {% for item in s.tools %}
 - {{ item }}
@@ -68,9 +94,13 @@ Not available.
 ## 📺 Channel Application
 
 {{ s.channel_application | trim }}
-{% if sibling %}
+{% if s.links %}
 
-> 🔁 This video was also summarized {{ sibling_label }}: [compare the two summaries]({{ sibling }}).
+## 🔗 Links
+
+{% for link in s.links %}
+- [{{ link.label }}]({{ link.url }})
+{% endfor %}
 {% endif %}
 
 ## 📄 YouTube Source

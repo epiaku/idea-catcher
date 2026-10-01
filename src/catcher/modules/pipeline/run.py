@@ -70,6 +70,7 @@ class RunReport:
     items: list[ItemReport] = field(default_factory=list)
     unreadable: dict[str, str] = field(default_factory=dict)  # files that could not be read, now in failed/
     not_found: list[str] = field(default_factory=list)  # `--file` names that matched no inbox document
+    problems: list[str] = field(default_factory=list)  # a setup problem that stopped the run (a wrong path)
     not_in_archive: list[str] = field(
         default_factory=list
     )  # `--requeue` names that matched no archive document
@@ -141,6 +142,16 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
         opts.push,
         opts.limit,
     )
+    for what, folder, needed in (
+        ("idea-bucket inbox/", ideas / "inbox", True),
+        ("epiaku-docs", docs, not opts.dry_run),
+    ):
+        if needed and not folder.is_dir():
+            message = f"{what} not found at {folder}: check --ideas/--docs or IDEAS_REPO/DOCS_REPO"
+            log.error(message)
+            report.problems.append(message)
+    if report.problems:
+        return report  # nothing was touched
     if opts.push:
         pull(ideas)
         pull(docs)
@@ -246,7 +257,6 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
         popts = ProcessOptions(
             profile=opts.profile,
             dry_run=opts.dry_run,
-            docs_repo=docs,
             blocked_backends=frozenset(blocked),
         )
         try:

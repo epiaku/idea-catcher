@@ -11,6 +11,7 @@ from catcher.modules.llm.schemas import Summary
 from catcher.modules.llm.service import LlmResult
 from catcher.modules.pipeline.doctypes import canonical_source
 from catcher.modules.pipeline.inbox import Note
+from catcher.modules.youtube.facts import fmt_ts
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 PAGE_WEIGHT = 100
@@ -47,6 +48,7 @@ _env = jinja2.Environment(
 )
 _env.filters["md_cell"] = md_cell
 _env.filters["num"] = fmt_count
+_env.filters["ts"] = fmt_ts
 
 
 @dataclass

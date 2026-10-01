@@ -1,6 +1,5 @@
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import cast
 
 from catcher.core.config import Settings
@@ -8,15 +7,15 @@ from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import Profile, ProfilesConfig, load_profiles, resolve_profile
 from catcher.modules.llm.schemas import Summary, YoutubeSummary
 from catcher.modules.llm.service import BackendFactory, LlmRequest, LlmResult, UsageLimitReached, reason
+from catcher.modules.pipeline.context import load_context
 from catcher.modules.pipeline.doctypes import gemini_video_id
 from catcher.modules.pipeline.glossary import Glossary, load_glossary
 from catcher.modules.pipeline.inbox import Note, note_label
 from catcher.modules.pipeline.inputs import capture_tags, prompt_input
-from catcher.modules.pipeline.publish import find_pages_by_id
 from catcher.modules.pipeline.render import PageContext, page_name, render_page
 from catcher.modules.pipeline.tags import TagList, load_tags, normalize_tags
 from catcher.modules.pipeline.validate import validate_page
-from catcher.modules.youtube.checks import SummaryWarning, check_summary
+from catcher.modules.youtube.checks import SummaryWarning, check_summary, verified_links
 from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, YoutubeFacts, fetch_facts
 from catcher.modules.youtube.urls import video_id
 
@@ -31,13 +30,13 @@ class Services:
     tags: TagList
     facts: FactsFetcher = fetch_facts
     glossary: Glossary = field(default_factory=Glossary)
+    context: str = ""  # who Epiaku is, for the Channel Application part of YouTube summaries
 
 
 @dataclass
 class ProcessOptions:
     profile: str | None = None
     dry_run: bool = False
-    docs_repo: Path | None = None
     blocked_backends: frozenset[str] = frozenset()
 
 
@@ -62,6 +61,7 @@ def default_services(settings: Settings) -> Services:
         tags=load_tags(),
         facts=lambda vid: fetch_facts(vid, languages=languages),
         glossary=load_glossary(),
+        context=load_context(),
     )
 
 
@@ -80,18 +80,6 @@ def facts_for(note: Note, vid: str, svc: Services) -> YoutubeFacts:
         "yes" if facts.transcript else "no",
     )
     return facts
-
-
-def sibling_link(note: Note, vid: str, opts: ProcessOptions) -> dict[str, str | None]:
-    none: dict[str, str | None] = {"sibling": None, "sibling_label": None}
-    if opts.docs_repo is None:
-        return none
-    other = f"{vid}-gemini" if note.doctype.name == "youtube" else vid
-    pages = find_pages_by_id(opts.docs_repo / note.doctype.out_dir, other)
-    if not pages:
-        return none
-    label = "from a Gemini web chat" if note.doctype.name == "youtube" else "directly from the YouTube clip"
-    return {"sibling": f"../{pages[0].stem.lower()}/", "sibling_label": label}
 
 
 def youtube_embed(vid: str, title: str) -> str:
@@ -114,7 +102,7 @@ def log_llm(note: Note, step: str, result: LlmResult) -> None:
 def _reason(note: Note, svc: Services, profile_name: str, facts: YoutubeFacts | None = None) -> LlmResult:
     request = LlmRequest(
         task=note.doctype.task,
-        input=prompt_input(note, svc.tags, facts, svc.glossary),
+        input=prompt_input(note, svc.tags, facts, svc.glossary, svc.context),
         schema_name=note.doctype.schema_name,
         profile=profile_name,
     )
@@ -148,6 +136,16 @@ def _process_youtube(note: Note, svc: Services, opts: ProcessOptions, profile_na
         raise FactsUnavailable(f"{note.doc_id}: no transcript available for {vid}")
     result = _reason(note, svc, profile_name, facts)
     summary = cast(YoutubeSummary, result.output)
+    links = verified_links(summary.links, facts.description)
+    if len(links) != len(summary.links):
+        log.warning(
+            "%s: dropped %d link(s) that are not in the video description",
+            note_label(note),
+            len(summary.links) - len(links),
+        )
+    summary = summary.model_copy(
+        update={"links": links, "chapters": [], "metrics": None}
+    )  # all from the facts
     warnings = check_summary(summary, facts)
     if warnings:
         log.warning("%s: %d warning(s) on the summary", note_label(note), len(warnings))
@@ -162,7 +160,6 @@ def _process_youtube(note: Note, svc: Services, opts: ProcessOptions, profile_na
         facts=facts,
         warnings=warnings,
         embed=youtube_embed(vid, facts.title or summary.title),
-        **sibling_link(note, vid, opts),
     )
     problems = validate_page(page, svc.tags)
     return ProcessedPage(note, page_name(ctx), page, problems, result, tag_result.dropped, warnings, facts)
@@ -173,12 +170,13 @@ def _process_youtube_gemini(
 ) -> ProcessedPage:
     """The `youtube-gemini` class: reformats Gemini's own answer with no YouTube API call at all, not
     even for the video id (which is parsed straight out of the chat text). One LLM call, no facts, no
-    free checks (there is nothing to check the summary against) and no metrics table on the page."""
+    free checks (there is nothing to check the summary against). Gemini's own metrics are shown as it
+    wrote them."""
     vid = gemini_video_id(note.doc.body)
     if not vid:
         raise FactsUnavailable(f"{note.doc_id}: no YouTube video id found in the Gemini chat")
     result = _reason(note, svc, profile_name)
-    summary = cast(YoutubeSummary, result.output)
+    summary = cast(YoutubeSummary, result.output).model_copy(update={"links": []})  # no description to check
     tag_result = normalize_tags([*summary.tags, *capture_tags(note)], svc.tags)
     ctx = PageContext(note=note, summary=summary, tags=tag_result.tags, llm=result)
     page = render_page(
@@ -187,7 +185,6 @@ def _process_youtube_gemini(
         facts=None,
         warnings=[],
         embed=youtube_embed(vid, summary.title),
-        **sibling_link(note, vid, opts),
     )
     problems = validate_page(page, svc.tags)
     return ProcessedPage(note, page_name(ctx), page, problems, result, tag_result.dropped)

@@ -47,6 +47,42 @@ class Tip(BaseModel):
     how_to_apply: str
 
 
+class Link(BaseModel):
+    label: str
+    url: str
+
+
+_CLOCK_TIME = re.compile(r"\d{1,2}:\d{2}(:\d{2})?")
+
+
+class ChapterItem(BaseModel):
+    time: str  # as written, m:ss or h:mm:ss
+    title: str
+
+
+class GeminiMetrics(BaseModel):
+    """The numbers in Gemini's own Metrics table, as it wrote them. youtube-gemini only: the direct class
+    gets real counts from YouTube. Nothing here is checked."""
+
+    as_of: str | None = None
+    views: str | None = None
+    likes: str | None = None
+    subscribers: str | None = None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _as_written(cls, value: object) -> str | None:
+        """A number becomes text with thousands separators; "Not available" and empty become nothing."""
+        if isinstance(value, bool) or value is None:
+            return None
+        text = f"{value:,}" if isinstance(value, int) else " ".join(str(value).split())
+        return None if text.lower() in {"", "not available", "n/a", "null", "none", "unknown"} else text
+
+    @property
+    def has_values(self) -> bool:
+        return any((self.as_of, self.views, self.likes, self.subscribers))
+
+
 class YoutubeSummary(BaseModel):
     title: str = Field(min_length=1)
     creator: str
@@ -58,6 +94,23 @@ class YoutubeSummary(BaseModel):
     tools: list[str]
     tips: list[Tip]
     channel_application: str
+    links: list[Link] = []  # picked by the LLM from the video description, checked by code
+    metrics: GeminiMetrics | None = None  # youtube-gemini only: as Gemini wrote them
+    chapters: list[ChapterItem] = []  # youtube-gemini only: the direct class gets them from yt-dlp
+
+    @field_validator("chapters", mode="before")
+    @classmethod
+    def _keep_the_usable_chapters(cls, value: object) -> list[object]:
+        """Drop a chapter without a clock time or a title instead of failing the whole page over it."""
+        items = value if isinstance(value, list) else []
+        return [
+            {"time": str(i["time"]).strip(), "title": " ".join(str(i["title"]).split())}
+            for i in items
+            if isinstance(i, dict)
+            and _CLOCK_TIME.fullmatch(str(i.get("time", "")).strip())
+            and str(i.get("title", "")).strip()
+        ]
+
     tags: list[str]
 
 

@@ -23,7 +23,11 @@ def title_hint(note: Note) -> str:
 
 
 def prompt_input(
-    note: Note, tags: TagList, facts: YoutubeFacts | None = None, glossary: Glossary | None = None
+    note: Note,
+    tags: TagList,
+    facts: YoutubeFacts | None = None,
+    glossary: Glossary | None = None,
+    context: str = "",
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
         "title_hint": title_hint(note),
@@ -32,6 +36,7 @@ def prompt_input(
         "tags": tags.as_prompt_dict(),
         "capture_tags": capture_tags(note),
         "glossary": glossary.as_prompt_list() if glossary else [],
+        "context": context,
     }
     if facts is not None:
         data["facts"] = facts.model_dump(exclude={"transcript"})

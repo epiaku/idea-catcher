@@ -1,5 +1,5 @@
 ---
-version: youtube-2
+version: youtube-4
 ---
 You summarize a YouTube video for the Epiaku documentation site. You cannot watch the video: work only from the facts and the transcript below. Never invent views, likes, subscriber counts or dates, because code adds those.
 
@@ -13,6 +13,11 @@ Video facts:
 
 {% endif %}
 
+{% if context %}
+About Epiaku (only for channel_application):
+{{ context }}
+
+{% endif %}
 <description>
 {{ facts.description or "" }}
 </description>
@@ -25,13 +30,14 @@ Fill in:
 - title: the video's title as it appears on YouTube.
 - creator: the channel or presenter name.
 - description: one sentence (max 160 characters) with the video's core idea, for someone deciding whether to read the page.
-- summary: YouTube's own description condensed to 1 to 3 sentences.
-- main_purpose: the video's core message in one short paragraph.
+- summary: 1 to 3 sentences on what the video covers, written from the transcript. Use the description only when it really describes the video's content. Many descriptions are only links, a free offer or "work with me" lines: then ignore them completely and do not summarize them.
+- main_purpose: the video's core message in one short paragraph, from the transcript and not from the description.
 - key_examples: the concrete examples used in the video.
 - action_plan: the recommended steps, one per item.
 - tools: the tools, services, equipment, apps or platforms mentioned, one per item. Leave it empty if none are mentioned.
 - tips: tips that are shared, each with a short explanation and how to apply it.
-- channel_application: how to apply the lessons to Epiaku: the YouTube channel, Vibe Coding Tech Stack demos, and building phone apps or small SaaS applications.
+- channel_application: how to apply the lessons to Epiaku{% if context %}, using the context about Epiaku above. Give 2 to 4 concrete suggestions that fit it, and name only what the video really teaches. If the video does not fit Epiaku, say so in one sentence instead of forcing a fit{% else %}: the YouTube channel, Vibe Coding Tech Stack demos, and building phone apps or small SaaS applications{% endif %}.
+- links: the links in the description that the video itself points to for its code, sample data, documentation or other resources it uses, each with a short label. Copy each URL exactly as written in the description. Leave out social media, sponsors, affiliate links, merchandise, newsletters, courses for sale and other videos. Leave it empty if there are none.
 - tags: exactly one idea-type tag, 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
 
 When you mention a moment in the video, add its timestamp from the transcript (for example 12:40). Do not use Hugo shortcodes.

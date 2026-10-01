@@ -56,3 +56,10 @@ def test_reason_command_refuses_youtube_notes(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["reason", str(path), "--profile", "fake"])
     assert result.exit_code == 2
     assert "catcher render" in result.output
+
+
+def test_reason_says_so_when_the_file_cannot_be_read(tmp_path):
+    bad = tmp_path / "bad.md"
+    bad.write_text("---\nthis: [is not closed\n---\nbody\n")
+    result = CliRunner().invoke(app, ["reason", str(bad)])
+    assert result.exit_code == 2

@@ -110,3 +110,14 @@ def test_other_classes_have_no_language_line(make_note, make_services):
     note = make_note("ai-chat", doc_id="cf81e40b020519ef")
     processed = process_note(note, make_services(chat_backend=FakeBackend()), ProcessOptions())
     assert "language" not in parse(processed.page).fm
+
+
+def test_the_business_context_is_only_for_the_youtube_prompts(make_note, make_services):
+    chats = FakeBackend()
+    services = make_services(chat_backend=chats)
+    services.context = "- Epiaku makes demos."
+    note = make_note(
+        "ai-chat", doc_id="cf81e40b020519ef", source="https://gemini.google.com/app/cf81e40b020519ef"
+    )
+    process_note(note, services, ProcessOptions())
+    assert "Epiaku makes demos" not in chats.prompts[0]

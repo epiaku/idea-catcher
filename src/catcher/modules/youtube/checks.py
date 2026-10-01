@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from catcher.modules.llm.schemas import YoutubeSummary
+from catcher.modules.llm.schemas import Link, YoutubeSummary
 from catcher.modules.youtube.facts import YoutubeFacts, fmt_ts
 
 _TIMESTAMP = re.compile(r"(?<![\d:])(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?![\d:])")
@@ -35,6 +35,11 @@ def _seconds(match: re.Match[str]) -> int:
     return int(first) * 60 + int(second)
 
 
+def _squash(text: str) -> str:
+    """Lower case without spaces, hyphens and underscores, to compare names however captions split them."""
+    return re.sub(r"[\s_-]+", "", text.lower())
+
+
 def check_summary(summary: YoutubeSummary, facts: YoutubeFacts) -> list[SummaryWarning]:
     """Check a finished summary against the facts it was given. No LLM call, nothing is fixed."""
     warnings: list[SummaryWarning] = []
@@ -63,10 +68,11 @@ def check_summary(summary: YoutubeSummary, facts: YoutubeFacts) -> list[SummaryW
         source = " ".join(
             part for part in (facts.title, facts.description, facts.transcript_text()) if part
         ).lower()
+        squashed = _squash(source)  # captions often split a name: "type form" for Typeform
         for tool in summary.tools:
             plain = tool.replace("*", "").replace("_", " ")
             words = _PROPER_WORD.findall(plain) or _ANY_WORD.findall(plain)
-            if words and not any(word.lower() in source for word in words):
+            if words and not any(word.lower() in source or _squash(word) in squashed for word in words):
                 warnings.append(
                     SummaryWarning(
                         kind="unsupported_claim",
@@ -76,3 +82,20 @@ def check_summary(summary: YoutubeSummary, facts: YoutubeFacts) -> list[SummaryW
                     )
                 )
     return warnings
+
+
+MAX_LINKS = 6
+
+
+def verified_links(links: list[Link], description: str | None) -> list[Link]:
+    """Keep only the links whose URL really is in the video description, so a link the LLM made up never
+    reaches a page. At most MAX_LINKS, no duplicates, and a plain one-line label."""
+    kept: list[Link] = []
+    for link in links:
+        url = link.url.strip()
+        label = " ".join(link.label.replace("[", "(").replace("]", ")").split())
+        if not (url.startswith(("http://", "https://")) and label and description and url in description):
+            continue
+        if all(url != k.url for k in kept):
+            kept.append(Link(label=label, url=url))
+    return kept[:MAX_LINKS]

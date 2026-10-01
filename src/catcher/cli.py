@@ -1,3 +1,4 @@
+import logging
 import os
 import secrets
 from pathlib import Path
@@ -13,6 +14,7 @@ from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError,
 from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import UnknownProfile, load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
+from catcher.modules.pipeline.context import load_context
 from catcher.modules.pipeline.glossary import load_glossary
 from catcher.modules.pipeline.inbox import (
     Note,
@@ -86,6 +88,7 @@ def version() -> None:
 def scan(ideas: IdeasOpt = None, file: FileOpt = None) -> None:
     """List what is in inbox/ (class, id, duplicates) without changing anything."""
     settings = Settings()
+    _check_ideas_inbox(ideas or settings.ideas_repo)
     result = scan_inbox(ideas or settings.ideas_repo, only=file)
     winners: dict[str, Note] = {}
     for note in result.notes:
@@ -110,11 +113,32 @@ def scan(ideas: IdeasOpt = None, file: FileOpt = None) -> None:
     raise typer.Exit(1 if result.errors or missing else 0)
 
 
+log = logging.getLogger("catcher.cli")
+
+
+def _read_document(path: Path) -> Note:
+    """Read the document `reason` and `render` were pointed at. A problem is logged as an error (to the
+    terminal and to LOG_FILE) and ends the command with exit code 2, not with a traceback."""
+    try:
+        return read_note(path)
+    except FileNotFoundError:
+        log.error("no such file: %s", path)
+    except (OSError, UnicodeDecodeError, ValueError) as e:  # ValueError includes a bad frontmatter
+        log.error("cannot read %s: %s", path, e)
+    raise typer.Exit(2)
+
+
+def _check_ideas_inbox(ideas: Path) -> None:
+    if not (ideas / "inbox").is_dir():
+        log.error("no inbox/ folder in %s: check --ideas or IDEAS_REPO", ideas)
+        raise typer.Exit(2)
+
+
 @app.command("reason")
 def reason_cmd(document: Path, profile: ProfileOpt = None) -> None:
     """Run the LLM step on one document and print the validated JSON. Writes nothing."""
     settings = Settings()
-    note = read_note(document)
+    note = _read_document(document)
     if note.doctype.name == "youtube":
         typer.echo("youtube notes need facts first: use `catcher render` for them.")
         raise typer.Exit(2)
@@ -126,7 +150,7 @@ def reason_cmd(document: Path, profile: ProfileOpt = None) -> None:
         raise typer.Exit(2) from e
     request = LlmRequest(
         task=note.doctype.task,
-        input=prompt_input(note, load_tags(), glossary=load_glossary()),
+        input=prompt_input(note, load_tags(), glossary=load_glossary(), context=load_context()),
         schema_name=note.doctype.schema_name,
         profile=name,
     )
@@ -153,9 +177,9 @@ def render(
     """Summarize one document and write its page into the docs checkout (no inbox change, no git)."""
     settings = Settings()
     docs_repo = docs or settings.docs_repo
-    note = read_note(document)
+    note = _read_document(document)
     note.name = f"{calculated_stem(str(note.doc.fm['captured']), secrets.token_hex(3), name_title(note))}.md"
-    opts = ProcessOptions(profile=profile, docs_repo=docs_repo)
+    opts = ProcessOptions(profile=profile)
     try:
         processed = process_note(note, default_services(settings), opts)
     except (LlmError, UnknownProfile) as e:
@@ -203,6 +227,8 @@ def run_pipeline_cmd(
     for item in report.items:
         detail = " ".join(part for part in (item.page or "", item.message) if part)
         typer.echo(f"{item.status:<14} {item.doc_class:<15} {item.doc_id:<24} {detail}")
+    for problem in report.problems:
+        typer.echo(f"{'error':<14} {problem}")
     for rel, error in report.unreadable.items():
         typer.echo(f"{'unreadable':<14} {rel}: {error}")
     for query in report.not_found:
@@ -210,6 +236,8 @@ def run_pipeline_cmd(
     for query in report.not_in_archive:
         typer.echo(f'{"not-found":<14} no document named "{query}" in archive/')
     typer.echo(f"summary: {report.counts()} committed={report.committed} pushed={report.pushed}")
+    if report.problems:
+        raise typer.Exit(2)  # a wrong path, like `scan`, `reason` and `render`
     failed = (
         bool(report.unreadable or report.not_found or report.not_in_archive)
         or report.counts().get("failed", 0) > 0
