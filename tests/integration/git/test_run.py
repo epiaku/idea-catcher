@@ -645,3 +645,21 @@ def test_requeue_dry_run_and_a_blocked_name_leave_archive_and_output_alone(repos
         repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"], dry_run=True), make_services()
     )
     assert archived.exists() and output.exists()
+
+
+def test_requeue_of_a_failed_note_clears_failed_and_its_error_file(repos, make_services, sh):
+    bad = FakeBackend([json.dumps({**CANNED["note"], "body": "{{< nope >}}"})])  # an unknown shortcode fails
+    first = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(note_backend=bad))
+    assert first.counts() == {"failed": 1, "published": 1}
+    failed = find(repos.ideas, "failed", "notes", "YouTube walks.md")
+    error = failed.with_suffix(".error.txt")
+    assert error.exists()
+
+    again = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"]), make_services())
+    assert again.counts() == {"requeued": 1, "published": 1}
+    assert not failed.exists() and not error.exists()  # neither the note nor its error message is left
+    assert not list((repos.ideas / "failed").rglob("*YouTube*")) and not list(
+        (repos.ideas / "failed").rglob("*youtube-walks*")
+    )
+    assert "stage" not in load(find(repos.ideas, "output", "notes", "YouTube walks.md")).fm
+    assert sh(repos.ideas, "status", "--porcelain") == ""

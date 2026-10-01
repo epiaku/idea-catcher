@@ -483,8 +483,9 @@ def requeue_from_archive(
     """Move the archived original of each named document back into `inbox/`, so the pipeline starts on it
     from scratch. Returns what was found and the queries that matched nothing in `archive/`.
 
-    The move keeps the subfolder and the calculated name, and the stale working copy in `output/` (with its
-    facts file) is deleted, so the document is in one place only, `inbox/`, until the run starts on it.
+    The move keeps the subfolder and the calculated name, and everything an earlier run left behind is
+    deleted: the working copy in `output/` (with its facts file) and, for a failed document, the copy in
+    `failed/` with its `.error.txt`. So the document is in one place only, `inbox/`, until the run starts.
     The run then writes `archive/` and `output/` again under the same name, and overwrites the page in
     epiaku-docs. A name that `inbox/` already holds is left alone.
     """
@@ -509,13 +510,14 @@ def requeue_from_archive(
         matched |= hits
         dest = ideas_repo / "inbox" / rel
         output = ideas_repo / "output" / rel
+        failed = ideas_repo / "failed" / rel
         moved = not dry_run and not dest.exists()
         touched: list[Path] = []
         if moved:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(path, dest)
             touched = [path, dest]
-            for stale in (output, facts_sidecar(output)):
+            for stale in (output, facts_sidecar(output), failed, failed.with_suffix(".error.txt")):
                 if stale.exists():
                     stale.unlink()
                     touched.append(stale)

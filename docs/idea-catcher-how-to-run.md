@@ -90,7 +90,7 @@ What one run does, in order:
   - It works together with `--limit`, which then applies to the named documents.
   - The duplicate check only compares the documents you named. If you name a short clip and not its longer copy, the short clip is processed on its own.
 
-- **`--requeue NAME`**: run a document **again**. It **moves** the archived original from `archive/` back into `inbox/` (same subfolder, same calculated name), deletes the stale working copy in `output/` (and its `.youtube.json` facts file), then processes only that document. So the document is in one place only, `inbox/`, until the run starts on it. Use it to retry a stalled (`deferred`) note, or to redo a published one, for example with another model. Repeat it for more.
+- **`--requeue NAME`**: run a document **again**. It **moves** the archived original from `archive/` back into `inbox/` (same subfolder, same calculated name), deletes everything the earlier run left behind (the working copy in `output/` with its `.youtube.json` facts file, and for a failed note the copy in `failed/` with its `.error.txt`), then processes only that document. So the document is in one place only, `inbox/`, until the run starts on it. Use it to retry a stalled (`deferred`) note, or to redo a published one, for example with another model. Repeat it for more.
 
   ```bash
   uv run catcher run pipeline --requeue "YouTube walks"
@@ -103,7 +103,8 @@ What one run does, in order:
   - If `inbox/` already holds a file with that name, nothing is moved or deleted: it is reported as `skipped` and the file that is there is processed.
   - An unknown name gives `no document named "..." in archive/` and exit code 1.
   - With `--dry-run` nothing is moved or deleted, and you only see `would_requeue`.
-  - `failed/` and `duplicates/` are not searched: move those back by hand (see the recipes).
+  - It also works for a **failed** note: its original is in `archive/` too, and the copy in `failed/` and the `.error.txt` are removed, so no error message is left behind. Fix the cause first (the `.error.txt` says what it was), or the note fails again.
+  - Only `archive/` is searched. A capture that could not even be read (`unreadable`) and `duplicates/` are not found: move those back by hand (see the recipes).
 
 - **`--dry-run`**: change no files and commit nothing. Note that with a real profile a dry run **still calls the LLM**. Combine it with `--profile fake` for a free check.
 
@@ -214,7 +215,7 @@ The status in the first column is one of:
 - **`would_publish`**: the same, in a `--dry-run`. Nothing was written.
 - **`requeued`** / **`would_requeue`**: `--requeue` moved the original from `archive/` back into `inbox/` (`would_requeue` in a `--dry-run`: nothing moved).
 - **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, run it again with `--requeue NAME`, or move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting.
-- **`failed`**: could not be processed for good, for example invalid LLM output twice or an invalid page. The note moves to `failed/` with a `.error.txt` that says why.
+- **`failed`**: could not be processed for good, for example invalid LLM output twice or an invalid page. The note moves to `failed/` with a `.error.txt` that says why. To try it again after fixing the cause, use `--requeue NAME`.
 - **`duplicate`**: an earlier snapshot of a longer clip. Moved to `duplicates/`, no LLM call.
 - **`skipped`**: left for the next run because of `--limit`, or an artifact over the size limit.
 - **`artifact`**: a file that is not markdown was renamed, archived and copied to epiaku-docs (`would_copy` in a `--dry-run`).
@@ -224,6 +225,8 @@ The last line shows the counts, and whether both repos were committed and pushed
 **Exit code:** `0` when nothing failed. `1` when a note failed or a file could not be read, so scripts can notice.
 
 **The log** goes to the terminal (and to `LOG_FILE` if set), one line per file and step, with progress like `(2/15)`, and a final `processed 15/15` line. Errors are always logged.
+
+**The version** of the Idea Catcher is the first thing after `run started:` in the log (`version=0.1.0`), and `uv run catcher version` prints it. It is one string, `__version__` in `src/catcher/__init__.py`. Change it there when you release; `pyproject.toml` reads it from that file, so there is nothing else to update.
 
 ## Using the test data
 
@@ -334,7 +337,15 @@ Tests the full flow for one document: read it, fetch YouTube facts (`youtube` cl
 ```bash
 uv run catcher run pipeline --file "YouTube walks" --profile fake --dry-run     # free
 uv run catcher run pipeline --file "YouTube walks"                              # for real
-uv run catcher run pipeline --requeue "YouTube walks"                     # requeue if it failed
+uv run catcher run pipeline --requeue "YouTube walks"                           # requeue if it failed
+
+uv run catcher run pipeline --file "Start up brain"                             # bigger note
+uv run catcher run pipeline --requeue "Start up brain"
+
+uv run catcher run pipeline --file "Notes in het Nederlands"                    # Dutch note
+uv run catcher run pipeline --requeue "Notes in het Nederlands
+
+
 ```
 
 #### Try a direct YouTube clip: facts, LLM and page, no commit
@@ -381,11 +392,11 @@ uv run catcher run pipeline --requeue "<the-file>"           # the original name
 
 #### Retry a failed note
 
+Read the `.error.txt` and fix the cause first, then requeue. The copy in `failed/` and the error file are removed for you.
+
 ```bash
-ls tmp/ic/idea-bucket/failed/                                       # find it and its .error.txt
-mv tmp/ic/idea-bucket/failed/notes/<the-file>.md tmp/ic/idea-bucket/inbox/notes/
-rm tmp/ic/idea-bucket/failed/notes/<the-file>.error.txt
-uv run catcher run pipeline
+ls tmp/ic/idea-bucket/failed/notes/                                 # find it and its .error.txt
+uv run catcher run pipeline --requeue "<the-file>"                  # the original name works, or the calculated name
 ```
 
 #### Redo a note with another model
@@ -441,11 +452,16 @@ uv run catcher run pipeline --requeue "YouTube walks"                    # stall
 uv run catcher run pipeline --requeue "YouTube walks" --profile notes    # ... with another profile
 ```
 
-**A failed note, or a duplicate:** these are not searched by `--requeue`. Move the file back into `inbox/` (same subfolder) and run again. The name is a random guid, so `ls` the folder to find it.
+**A failed note:** `--requeue` works for it too. Read the `.error.txt` in `failed/` and fix the cause first. The copy in `failed/` and the error file are removed for you.
 
 ```bash
-mv "../idea-bucket/failed/clippings/<the-file>.md" "../idea-bucket/inbox/clippings/"     # failed: read its .error.txt, fix the cause, then rm the .error.txt
-mv "../idea-bucket/duplicates/clippings/<the-file>.md" "../idea-bucket/inbox/clippings/" # duplicate
+uv run catcher run pipeline --requeue "<the-file>"
+```
+
+**A duplicate, or a capture that could not be read:** these are not found by `--requeue`. Move the file back into `inbox/` (same subfolder) and run again. The name is a random guid, so `ls` the folder to find it.
+
+```bash
+mv "../idea-bucket/duplicates/clippings/<the-file>.md" "../idea-bucket/inbox/clippings/"
 uv run catcher run pipeline --file "<the-file>"
 ```
 
