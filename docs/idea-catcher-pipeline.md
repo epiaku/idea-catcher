@@ -517,7 +517,7 @@ Every class works the same way: one detection rule picks the class, the class na
 
 **Free checks apply only to `youtube`.** For that class, Python checks the finished summary against the facts it was given — a timestamp later than the end of the video, or a tool named that isn't in the transcript, title or description — and reports them as warnings in the page's frontmatter. Nothing is "fixed" by a second model call; the warning just tells you where to look.
 
-**`youtube-gemini` makes no YouTube API call at all.** It never fetches a transcript or video counts — not even in the background — so it is unaffected by YouTube blocking or rate-limiting that endpoint, and its page has no metrics table. The only thing Python does locally is parse the video ID out of the YouTube URL already in Gemini's own chat text (no network call). The page is Gemini's own summary, reformatted into our schema; there is nothing to check it against, so no free checks run for this class.
+**`youtube-gemini` makes no YouTube API call at all.** It never fetches a transcript or video counts — not even in the background — so it is unaffected by YouTube blocking or rate-limiting that endpoint, and its page has no real metrics table. If Gemini wrote one in its chat, the page shows those numbers as written, under the same `## 📊 Metrics` heading. They are copied by the LLM, never computed or rounded, and a value Gemini marks "Not available" stays "Not available". The only thing Python does locally is parse the video ID out of the YouTube URL already in Gemini's own chat text (no network call). The page is Gemini's own summary, reformatted into our schema; there is nothing to check it against, so no free checks run for this class.
 
 ### Web clips {#web-clips}
 
@@ -586,11 +586,12 @@ def fetch_youtube(video_id: str) -> dict:
 ```
 
 - `yt-dlp` warns when no JavaScript runtime is installed, and says some formats may be missing. Metadata still works, but installing **Deno** in the container keeps it reliable.
-- The counts are a snapshot. Store the fetch date with them (prompt step 4, "Metrics As Of").
+- The counts are a snapshot. Store the fetch date with them (prompt step 4, "Metrics As Of"). The metrics table also shows the video's upload date ("Published"), because a tutorial can be out of date.
+- **Chapters and links (`youtube` class):** the page has a `## 🗂️ Chapters` outline made by code from the facts (start time and title), when the video has chapters. It also has a `## 🔗 Links` section with the code, sample-data and documentation links the video points to. The LLM picks them from the description, and code keeps only URLs that are literally in the description (at most 6), so an invented link can never reach a page. The `youtube-gemini` class has no links, because it has no description to check them against. It does keep the chapters that Gemini lists (the Gemini prompt asks for them as item 5), as `time` and `title`. A chapter without a clock time or a title is dropped, not an error. They cannot be checked against YouTube, so treat them as Gemini's word.
 
 Also:
 
-- **Metrics come from Python, never from the LLM.** An LLM would make up views, likes and subscriber counts. Python fills them into the template's metrics table.
+- **Metrics come from Python, never from the LLM.** An LLM would make up views, likes and subscriber counts. Python fills them into the template's metrics table. The one exception is the `youtube-gemini` class, which has no facts: it only shows what Gemini itself wrote.
 - **Embed with the site's shortcode.** Prompt step 11 asks for a thumbnail link. On this site the template renders the video with the `youtube-lite` shortcode instead, following the `epi-hugo-youtube` conventions.
 - **No transcript available:** the document defers rather than calling the LLM. A title-and-description-only summary isn't worth paying for, so `youtube` waits (`stage: deferred`) until a transcript can be fetched, rather than publishing a weak page.
 - **Where to fetch: at home.** `yt-dlp` and transcript requests work from the home network (tested), but YouTube often blocks them from cloud IPs such as GitHub Actions runners. So the worker on Proxmox fetches them during ingest and writes them into a facts file next to the final page in `output/` (see [Processing flow](../idea-catcher-service-architecture/#mvp-flow)).

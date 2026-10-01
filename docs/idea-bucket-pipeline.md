@@ -189,7 +189,6 @@ YouTube docs go through an extra path (`_process_youtube`) because they need:
 1. **Facts enrichment** — views, likes, subscribers, transcript (written to `.youtube.json` sidecar during staging).
 2. **Review** (optional) — an LLM reviewer checks the summary against the fetched facts for accuracy.
 3. **Embed** — the rendered page includes a `{{< youtube-lite >}}` shortcode with the video ID.
-4. **Sibling link** — if a related capture exists (e.g., a direct YouTube clip and a Gemini chat about the same video), a cross-reference is added.
 
 ---
 
@@ -350,7 +349,7 @@ Each doc type has a Jinja2 template in [`src/catcher/modules/pipeline/templates/
 | [`ai-chat.md.j2`](../../src/catcher/modules/pipeline/templates/ai-chat.md.j2) | `ai-chat`                   | Structured sections (decisions, options, open questions)     |
 | [`youtube.md.j2`](../../src/catcher/modules/pipeline/templates/youtube.md.j2) | `youtube`, `youtube-gemini` | Video embed, metrics table, summary sections, review verdict |
 
-The templates receive the LLM output as `s` (a Pydantic model), the original `source` URL, and class-specific variables (`facts`, `review`, `sibling`, `embed`).
+The templates receive the LLM output as `s` (a Pydantic model), the original `source` URL, and class-specific variables (`facts`, `review`, `embed`).
 
 ---
 

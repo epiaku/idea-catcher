@@ -343,28 +343,38 @@ uv run catcher run pipeline --file "Start up brain"                             
 uv run catcher run pipeline --requeue "Start up brain"
 
 uv run catcher run pipeline --file "Notes in het Nederlands"                    # Dutch note
-uv run catcher run pipeline --requeue "Notes in het Nederlands
+uv run catcher run pipeline --requeue "Notes in het Nederlands"
 
 
 ```
 
-#### Try a direct YouTube clip: facts, LLM and page, no commit
+#### Try a direct YouTube clip: the full flow
 
-A `youtube` document needs its facts (transcript, counts) before the LLM step, so use `render`, not `reason`. `render` fetches the facts, calls the LLM and writes the page into `epiaku-docs`, but leaves the inbox note alone and makes no commit. This calls the real `youtube` profile (OpenAI) and fetches the real transcript from YouTube — it is not free and not a dry run.
+A `youtube` document needs its facts (transcript, counts) before the LLM step. `run pipeline` does the whole flow: it fetches the facts, calls the LLM, writes the page into `tmp/ic/epiaku-docs`, archives the original in `archive/`, writes the working copy and the facts file (`.youtube.json`) to `output/`, and commits both repos locally. This calls the real `youtube` profile (OpenAI) and fetches the real transcript from YouTube. It is not free and not a dry run.
 
 ```bash
-uv run catcher render "tmp/ic/idea-bucket/inbox/clippings/RAG + Langchain Python Project Easy AIChat For Your Docs.md" --docs tmp/ic/epiaku-docs
+uv run catcher run pipeline --file "youtube source - RAG + Langchain Python"
+uv run catcher run pipeline --requeue "youtube source - RAG + Langchain Python"
+
+uv run catcher run pipeline --file "youtube source - 6 Proven Strategies That Turn Viewers In To Buyers"
+uv run catcher run pipeline --requeue "youtube source - 6 Proven Strategies That Turn Viewers In To Buyers"
+
 ```
 
-#### Try a Gemini video chat: LLM and page, no commit
+#### Try a Gemini video chat: the full flow
 
-Same idea, for the `youtube-gemini` class: Gemini's answer is reformatted into our page format on the `youtube` profile — nothing else. This class makes no YouTube API call at all (no `yt-dlp`, no transcript fetch), so it always works, whatever the state of YouTube's endpoints. Because it needs no facts first, `reason` works for it too, not just `render`.
+Same idea, for the `youtube-gemini` class: Gemini's answer is reformatted into our page format on the `youtube` profile, nothing else. This class makes no YouTube API call at all (no `yt-dlp`, no transcript fetch), so it always works, whatever the state of YouTube's endpoints. It runs through the same full flow (page, `archive/`, `output/`, local commit). Because it needs no facts first, `reason` works for it too.
 
 ```bash
-uv run catcher render "tmp/ic/idea-bucket/inbox/clippings/RAG + Langchain Python Project Easy AIChat For Your Docs 1.md" --docs tmp/ic/epiaku-docs
+uv run catcher run pipeline --file "youtube gemini summary - RAG + Langchain Python"
+uv run catcher run pipeline --requeue "youtube gemini summary - RAG + Langchain Python"
+
+uv run catcher run pipeline --file "youtube gemini summary - 6 Proven Strategies That Turn Viewers In To Buyers"
+uv run catcher run pipeline --requeue "youtube gemini summary - 6 Proven Strategies That Turn Viewers In To Buyers"
+
 ```
 
-Both clips are about the same video, so after running both you can open the two pages in `tmp/ic/epiaku-docs/hugo/content/en/docs/idea-bucket/youtube/` and compare them — each links to the other.
+Both clips are about the same video, so after running both you can open the two pages in `tmp/ic/epiaku-docs/hugo/content/en/docs/idea-bucket/youtube/` and compare them. The pages do not link to each other.
 
 #### A small first run, then publish
 
@@ -482,5 +492,6 @@ uv run catcher run pipeline --file "<the-file>"
 - **`profile problem: unknown LLM profile`:** use `notes`, `clippings`, `youtube` or `fake`. Old names like `claude-sub-now` no longer exist.
 - **`deferred` for a YouTube note with `facts unavailable`:** YouTube did not answer from this network. Try again later. You can test one video with `youtube facts`.
 - **`not-found  no document named ...`:** the name matches no file in `inbox/`. Check the spelling, or move the file into `inbox/`.
+- **`error  idea-bucket inbox/ not found at ...` (exit code 2):** the path is wrong or the variable is not set. Check `--ideas`/`--docs` and `IDEAS_REPO`/`DOCS_REPO` (see `printenv`). Nothing was touched. `scan` says the same, and `reason` and `render` log `no such file: <path>`. All of these are logged as errors (also to `LOG_FILE`), not as a traceback.
 - **A note in `failed/`:** read the `.error.txt` next to it.
 - **You want more detail:** run with `--log-level DEBUG`.
