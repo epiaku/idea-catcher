@@ -24,6 +24,15 @@ This page lists every setting the Idea Catcher (Stage A, the local CLI) reads, a
 - **`profiles.yaml`** is in the repo root. It contains no secrets, so it is in Git.
 - **GitHub access** (pull and push) uses your normal SSH key or Git credential helper. The pipeline stores no GitHub token.
 - **Prompts, templates and tags** live in `src/catcher/modules/`, for example `prompts/youtube.md` and `pipeline/tags.yaml`.
+- **The glossary** is `src/catcher/modules/pipeline/glossary.yaml`, next to `tags.yaml`: words and names you use often that dictation gets wrong (`epiaku`, `Claude Code`, `VS Code`...). It is used for **dictated notes only** (the `note` prompt). Each line is either just the right spelling, or the right spelling with what dictation often writes instead:
+
+  ```yaml
+  terms:
+    - Obsidian                                  # just the spelling
+    - Claude Code: [cloud code, clod code]      # the spelling, and what it is often heard as
+  ```
+
+  The LLM gets the list as a hint: when a word in the note clearly sounds like one of the terms, it writes the term's spelling. It is told to use a term only where the note means it, and never to add one the note does not mention. A missing or empty file just means no glossary section in the prompt. A long list costs tokens on every note (about 10 per term), so keep it to the words that really go wrong.
 
 **Rule of thumb:** anything that would be dangerous to publish goes in `.env`. Anything that decides behaviour and is fine to share goes in `profiles.yaml` or the code.
 
@@ -65,6 +74,8 @@ If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ER
 
 - `ARTIFACT_MAX_MB` (default `25`): files in `inbox/` that are not markdown (PDFs, images) are copied to epiaku-docs. Files over this size are skipped with a warning and stay in `inbox/`.
 - `LLM_TIMEOUT_S` (default `600`): seconds to wait for one LLM answer before it counts as unavailable.
+- `LLM_MAX_ATTEMPTS` (default `5`): how many calls in all a request gets when a call fails in a way that may pass next time (a 5xx such as a 502 or 503, a timeout, a dropped connection). `1` turns retrying off. A used-up budget, a rate limit (429), a bad key and other 4xx errors are not retried. After the last attempt the note is `deferred`, as before. FreeLLMApi picks a provider for each call, so a retry is often routed to one that works.
+- `LLM_RETRY_WAIT_S` (default `2`): seconds to wait before the second attempt. The wait doubles before each one after it (2, 4, 8, 16 s with the defaults). Each failed call can itself take up to a minute, so five failures in a row take around five minutes.
 - `TRANSCRIPT_LANGUAGES` (default `en`): preferred YouTube transcript languages, comma-separated, for example `en, nl`.
 - `GIT_AUTHOR_NAME` (default `idea-catcher`): author name on the commits the pipeline makes.
 - `GIT_AUTHOR_EMAIL` (default `idea-catcher@users.noreply.github.com`): author email on those commits.

@@ -956,6 +956,7 @@ src/catcher/modules/
 │   ├── doctypes.py         # registry: type → schema, prompt, template, default LLM profile, folders
 │   ├── jobs.py             # pipeline.run, pipeline.publish, pipeline.replay_item
 │   ├── tags.yaml           # allowed tag list (or read from a Hugo data file)
+│   ├── glossary.yaml       # often-misheard words for the note prompt (dictated notes)
 │   └── templates/
 │       ├── note.md.j2
 │       ├── ai-chat.md.j2

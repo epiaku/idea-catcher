@@ -13,6 +13,7 @@ from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError,
 from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import UnknownProfile, load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
+from catcher.modules.pipeline.glossary import load_glossary
 from catcher.modules.pipeline.inbox import (
     Note,
     calculated_stem,
@@ -125,7 +126,7 @@ def reason_cmd(document: Path, profile: ProfileOpt = None) -> None:
         raise typer.Exit(2) from e
     request = LlmRequest(
         task=note.doctype.task,
-        input=prompt_input(note, load_tags()),
+        input=prompt_input(note, load_tags(), glossary=load_glossary()),
         schema_name=note.doctype.schema_name,
         profile=name,
     )

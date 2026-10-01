@@ -4,6 +4,7 @@ import pytest
 
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import UsageLimitReached
+from catcher.modules.pipeline.glossary import Glossary, Term
 from catcher.modules.pipeline.process import ProcessOptions, process_note
 
 
@@ -69,3 +70,22 @@ def test_a_web_clip_uses_its_own_prompt_the_clippings_profile_and_its_own_folder
     assert processed.llm.profile == "clippings" and processed.llm.prompt_version == "web-clip-1"
     assert "<page>" in chats.prompts[0]  # the web-clip prompt, not the chat or note prompt
     assert "## 🔑 Key Points" in processed.page and "Fake Web Clip" in processed.page
+
+
+def test_a_note_is_sent_to_the_llm_with_the_glossary(make_note, make_services):
+    notes = FakeBackend()
+    services = make_services(note_backend=notes)
+    services.glossary = Glossary((Term("epiaku", ("epicu",)),))
+    process_note(make_note("note"), services, ProcessOptions())
+    assert "- epiaku (often heard as: epicu)" in notes.prompts[0]
+
+
+def test_other_classes_do_not_get_the_glossary(make_note, make_services):
+    chats = FakeBackend()
+    services = make_services(chat_backend=chats)
+    services.glossary = Glossary((Term("epiaku", ("epicu",)),))
+    note = make_note(
+        "ai-chat", doc_id="cf81e40b020519ef", source="https://gemini.google.com/app/cf81e40b020519ef"
+    )
+    process_note(note, services, ProcessOptions())
+    assert "epicu" not in chats.prompts[0]

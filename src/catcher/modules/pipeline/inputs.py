@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any
 
 from catcher.modules.pipeline.doctypes import canonical_source
+from catcher.modules.pipeline.glossary import Glossary
 from catcher.modules.pipeline.inbox import Note
 from catcher.modules.pipeline.tags import TagList
 from catcher.modules.youtube.facts import YoutubeFacts
@@ -21,13 +22,16 @@ def title_hint(note: Note) -> str:
     return Path(str(note.doc.fm.get("source_file") or note.path.name)).stem
 
 
-def prompt_input(note: Note, tags: TagList, facts: YoutubeFacts | None = None) -> dict[str, Any]:
+def prompt_input(
+    note: Note, tags: TagList, facts: YoutubeFacts | None = None, glossary: Glossary | None = None
+) -> dict[str, Any]:
     data: dict[str, Any] = {
         "title_hint": title_hint(note),
         "body": note.doc.body,
         "source": canonical_source(note.doctype, note.doc.fm),
         "tags": tags.as_prompt_dict(),
         "capture_tags": capture_tags(note),
+        "glossary": glossary.as_prompt_list() if glossary else [],
     }
     if facts is not None:
         data["facts"] = facts.model_dump(exclude={"transcript"})

@@ -9,6 +9,7 @@ from catcher.modules.llm.profiles import Profile, ProfilesConfig, load_profiles,
 from catcher.modules.llm.schemas import Summary, YoutubeSummary
 from catcher.modules.llm.service import BackendFactory, LlmRequest, LlmResult, UsageLimitReached, reason
 from catcher.modules.pipeline.doctypes import gemini_video_id
+from catcher.modules.pipeline.glossary import Glossary, load_glossary
 from catcher.modules.pipeline.inbox import Note, note_label
 from catcher.modules.pipeline.inputs import capture_tags, prompt_input
 from catcher.modules.pipeline.publish import find_pages_by_id
@@ -29,6 +30,7 @@ class Services:
     backends: BackendFactory
     tags: TagList
     facts: FactsFetcher = fetch_facts
+    glossary: Glossary = field(default_factory=Glossary)
 
 
 @dataclass
@@ -59,6 +61,7 @@ def default_services(settings: Settings) -> Services:
         backends=lambda p: make_backend(p, settings),
         tags=load_tags(),
         facts=lambda vid: fetch_facts(vid, languages=languages),
+        glossary=load_glossary(),
     )
 
 
@@ -111,7 +114,7 @@ def log_llm(note: Note, step: str, result: LlmResult) -> None:
 def _reason(note: Note, svc: Services, profile_name: str, facts: YoutubeFacts | None = None) -> LlmResult:
     request = LlmRequest(
         task=note.doctype.task,
-        input=prompt_input(note, svc.tags, facts),
+        input=prompt_input(note, svc.tags, facts, svc.glossary),
         schema_name=note.doctype.schema_name,
         profile=profile_name,
     )

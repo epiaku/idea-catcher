@@ -497,7 +497,7 @@ idea-catcher/
 │   ├── core/                    ← config, db (SQLAlchemy), queue, registry, git, logging
 │   └── modules/
 │       ├── llm/                 ← service.py (reason), backends/, prompts/, schemas.py
-│       ├── pipeline/            ← doctypes.py, templates/ (Jinja), jobs.py, router.py, tags.yaml
+│       ├── pipeline/            ← doctypes.py, templates/ (Jinja), jobs.py, router.py, tags.yaml, glossary.yaml
 │       └── youtube/             ← facts.py (yt-dlp, transcript) — used by pipeline for clips
 ├── migrations/                  ← Alembic
 ├── tests/                       ← unit, component, integration, api, e2e, live + fixtures (see Testing)

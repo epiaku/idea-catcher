@@ -1,12 +1,21 @@
 ---
-version: note-1
+version: note-3
 ---
 You turn a short idea note, usually dictated on a phone, into a small documentation page.
 
 The note may contain speech-to-text mistakes and filler words. Fix them, keep the author's tone and meaning, and do not add facts or ideas that are not in the note. A two-line idea stays short: never pad it into a long page.
 
+Language: notes are almost always English, sometimes Dutch. First check which language the note is written in. If it is Dutch (or any other language that is not English), translate it into natural English first, then do everything below on the English text. The title, description and body are always in English. Keep names, product names and technical terms as they are. If the note is already English, leave its wording alone.
+
 Title hint (the note's file name, may be wrong): {{ title_hint }}
 
+{% if glossary %}
+Terms this author uses often. Dictation may have misheard them. When a word or phrase in the note clearly sounds like one of these, write it with the spelling shown (the text in brackets is what dictation often writes instead). Use a term only where the note means it, and never add a term the note does not mention.
+{% for item in glossary %}
+- {{ item.term }}{{ " (often heard as: " ~ item.heard_as | join(", ") ~ ")" if item.heard_as }}
+{% endfor %}
+
+{% endif %}
 <note>
 {{ body }}
 </note>
