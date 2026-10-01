@@ -39,7 +39,7 @@ def test_valid_reply_is_parsed(fake_profiles, prompt_tags):
     result = reason(note_request(prompt_tags), profiles=fake_profiles, backends=lambda p: fake)
     assert isinstance(result.output, NoteSummary)
     assert result.output.title == CANNED["note"]["title"]
-    assert (result.attempts, result.backend, result.prompt_version) == (1, "fake", "note-3")
+    assert (result.attempts, result.backend, result.prompt_version) == (1, "fake", "note-4")
     assert result.usage.tokens_in and result.usage.tokens_out
 
 
@@ -129,7 +129,7 @@ GLOSSARY = [
 
 def test_the_note_prompt_lists_the_glossary_terms(prompt_tags):
     prompt, version = render_prompt("note", note_request(prompt_tags, GLOSSARY).input)
-    assert version == "note-3"
+    assert version == "note-4"
     assert "\n- Claude Code (often heard as: cloud code, clod code)\n- server\n\n<note>" in prompt
     assert "often heard as: )" not in prompt
     assert prompt.index("- Claude Code") < prompt.index("<note>")  # the terms come before the note itself
@@ -150,3 +150,8 @@ def test_the_note_prompt_asks_for_a_translation_of_non_english_notes(prompt_tags
     assert "If it is Dutch" in prompt and "translate it into natural English first" in prompt
     assert "title, description and body are always in English" in prompt
     assert prompt.index("translate it") < prompt.index("<note>")  # the instruction comes before the note
+
+
+def test_the_note_prompt_asks_for_the_original_language(prompt_tags):
+    prompt, _ = render_prompt("note", note_request(prompt_tags).input)
+    assert "- language: the language the note was ORIGINALLY written in" in prompt

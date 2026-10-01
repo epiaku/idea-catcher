@@ -129,7 +129,8 @@ def _process_text(note: Note, svc: Services, profile_name: str) -> ProcessedPage
     summary = cast(Summary, result.output)
     tag_result = normalize_tags([*summary.tags, *capture_tags(note)], svc.tags)
     ctx = PageContext(note=note, summary=summary, tags=tag_result.tags, llm=result)
-    page = render_page(ctx)
+    language = getattr(summary, "language", None)  # only a note says which language it was written in
+    page = render_page(ctx, extra_fm={"language": language} if language else None)
     return ProcessedPage(
         note, page_name(ctx), page, validate_page(page, svc.tags), result, tag_result.dropped
     )

@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class NoteSummary(BaseModel):
@@ -6,6 +8,16 @@ class NoteSummary(BaseModel):
     description: str = Field(min_length=1)
     body: str = Field(min_length=1)
     tags: list[str]
+    language: str | None = Field(
+        default=None, description="language the note was written in, a two-letter code such as en or nl"
+    )
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def _two_letter_code(cls, value: object) -> str | None:
+        """Lower-case two-letter code, or nothing: a bad value must not fail a good page."""
+        code = str(value).strip().lower() if value is not None else ""
+        return code if re.fullmatch(r"[a-z]{2}", code) else None
 
 
 class ChatSummary(BaseModel):

@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from catcher.core.frontmatter import parse
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import UsageLimitReached
 from catcher.modules.pipeline.glossary import Glossary, Term
@@ -89,3 +90,23 @@ def test_other_classes_do_not_get_the_glossary(make_note, make_services):
     )
     process_note(note, services, ProcessOptions())
     assert "epicu" not in chats.prompts[0]
+
+
+def test_a_notes_original_language_goes_into_the_frontmatter(make_note, make_services):
+    reply = json.dumps({**CANNED["note"], "language": "NL"})
+    processed = process_note(
+        make_note("note"), make_services(note_backend=FakeBackend([reply])), ProcessOptions()
+    )
+    assert processed.problems == []
+    assert parse(processed.page).fm["language"] == "nl"
+
+
+def test_a_note_without_a_language_has_no_language_line(make_note, make_services):
+    processed = process_note(make_note("note"), make_services(), ProcessOptions())
+    assert "language" not in parse(processed.page).fm
+
+
+def test_other_classes_have_no_language_line(make_note, make_services):
+    note = make_note("ai-chat", doc_id="cf81e40b020519ef")
+    processed = process_note(note, make_services(chat_backend=FakeBackend()), ProcessOptions())
+    assert "language" not in parse(processed.page).fm
