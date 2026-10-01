@@ -111,6 +111,8 @@ A reviewer call, a staging folder and a subscription backend were built and then
 
 ## Rules of thumb for stage B
 
+The step-by-step plan for stages B and C is in [the build steps](../idea-catcher-service-architecture/#mvp-steps) (B0 to B8, C1 to C4), with the order and the risks at [the end of that section](../idea-catcher-service-architecture/#mvp-stage-order).
+
 1. Reuse the stage A functions as they are. The queue and the API only call them.
 2. Keep the rule "Python owns facts, the LLM writes prose, code verifies what code can".
 3. Treat a missing optional field as normal, and fail a document only when it is broken.

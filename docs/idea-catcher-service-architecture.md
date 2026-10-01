@@ -675,38 +675,54 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 #### Stage B: Postgres + the queue, locally {#mvp-stage-b}
 
-**Goal:** the same work, now driven by jobs in a Postgres queue, with deferral, stuck rules and metrics. Still local, without an API.
+**Goal:** the same work, now driven by jobs in a Postgres queue, with deferral, retries, schedules and the state of every document in the database. Still local, without an API.
 
-| Step | What we build                                                                                                                     | How we test it                                                                                                   |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| B1   | `compose.yaml` with only `db` (`pgvector/pgvector:pg17`), SQLAlchemy, Alembic, the `jobs` / `job_items` / `job_events` tables      | `docker compose up db`, `catcher db upgrade`, then look at the tables                                           |
-| B2   | The queue module: `enqueue()`, `claim()` (`SKIP LOCKED`, `run_after`), `complete()`, heartbeat, `LISTEN/NOTIFY`                    | Unit tests on the queue. `catcher jobs add demo.sleep` + `catcher worker`, including two workers at once        |
-| B3   | Job handlers that call the stage A functions: `pipeline.run`, `llm.reason`, `pipeline.publish`                        | `catcher jobs add pipeline.run` + `catcher worker` on a copy of the repos gives the same pages as stage A       |
-| B4   | Deferral (`retry_delay`), `stuck` after 3 days, per-backend blocking on a quota error, metrics on `job_items`                                              | Set `run_after` and the clock in tests. Stop FreeLLMApi and check that jobs defer. Query the metrics with SQL.  |
-| B5   | The scheduler loop in the worker, and the worker in Compose next to `db`                                                         | `docker compose up`, then watch scheduled runs happen                                                           |
+*Updated 2026-10-01 after Stage A.* The steps below include what we decided since the first plan: our **own** Postgres queue (see [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/)), the YouTube gate moving into the database, separate schedules for pulling and publishing, and a low-priority backfill. Steps **B0, B4, B6 and B8 are new**.
 
-**Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
+| Step | What we build | How we test it |
+| ---- | ------------- | -------------- |
+| B0   | **Make the run steppable.** `run_pipeline` is one loop today. Split it into steps a job can call on its own: scan and stage, process one document, publish what is ready. Behaviour stays the same. Do this **first**: everything else depends on it | The Stage A tests (unit, component, git integration) stay green and unchanged |
+| B1   | `compose.yaml` with only `db` (`pgvector/pgvector:pg17`), SQLAlchemy, Alembic. Tables `jobs`, `job_items`, `job_events`, plus **`resource_state`** (the YouTube gap and breaker, the LLM budgets) and the schedules | `docker compose up db`, `catcher db upgrade`, then look at the tables. Migrations upgrade from empty and downgrade |
+| B2   | **Our own queue module** on Postgres: `enqueue()`, `claim()` (`FOR UPDATE SKIP LOCKED`, `run_after`), `complete()`, a lease and heartbeat so a crashed worker's job comes back, `LISTEN/NOTIFY`. Azure-style semantics: `attempts`, `max_attempts` 5, a `dead` status, an invisible delay before a retry. **Priorities:** a new clip and a requeue you asked for by hand go first, a backfill goes last | Tests on **real Postgres with a fake clock**: two workers never claim the same job; a crashed worker's job comes back; backoff and `dead`; the priority order |
+| B3   | Job handlers that call the Stage A functions: `pipeline.run`, `llm.reason`, `pipeline.publish`, and a separate **`youtube.fetch`** (the rate-limited resource, idempotent, saved facts) so that **an LLM failure never causes a YouTube call**. Every handler is idempotent (overwrite by id already helps) | `catcher jobs add pipeline.run` + `catcher worker` on a copy of the repos gives the same pages as Stage A. A failing LLM makes no YouTube call |
+| B4   | **The YouTube gate moves into Postgres** (`resource_state`). The claim reserves the slot in the same transaction, so two workers can never break the gap. A 429 sets `blocked_until` and pushes `run_after` past it **without counting an attempt** | Fake clock: two workers cannot break the gap; a block stops every fetch; a working fetch closes the breaker |
+| B5   | **State, retries and metrics.** `job_items.status` (waiting, deferred, stuck, failed...), `stuck` after 3 days, per-backend blocking on a quota error, and how the in-call LLM retries (5 calls) and the job-level `retry_delay` add up. The **frontmatter mirror** (`stage`, `stage_reason`, `stage_since`) is written on status changes only. A `catcher reconcile` rebuilds the database from the folders. The metrics queries | Set `run_after` and the clock in tests. Stop FreeLLMApi and check that jobs defer. Delete the database and reconcile. Query the metrics with SQL |
+| B6   | **The scheduler loop in the worker** with three cron variables: `SCHEDULE_IDEAS_PULL` (often), `SCHEDULE_PIPELINE_RUN` and `SCHEDULE_PUBLISH` (a few times a day), plus a manual `catcher publish`. A missed slot runs once | Fake clock: each schedule fires on time; a missed slot runs once; the pull runs more often than the publish |
+| B7   | The worker in Compose next to `db`: the `repos` volume, the image (Python 3.12, `uv`, Git, `yt-dlp` + Deno) | `docker compose up`, then watch scheduled runs happen |
+| B8   | **Backfill import.** `catcher youtube import` finds the YouTube links in the docs, skips the video ids that already have a page, and adds the rest as **low-priority** jobs. A paced channel listing. An LLM budget or a daily `--limit` | Fixtures only in the tests. A hand test on a small channel |
+
+**Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 
 #### Stage C: the API, locally {#mvp-stage-c}
 
 **Goal:** start runs and read the results over HTTP.
 
-| Step | What we build                                                                                        | How we test it                                                                                |
-| ---- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| C1   | FastAPI app with `/health`, API keys + scopes from `.env`                                             | Swagger UI at `http://localhost:8000/docs`. A request without a key must fail.                |
-| C2   | `POST /pipeline/runs` (with dedupe) and `GET /jobs/{id}`                                              | Start a run with `curl`, poll the job until it's done                                         |
-| C3   | `GET /jobs` and `GET /items` (filters for class, status, `stuck`)                                     | Compare the answers with direct SQL queries                                                   |
-| C4   | The `api` container in Compose                                                                        | `docker compose up`: the full stack (`db`, `api`, `worker`) on the Mac                        |
+| Step | What we build | How we test it |
+| ---- | ------------- | -------------- |
+| C1   | FastAPI app with `/health` (including the worker's heartbeat), API keys + scopes from `.env` | Swagger UI at `http://localhost:8000/docs`. A request without a key must fail |
+| C2   | `POST /api/v1/pipeline/runs` (with dedupe: no second run while one is queued or running) and `GET /api/v1/jobs/{id}` | Start a run with `curl`, poll the job until it's done |
+| C3   | `GET /jobs` and `GET /items` (filters for class, status, `stuck`), the manual **publish** and **requeue** triggers, and the YouTube gate state | Compare the answers with direct SQL queries |
+| C4   | The `api` container in Compose | `docker compose up`: the full stack (`db`, `api`, `worker`) on the Mac |
 
 **Done when:** the whole MVP runs locally with `docker compose up`, and everything can be started and checked through the API.
 
 #### Then: Proxmox {#mvp-stage-deploy}
 
-1. Create the LXC (Docker, `nesting=1`, `keyctl=1`), write `deploy.sh`, and put `.env` on the LXC with the GitHub PAT and `OPENAI_API_KEY`.
-2. Deploy, and run with the schedule against the real repos.
-3. Run the [model test suite](../idea-catcher-pipeline/#test-suite) against the profiles and adjust them.
+1. Create the LXC (Docker, `nesting=1`, `keyctl=1`), write `deploy.sh`, and put `.env` on the LXC with the GitHub PAT and `OPENAI_API_KEY`. `.env` is never rsynced.
+2. Deploy, and run with the schedule against the real repos. After each deploy, a smoke test: `/health`, the worker's heartbeat, the migrations at head, and a dry-run job.
+3. Backups: a nightly `pg_dump` and a Proxmox `vzdump` of the LXC.
+4. Run the [model test suite](../idea-catcher-pipeline/#test-suite) against the profiles and adjust them.
 
 After that, the [future features](#future) are added one by one in the same way.
+
+#### Order and risks for Stage B and C {#mvp-stage-order}
+
+1. **B0 first.** Everything else needs the run to be callable one step at a time. It is the riskiest refactor, so it comes with the Stage A tests as the safety net.
+2. **B2 and B4 together.** The queue and the YouTube gate share one transaction, so the hardest tests (two workers, a fake clock, a crash) are there.
+3. **Watch the size of the queue core.** If our own queue grows past about 300 lines or shows concurrency bugs, switch to **Procrastinate** (`lock="youtube"` plus our limiter table) instead of maintaining it, as decided in [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/).
+4. **Settle the two retry layers in B5**, so a failing provider cannot make one document take many minutes before it defers.
+5. **Stage C is small** once the queue exists. Most of its value is already in B3 and B5.
+6. **Test with real Postgres in Docker**, never with a mock of the queue: the claim and lease logic is where the bugs would be.
 
 ---
 

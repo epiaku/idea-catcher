@@ -39,7 +39,7 @@ def test_valid_reply_is_parsed(fake_profiles, prompt_tags):
     result = reason(note_request(prompt_tags), profiles=fake_profiles, backends=lambda p: fake)
     assert isinstance(result.output, NoteSummary)
     assert result.output.title == CANNED["note"]["title"]
-    assert (result.attempts, result.backend, result.prompt_version) == (1, "fake", "note-5")
+    assert (result.attempts, result.backend, result.prompt_version) == (1, "fake", "note-7")
     assert result.usage.tokens_in and result.usage.tokens_out
 
 
@@ -129,7 +129,7 @@ GLOSSARY = [
 
 def test_the_note_prompt_lists_the_glossary_terms(prompt_tags):
     prompt, version = render_prompt("note", note_request(prompt_tags, GLOSSARY).input)
-    assert version == "note-5"
+    assert version == "note-7"
     assert "\n- Claude Code (often heard as: cloud code, clod code)\n- server\n\n<note>" in prompt
     assert "often heard as: )" not in prompt
     assert prompt.index("- Claude Code") < prompt.index("<note>")  # the terms come before the note itself
@@ -162,3 +162,18 @@ def test_every_prompt_says_the_idea_type_tag_is_optional_and_at_most_one():
         text = (Path(PROMPTS_DIR) / f"{task}.md").read_text()
         assert "at most one idea-type tag (add one only when it clearly fits" in text, task
         assert "exactly one idea-type tag" not in text, task
+
+
+def test_the_note_prompt_asks_for_structure_and_does_not_tell_english_notes_to_stay_as_they_are(prompt_tags):
+    prompt, version = render_prompt("note", note_request(prompt_tags).input)
+    assert version == "note-7"
+    assert "leave its wording alone" not in prompt  # that sentence made the model return one block
+    assert "still clean it up and structure it" in prompt
+    assert "never return it as one block of text" in prompt and "more than about 60 words" in prompt
+    assert "run-on sentence" in prompt  # dictation arrives without punctuation
+
+
+def test_the_note_prompt_keeps_headings_rare(prompt_tags):
+    prompt, _ = render_prompt("note", note_request(prompt_tags).input)
+    assert "only for a note of more than about 150 words" in prompt and "at most 3 headings" in prompt
+    assert "A shorter note gets paragraphs or bullets and no headings" in prompt
