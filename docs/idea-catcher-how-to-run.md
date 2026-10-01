@@ -106,6 +106,13 @@ What one run does, in order:
   - It also works for a **failed** note: its original is in `archive/` too, and the copy in `failed/` and the `.error.txt` are removed, so no error message is left behind. Fix the cause first (the `.error.txt` says what it was), or the note fails again.
   - Only `archive/` is searched. A capture that could not even be read (`unreadable`) and `duplicates/` are not found: move those back by hand (see the recipes).
 
+- **`--wait-youtube`** and **`--refresh-facts`**: how a run treats YouTube. To avoid an IP ban, calls to YouTube are spaced out (see [YouTube and the gap between calls](#youtube-gap)).
+
+  ```bash
+  uv run catcher run pipeline --wait-youtube     # sleep through a short gap, so one run does all the clips
+  uv run catcher run pipeline --refresh-facts    # fetch the YouTube facts again, even when they are saved
+  ```
+
 - **`--dry-run`**: change no files and commit nothing. Note that with a real profile a dry run **still calls the LLM**. Combine it with `--profile fake` for a free check.
 
   ```bash
@@ -192,11 +199,24 @@ uv run catcher render "../idea-bucket/inbox/clippings/A video.md"
 uv run catcher youtube facts URL_OR_VIDEO_ID
 ```
 
-Prints the counts, description and transcript of one video as JSON. It calls YouTube, not an LLM.
+Prints the counts, description and transcript of one video as JSON. It calls YouTube, not an LLM. It goes through the **same gap and breaker as a run** (`YOUTUBE_MIN_GAP_S`, `YOUTUBE_BLOCK_HOURS`) and saves nothing. If it says when the next call is allowed, wait, or set `YOUTUBE_MIN_GAP_S=0` for a hand test.
 
 ```bash
 uv run catcher youtube facts https://www.youtube.com/watch?v=MBPHU7aaklM
 ```
+
+## YouTube and the gap between calls {#youtube-gap}
+
+YouTube blocks an IP address that asks too fast, and retrying during a block makes it longer. So the pipeline goes slowly and stops when told no:
+
+- **Saved facts.** The facts of a video (title, description, chapters, transcript, counts) are saved once in `facts/<video id>.json` in `idea-bucket` and committed with everything else. A retry, a requeue or a rerun reads that file and **never calls YouTube again**. `--refresh-facts` fetches again. A video without captions is asked again only after a day.
+- **One fetch, paced.** One yt-dlp extraction gets the info and the captions: about 3 requests, `YOUTUBE_REQUEST_DELAY_S` (10 s) apart.
+- **A gap between fetches.** At least `YOUTUBE_MIN_GAP_S` (10 minutes) plus up to `YOUTUBE_GAP_JITTER_S` of random time between the start of two fetches. The state is a small file on this machine (`~/.catcher/state/youtube-gate.json`), shared by every run.
+- **A clip that must wait stays in `inbox/`** with the status `waiting` and a message. It is not an error, and there is nothing to requeue: the next run takes it. With `--wait-youtube` the run sleeps instead (up to `YOUTUBE_WAIT_MAX_S`, 30 minutes).
+- **The breaker.** After a 429 or a bot check, no call is made for `YOUTUBE_BLOCK_HOURS` (6), then 12, then 24 hours. A fetch that works closes it.
+- **`YOUTUBE_OFFLINE=1`** never calls YouTube (saved facts still work). Tests and development use it or saved fixtures.
+
+All settings are in `.env`; see the [configuration page](../idea-catcher-configuration/).
 
 ## Reading the output
 
@@ -214,6 +234,7 @@ The status in the first column is one of:
 - **`published`**: the page is written to `epiaku-docs` and to `output/`, the original is in `archive/`, and the document is gone from `inbox/`.
 - **`would_publish`**: the same, in a `--dry-run`. Nothing was written.
 - **`requeued`** / **`would_requeue`**: `--requeue` moved the original from `archive/` back into `inbox/` (`would_requeue` in a `--dry-run`: nothing moved).
+- **`waiting`**: a YouTube clip that has to wait for the gap between YouTube calls (or for a block to end). It is **not touched and stays in `inbox/`**: nothing to requeue, the next run takes it. The message says when the next call is allowed.
 - **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, run it again with `--requeue NAME`, or move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting.
 - **`failed`**: could not be processed for good, for example invalid LLM output twice or an invalid page. The note moves to `failed/` with a `.error.txt` that says why. To try it again after fixing the cause, use `--requeue NAME`.
 - **`duplicate`**: an earlier snapshot of a longer clip. Moved to `duplicates/`, no LLM call.
@@ -490,7 +511,9 @@ uv run catcher run pipeline --file "<the-file>"
 - **Many notes `deferred` with `OPENAI_API_KEY is not set`:** add the key to `.env`.
 - **`deferred` with `openai budget reached`:** the key's budget is used up. Raise it, or point the profile at another provider in `profiles.yaml`. The working copies stall in `output/`; move the files from `archive/` back into `inbox/` once the budget is back.
 - **`profile problem: unknown LLM profile`:** use `notes`, `clippings`, `youtube` or `fake`. Old names like `claude-sub-now` no longer exist.
-- **`deferred` for a YouTube note with `facts unavailable`:** YouTube did not answer from this network. Try again later. You can test one video with `youtube facts`.
+- **`waiting` with `YouTube: next call allowed at 14:35`:** normal. Calls to YouTube are spaced at least `YOUTUBE_MIN_GAP_S` (10 minutes) apart. Run again later, or use `--wait-youtube`.
+- **`YouTube blocked until 20:10`:** YouTube answered with a 429 or a bot check, so **no call is made until then** (6 hours, then 12, then 24 if it happens again). Retrying earlier only makes a block longer. The clips wait in `inbox/` and are taken when it ends.
+- **`deferred` for a YouTube note with `facts unavailable`:** YouTube did not answer from this network, or the video has no captions. Try again later. You can test one video with `youtube facts`.
 - **`not-found  no document named ...`:** the name matches no file in `inbox/`. Check the spelling, or move the file into `inbox/`.
 - **`error  idea-bucket inbox/ not found at ...` (exit code 2):** the path is wrong or the variable is not set. Check `--ideas`/`--docs` and `IDEAS_REPO`/`DOCS_REPO` (see `printenv`). Nothing was touched. `scan` says the same, and `reason` and `render` log `no such file: <path>`. All of these are logged as errors (also to `LOG_FILE`), not as a traceback.
 - **A note in `failed/`:** read the `.error.txt` next to it.

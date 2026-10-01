@@ -77,6 +77,15 @@ If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ER
 - `LLM_TIMEOUT_S` (default `600`): seconds to wait for one LLM answer before it counts as unavailable.
 - `LLM_MAX_ATTEMPTS` (default `5`): how many calls in all a request gets when a call fails in a way that may pass next time (a 5xx such as a 502 or 503, a timeout, a dropped connection). `1` turns retrying off. A used-up budget, a rate limit (429), a bad key and other 4xx errors are not retried. After the last attempt the note is `deferred`, as before. FreeLLMApi picks a provider for each call, so a retry is often routed to one that works.
 - `LLM_RETRY_WAIT_S` (default `2`): seconds to wait before the second attempt. The wait doubles before each one after it (2, 4, 8, 16 s with the defaults). Each failed call can itself take up to a minute, so five failures in a row take around five minutes.
+- **YouTube** (to avoid an IP ban; see [YouTube and the gap between calls](../idea-catcher-how-to-run/#youtube-gap)):
+  - `YOUTUBE_REQUEST_DELAY_S` (default `10`): seconds between the requests inside one fetch (yt-dlp `sleep_interval_requests`).
+  - `YOUTUBE_MIN_GAP_S` (default `600`): minimum seconds between the start of two fetches. `YOUTUBE_GAP_JITTER_S` (default `300`) adds up to that many random seconds.
+  - `YOUTUBE_BLOCK_HOURS` (default `6`): no calls for this long after a block. It doubles each time, up to 24 hours.
+  - `YOUTUBE_OFFLINE` (default off): `1` means never call YouTube; saved facts still work.
+  - `YOUTUBE_SKIP_MANIFESTS` (default off): skip yt-dlp's request for the video formats, which we never use. **Untested live:** try one `youtube facts` by hand before turning it on.
+  - `YOUTUBE_WAIT_MAX_S` (default `1800`): with `--wait-youtube`, the longest sleep for the gap inside a run.
+  - `YOUTUBE_NEGATIVE_TTL_H` (default `24`): a video without captions is asked about again only after this many hours.
+  - `CATCHER_STATE_DIR` (default `~/.catcher/state`): this machine's YouTube gate state. It is not in git, because a ban belongs to this IP.
 - `TRANSCRIPT_LANGUAGES` (default `en`): preferred YouTube transcript languages, comma-separated, for example `en, nl`.
 - `GIT_AUTHOR_NAME` (default `idea-catcher`): author name on the commits the pipeline makes.
 - `GIT_AUTHOR_EMAIL` (default `idea-catcher@users.noreply.github.com`): author email on those commits.
@@ -89,7 +98,6 @@ A **profile** says which API provider and model a kind of capture uses.
 
 ```yaml
 default: notes
-review_profile: youtube
 profiles:
   notes:     { backend: freellmapi, model: "${FREELLMAPI_MODEL:-auto}" }
   clippings: { backend: openai,     model: "${OPENAI_MODEL_CLIPPINGS}" }

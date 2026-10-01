@@ -69,7 +69,7 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | MVP LLM backends    | **FreeLLMApi** (`notes`) and the **OpenAI API** (`clippings`, `youtube`). Every call is an API call with a key: no CLI, no subscription. Anthropic and Gemini APIs can be added later as another profile. |
 | Folders             | **Five top-level folders, one rule:** a run **only looks at `inbox/`** for work. When work on a document starts, it leaves `inbox/`: it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`, at most 128 characters), the original goes to `archive/` (unchanged except for two added frontmatter lines, `original_filename` and `calculated_filename`) and a working copy to `output/` (with a `stage` in its frontmatter), so a document is never started twice. `output/` then holds the final page. `failed/` holds permanent failures (with an `.error.txt`) and `duplicates/` earlier snapshots of a longer clip. A temporary error stalls the working copy in `output/` (`stage: deferred`, with the reason). **To retry, move the file from `archive/` back into `inbox/`**: it keeps its calculated name, so the next run overwrites the stalled copy. The same name is used in `archive/`, `output/` and `epiaku-docs`, so two documents called `New chat.md` never overwrite each other. A run never reads `output/`. Each folder has `notes/` and `clippings/`, and a file keeps its inbox name. See [the layout](../idea-catcher-pipeline/#repo-layout). |
 | Failures            | **No fallback between providers.** A failed LLM job is logged and **retried on the next run** (after `retry_delay`). After **3 failed days** the note is flagged **stuck** in the log and metrics, and keeps retrying. |
-| Same video twice    | A video clipped directly **and** summarized in Gemini keeps **both** pages (IDs `<video-id>` and `<video-id>-gemini`), so they can be compared.                                           |
+| Same video twice    | A video clipped directly **and** summarized in Gemini keeps **both** pages (IDs `<video-id>` and `<video-id>-gemini`), so they can be compared. The two pages do **not** link to each other: the cross-link was built and then removed because nobody needed it. The direct page is the default, the Gemini page the fallback and a second opinion ([comparison](../idea-catcher-youtube-methods-comparison/)).                                           |
 | One call per class  | Every class (including both YouTube classes) makes exactly **one** LLM call, on its own prompt file. No separate review step and no second call for any class. |
 | Queue               | The Postgres `jobs` table **is** the queue, used through a shared module (`enqueue` / `claim` / `complete`) in the API and the worker. **No dedicated queue container** ([why](#queue-placement)). |
 | Database            | **PostgreSQL 17** (image `pgvector/pgvector:pg17`) for the queue, logging, metrics and future data. See [Database options](#db-options) for the alternatives.                          |
@@ -79,6 +79,12 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | Hugo build check    | **Not in the MVP.** Python validates the frontmatter and page structure. Your manual Hugo build catches anything else.                                                                   |
 | Repo                | A new **`idea-catcher`** repo for the service (and later its React front end).                                                                                                          |
 | Retry               | A deferred LLM job is retried after **`retry_delay`** (default 60 minutes). If the API key's **budget is used up**, it waits **`budget_retry_delay`** (default 6 hours) instead. There is no evening window: every profile is an API and can run at any hour. |
+| Retry inside a call  | A transient LLM failure (a 5xx, a timeout, a dropped connection) is tried again **inside the same run**, up to `LLM_MAX_ATTEMPTS` calls (default 5) with a doubling wait. A used-up budget, a 429, a bad key and other 4xx errors are **not** retried. This sits below the job-level `retry_delay` above: after the last attempt the document defers as before. Added in Stage A because the free provider fails often and a retry is routed to another provider. |
+| Re-running a document | `run pipeline --requeue NAME` moves the archived original back to `inbox/`, deletes what the earlier run left (`output/`, and for a failed document `failed/` and its `.error.txt`), and processes only that document. The saved YouTube facts in `facts/` are kept, so a requeue never calls YouTube again. A document is in **one place** at a time. |
+| Tags               | The **idea-type tag is optional, at most one**; topic tags are 1 to 4 and chosen only from the fixed list. A missing tag **never fails a page** (most pages on the site have no tags). The rule "exactly one" was in the first design and failed a good page, so it was dropped. |
+| What the LLM may write | **Python owns the facts; the LLM writes prose.** Metrics, upload date, chapters and ids come from code. The one exception is a `youtube-gemini` page, which shows the metrics and chapters Gemini wrote. Links are picked by the LLM and kept only if the URL is literally in the video description. |
+| Business context   | A short `epiaku-context.md` tells the **direct** YouTube prompt who Epiaku is, for the Channel Application part. It is **not** sent to the Gemini prompt, which only restructures Gemini's own answer. |
+| Dictated notes     | A `glossary.yaml` of often-misheard words is added to the note prompt, and Dutch (or any non-English) notes are translated to English first. The original language is kept in the page frontmatter (`language`). |
 | Free model          | FreeLLMApi starts with **`auto`** routing. The model is an **env var** (`FREELLMAPI_MODEL`), so a specific model or a group/chain of models can be set later without code changes.     |
 | Access              | LAN/VPN only + **scoped API keys on every endpoint** (read and write).                                                                                                                    |
 | Front end (future)  | React apps as **web components** placed in Docsy pages with a Hugo shortcode.                                                                                                             |
@@ -357,12 +363,14 @@ The document-type registry, the prompt templates, the output schemas and the Jin
 The scheduler runs as a loop inside the worker and **only enqueues jobs**. In the MVP the schedule lives in `.env`:
 
 ```bash
-SCHEDULE_PIPELINE_RUN="0 8,12,17,21 * * *"   # local time, cron syntax (croniter)
+SCHEDULE_PIPELINE_RUN="0 8,12,17,21 * * *"   # local time, cron syntax (croniter): process the inbox
+SCHEDULE_IDEAS_PULL="*/30 * * * *"           # pull idea-bucket often: new captures from Obsidian
+SCHEDULE_PUBLISH="0 6,12,18,23 * * *"        # commit + push the results, less often than the pull
 FREELLMAPI_URL="http://<h4-ip>:3001/v1"
 FREELLMAPI_MODEL="auto"                      # later: a specific model or a model group/chain
 ```
 
-Every 30 s the loop checks whether a schedule is due, and enqueues a `pipeline.run` (the dedupe rule applies). After downtime it runs a missed schedule **once**, not once per missed slot. Every capture is published within one run, because every LLM profile is an API that can be called at any hour.
+Every 30 s the loop checks whether a schedule is due, and enqueues the matching job: a `pipeline.run` (the dedupe rule applies), a pull of `idea-bucket`, or a `pipeline.publish` (commit and push). Pulling, processing and publishing have **separate schedules**, so each can be tuned on its own. The captures are backed up on GitHub from the moment Obsidian pushes them, so only results that were not yet pushed (and the saved YouTube facts) would be lost in a disk crash; see [When to commit](../idea-catcher-youtube-bans-and-queue-options/#when-to-commit). After downtime it runs a missed schedule **once**, not once per missed slot. Every capture is published within one run, because every LLM profile is an API that can be called at any hour.
 
 ### 🗄️ Database & Metrics {#mvp-database}
 
@@ -458,7 +466,7 @@ services:
 volumes: { pgdata: {}, repos: {} }
 ```
 
-The image holds Python 3.12 + uv, Git, `yt-dlp` + Deno, `youtube-transcript-api`. There is **no Node, no Claude Code CLI and no Hugo** in the image, since the docs site deploy stays manual.
+The image holds Python 3.12 + uv, Git, `yt-dlp` + Deno. There is **no Node, no Claude Code CLI and no Hugo** in the image, since the docs site deploy stays manual.
 
 **Deploying the service (manual, like the docs site):**
 
@@ -654,10 +662,16 @@ To make that possible, the core logic lives in **plain functions with no knowled
 | A4   | Rendering + validation: Jinja page templates, allowed tags, frontmatter checks, overwrite by ID                        | `catcher render <output-note>` writes into a local copy of epiaku-docs. Check it with `hugo server`.               |
 | A5   | Publishing: the working copy in `output/` becomes the final page, `failed/` for permanent failures, `stage: deferred` for temporary ones, commit, push, with a `--push` flag that is **off by default**                                    | Without `--push` first (inspect the local commits), then against the real GitHub repos with `--push`               |
 | A6   | AI chats, then YouTube clips (`yt-dlp` + transcript), then the `freellmapi` backend                                  | Real clips from the inbox, one class at a time                                                                     |
-| A7   | The `youtube-gemini` class: its own prompt checks Gemini's answer against the fetched transcript and facts in one call | Process a pipeline-made and a Gemini-made summary of the same video (both pages are kept)                         |
+| A7   | The `youtube-gemini` class: **one call that only restructures Gemini's own answer** (no YouTube call, no fact-check). It keeps Gemini's metrics, chapters and advice | Process a pipeline-made and a Gemini-made summary of the same video (both pages are kept), and compare them with the transcript ([comparison](../idea-catcher-youtube-methods-comparison/)) |
 | A8   | One command for the whole flow: `catcher run pipeline [--dry-run] [--push]`                                            | A full run on a copy, then a real run                                                                              |
 
 **Done when:** a real run turns every doc class in the inbox into correct pages on GitHub, and we are happy with the prompts, templates and code structure. Nothing is stored about a document's state in this stage (no Postgres): the folder a file is in, its `stage` and the Python log show what happened, and a deferred document stalls in `output/`. Retry, deferral and metrics come in stage B.
+
+**Status: done (2026-10-01).** Stage A ran for five days (2026-09-27 to 2026-10-01): about 50 commits, about 3,500 lines of Python, 391 tests, five document classes. The full story, with what changed from this plan and the lessons, is in [Stage A: what we built and what we learned](../idea-catcher-stage-a-lessons-learned/). In short, compared with the steps above:
+
+- **Changed:** the `staging/` folder became the inbox-only flow with calculated names; the `claude -p` subscription backend became API-key profiles; the separate YouTube reviewer became free Python checks; `youtube-gemini` stopped checking against YouTube.
+- **Added (not in the plan):** the `web-clip` class, artifacts (PDFs and images), `--requeue`, in-call retries, a glossary and Dutch translation, the original language, chapters, links, the upload date, a business context, clear errors for wrong paths, a version string, YouTube protections against an IP ban (saved facts per video, one paced extraction, a gap between fetches, a breaker), and a committed test data set with `testdata reset`.
+- **Not done, left for later:** a Hugo build check, the model test suite, long-input chunking and the stuck-note rules (stage B).
 
 #### Stage B: Postgres + the queue, locally {#mvp-stage-b}
 
@@ -906,9 +920,21 @@ The database is used for the **job queue** and **logging/metrics** now, and prob
 10. **The one-call summary can still be wrong.** Schema validation and the free timestamp/tool checks catch some mistakes, not all. There is no second LLM call to catch the rest; if quality is not good enough, revisit a checking step deliberately rather than by default.
 12. **Classifying Gemini chats.** A general Gemini chat whose first message happens to contain a YouTube link would be treated as `youtube-gemini`. Use `type: ai-chat` in the clip to override, or tighten the rule (for example, also require the YouTube summary prompt's headings in the answer).
 13. **`yt-dlp` breaks when YouTube changes.** Rebuild the image regularly, or upgrade `yt-dlp` at worker start.
+14. **Gemini's own mistakes pass through.** The `youtube-gemini` class only restructures Gemini's answer, so a wrong claim is copied faithfully (for example "30% to 40% of sales occur during follow-up" where the video says 30 to 40% *more* sales). Nothing can fix this in our code. Do not rely 100% on a Gemini page: when a number or claim matters, compare it with the direct page of the same video.
+15. **LLM output varies between runs.** The same input gives different tags and wording on each run. One run is not a trend. Judge a prompt change on several pages, and use the `output/` history in the test repos (one commit per run) to compare before and after.
+16. **The free provider is unstable.** FreeLLMApi often answers 502 or times out (a call can take a minute), and the model behind `auto` changes between calls. In-call retries help, but a run with many notes can still take minutes per note. Do not classify an error by words in its message: a 502 that mentioned a "retry budget" was once reported as an empty wallet.
+17. **YouTube facts change over time.** Views and likes move, and chapters can appear on a video days after it was published. The fetch date is stored, and a rerun gives a newer page. YouTube also blocked this machine (429) after heavy live testing on 2026-09-28: keep tests offline.
+18. **Tags drift.** An LLM-chosen topic tag is sometimes plausible but off (a RAG page tagged `ai-agents`). Tags are rarely used on the site, so the decision is to do nothing now and look at a few tag pages after about 20 pages.
 
 ---
 
 ## ❓ Open Questions {#open-questions}
 
-No open questions at the moment. New ones will be added here as the MVP is built.
+Carried over from Stage A, to settle in Stage B:
+
+1. **The queue design.** The YouTube protections are built in Stage A (saved facts, one paced extraction, a gap between fetches, a breaker, an offline switch). What is left is moving the gate state into Postgres and the queue itself (our own Postgres queue, Procrastinate as the fallback); see [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/).
+2. **Two retry layers.** Stage A retries a transient failure inside a call (5 calls, doubling wait), and stage B adds a job-level `retry_delay`. Decide how they add up: a failing provider can now make one note take several minutes before it defers.
+3. **Where the business context and the glossary live.** Today both are files inside the code package (`pipeline/epiaku-context.md`, `glossary.yaml`). A running service may want them in the `idea-bucket` repo or the database, so editing one does not need a deploy.
+4. **Stuck and deferred notes need to be visible.** In Stage A you find them by looking in `output/` and the log.
+5. **A model test suite.** The profiles were chosen by hand and by a few comparisons, not by a repeatable suite.
+6. **Name matching.** `--file` and `--requeue` need the whole name. A unique prefix could be accepted.

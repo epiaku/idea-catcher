@@ -353,7 +353,7 @@ idea-bucket/
 
 - **`inbox/`**: new documents. A document leaves it the moment work on it starts.
 - **`archive/`**: the original, made when work starts, under its **calculated file name**. The text is exactly as captured. The only change is two lines added to its frontmatter: `original_filename` and `calculated_filename`. Never deleted by the pipeline.
-- **`output/`**: the working copy (with a `stage` in its frontmatter) while it is worked on, and the **final page** when it is ready: identical to the page written to `epiaku-docs`. For YouTube, `<name>.youtube.json` sits next to the final page with the counts and transcript the summary was checked against.
+- **`output/`**: the working copy (with a `stage` in its frontmatter) while it is worked on, and the **final page** when it is ready: identical to the page written to `epiaku-docs`. For YouTube, the counts and transcript the summary was checked against are saved **once per video** in `facts/<video id>.json` at the root of `idea-bucket` (not next to the page), so a retry, a requeue or a rerun never calls YouTube again.
 - **`failed/`**: the document, next to `<name>.error.txt` with the reason. See [Failures](#failed-folder).
 - **`duplicates/`**: an earlier snapshot of a longer clip, with `duplicate_of: <subfolder>/<longest file name>` in its frontmatter. See [Duplicates](#duplicates-folder).
 
@@ -383,7 +383,7 @@ The **same name** is used for the copy in `archive/`, the working copy and final
 - **Date:** the capture date (`created` or `captured` in the frontmatter), or the day of processing when there is none.
 - **Short guid:** 6 random characters. The pipeline checks that the name is not used yet in `archive/`, `output/`, `failed/` or `duplicates/`, and picks another guid if it is.
 - **Title:** the clip's `title`. If it is missing or generic (`New chat`), an AI chat uses the **first words of your first message** (8 words, without links). Everything else uses the file name it was captured under. The title is turned into plain lower-case letters, digits and hyphens.
-- **Length:** at most **128 characters**, counted for the longest file derived from the name (`<name>.youtube.json`, so the title part is cut short when needed).
+- **Length:** at most **128 characters**, counted with room for a 13-character suffix after the name (for example `.error.txt`), so the title part is cut short when needed.
 - **Stored in the file:** the frontmatter of the archive copy and of the working copy has `original_filename` (the name it was captured under) and `calculated_filename`. The final page also has `source_file: <subfolder>/<calculated name>`, so from a published page you can find the archive file, and its own `original_filename`, so you know what the document was called when it first entered `inbox/` without having to look it up in the archive.
 - **Language of a note:** a dictated note may be Dutch. The LLM translates it to English first, so the page is always English, and says which language the note was written in. The page gets `language: nl` (a two-letter code) in its frontmatter. It is left out when the LLM gives none or an invalid value, and only notes have it.
 - **The frontmatter is edited as text**: the two lines are inserted into the existing frontmatter and everything else stays byte for byte. A file without frontmatter gets a small block, and its text is unchanged.
@@ -412,7 +412,7 @@ A run **never reads `output/`**, so `analyzed` and `deferred` copies just wait t
 1. **Read.** Scan `inbox/` (or only the documents named with `--file`). Work out the class and `id` in memory. Nothing is written yet. A file that cannot be read is archived and moved to `failed/`.
 2. **Compare.** Among the documents with one `id`, only the longest goes on. Earlier snapshots of it are archived and moved to `duplicates/`. See [Duplicates](#duplicates-folder).
 3. **Start work**, right before the document's own LLM step. Give it its calculated name (or keep it, if it has one). Write the original to `archive/<sub>/<calculated name>` (with the two frontmatter lines), write the working copy to `output/<sub>/<calculated name>` (overwriting a stalled copy from an earlier run) with `stage: analyzed`, and remove the document from `inbox/`. With `--limit 3` or `--file`, only those documents leave `inbox/`.
-4. **Reason.** The LLM returns validated JSON (and, for YouTube, the reviewer checks it against the facts fetched from YouTube).
+4. **Reason.** One LLM call returns validated JSON. For a direct YouTube clip, free Python checks (no second LLM call) then compare the summary with the facts fetched from YouTube, and a failed transient call (a 5xx, a timeout) is tried again, up to 5 calls.
 5. **Ready.** Render and validate the page, write it to `epiaku-docs` **under the calculated name** (removing an older page with the same `id`), and write the same page over the working copy in `output/`. The `stage` is gone.
 6. **Failure.** If the LLM output is invalid twice, or the page is invalid: move the working copy to `failed/<sub>/`, with `<name>.error.txt`.
 7. **Temporary error.** The working copy stays in `output/`, and its `stage` becomes `deferred` with the reason.
@@ -545,7 +545,7 @@ The video doesn't need to be watched. **Python fetches the video's data as text*
 | Description                         | **Clip body.** The frontmatter `description` is cut off, but the body holds the full text.                |
 | Video ID                            | From the `source` URL. Also used as the stable page ID.                                                   |
 | Views, likes, subscribers, duration | **Fetched by Python** (`yt-dlp` or the Data API)                                                          |
-| Transcript                          | **Fetched by Python** (`youtube-transcript-api`)                                                          |
+| Transcript                          | **Fetched by Python** (`yt-dlp`, from the same extraction as the counts)                                  |
 | Why you clipped it                  | Optional: type a line at the top of the body when clipping. The prompt uses it for "Channel Application". |
 
 In Python, the fetched data comes from these sources:
@@ -556,6 +556,8 @@ In Python, the fetched data comes from these sources:
 | Description, views, likes, channel subscribers, upload date, duration | **`yt-dlp`** (as a Python library, without downloading the video)                                   | No key, one call. Unofficial: it reads YouTube's web pages, so it can break when YouTube changes and needs regular updates.                                                      |
 | Same, official route                                                  | **YouTube Data API v3**: `videos.list` (`snippet`, `statistics`) and `channels.list` (`statistics`) | Free API key, 10,000 quota units a day (one lookup costs about 1 unit). Stable, works from anywhere. It can't download transcripts of other people's videos.                     |
 | Transcript                                                            | **`youtube-transcript-api`**                                                                        | No key. Unofficial as well. Some videos have no transcript.                                                                                                                      |
+
+> **Updated 2026-10-01.** Stage A fetches the info **and** the transcript with **one yt-dlp extraction** (about 3 paced requests), and `youtube-transcript-api` was dropped: it cannot be paced, it repeats requests yt-dlp already makes, and it shares the same IP. See [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/).
 
 Tested from the home network (September 2026) on two videos, including the clip above: `yt-dlp` returned the title, channel, subscribers (1.56M), views (1.4M), likes (46K), upload date, duration and description. The transcript library returned the full English transcript (2,374 words; about 7,900 for a 37-minute video).
 
@@ -660,7 +662,7 @@ These solve different parts of the job, and mixing them up is the mistake to avo
 | Transcript                          | **Deterministic.** Pulls YouTube's own stored captions file verbatim — the exact same text every run.                                                                        | **Unverified.** Google has not published how Gemini reads a YouTube link internally, so we don't know whether it reads the same captions file or something else, and whether it varies run to run. Useful as a fallback when a video has no captions at all. |
 | Summary, purpose, tips, action plan | Needs a **separate LLM call** on top of the fetched transcript/description (Claude, Gemini text, FreeLLMApi — any of the already-compared [LLM options](#claude-vs-openai)). | **One call does it all** — video in, structured summary out. Fewer moving parts, but the summary's factual grounding is only as good as the model's own video understanding, not a checkable source text.                                            |
 
-**Conclusion: keep the already-decided design** — `yt-dlp` for metrics (the only reliable source for those, full stop) and `youtube-transcript-api` for the transcript (exact, reproducible, and lets a human or a test suite check the summary against the real source text) — and only fall back to Gemini's video understanding for videos that have **no captions available**, where there's no deterministic transcript to fall back on anyway. Gemini (or any other LLM) still does the actual summarizing step in both cases, per [Document classes](#doc-classes).
+**Conclusion: keep the already-decided design** — `yt-dlp` for metrics (the only reliable source for those, full stop) and `youtube-transcript-api` for the transcript (_since 2026-10-01 the transcript also comes from `yt-dlp`_; exact, reproducible, and lets a human or a test suite check the summary against the real source text) — and only fall back to Gemini's video understanding for videos that have **no captions available**, where there's no deterministic transcript to fall back on anyway. Gemini (or any other LLM) still does the actual summarizing step in both cases, per [Document classes](#doc-classes).
 
 ### Division of work: Python vs. LLM
 
@@ -720,14 +722,14 @@ Every summary is connected to the rest of the site in two ways:
 - **Fixed list.** The LLM may only pick tags from the list below. Python drops anything else and logs it as a _suggestion_ to review. That prevents near-duplicates such as `app-idea`, `app-ideas` and `apps`, which would each get their own page.
 - **One source of truth.** Keep the list in one file (for example a Hugo data file in epiaku-docs) that both the pipeline prompt and the validation read. Adding a tag = one line in that file.
 - **Format:** lowercase, kebab-case, singular (`app-idea`, not `App Ideas`).
-- **Per page:** exactly **one idea-type tag**, plus **1–4 topic tags**, plus optionally a **project tag**.
+- **Per page:** **at most one idea-type tag** (optional: the LLM adds one only when it clearly fits, and a page without one is published normally), plus **1–4 topic tags**, plus optionally a **project tag**. Tags are a convenience, not a requirement: most pages on the site have none, so a missing tag never fails a page. More than one idea-type tag is still rejected.
 - **Capture nudge:** a note may already contain `tags:` from Obsidian. These go through the same validation.
 
 #### Starter tag list
 
 Derived from the current sections and pages of epiaku-docs.
 
-**Idea type** (exactly one):
+**Idea type** (at most one):
 
 | Tag                    | Meaning                                              | Curated page that links to the tag page |
 | ---------------------- | ---------------------------------------------------- | --------------------------------------- |
@@ -1107,7 +1109,6 @@ The three starting profiles (`profiles.yaml`):
 
 ```yaml
 default: notes
-review_profile: youtube            # the reviewer uses this profile unless the message says otherwise
 retry_delay: 60m                   # a deferred job is tried again after this (Stage B)
 stuck_after_days: 3
 profiles:
@@ -1219,7 +1220,7 @@ Everything runs in the service's Compose stack in one LXC (see [Hosting & Deploy
 
 | Container | Does                                                                                | Needs                                                                                                                                                           |
 | --------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `worker`  | Scheduler loop, `pipeline.run`, `llm.reason`, `pipeline.publish`, one job at a time | Python, Git, `yt-dlp` (with Deno), `youtube-transcript-api`, GitHub PAT, `OPENAI_API_KEY`, FreeLLMApi URL |
+| `worker`  | Scheduler loop, `pipeline.run`, `llm.reason`, `pipeline.publish`, one job at a time | Python, Git, `yt-dlp` (with Deno), GitHub PAT, `OPENAI_API_KEY`, FreeLLMApi URL |
 | `api`     | Start runs, list runs and items                                                     | DB, API keys                                                                                                                                                    |
 | `db`      | Postgres: the queue and the metrics                                                 | A volume                                                                                                                                                        |
 
@@ -1269,7 +1270,7 @@ def installation_token(owner: str = "epiaku", repo: str = "epiaku-docs") -> str:
 The service is built as an MVP first (see [Build steps](../idea-catcher-service-architecture/#mvp-steps) on the service page):
 
 1. ✅ **Set up capture** — done on both devices: Obsidian + Git plugin on the [iPhone](../obsidian-git-iphone-setup/) and [Mac](../obsidian-git-macbook-setup/), each syncing independently with the `idea-bucket` repo; the Web Clipper saves directly into `inbox/clippings/`.
-2. **Stage A, the Python pipeline, run locally:** ingest, `reason()` through the API profiles, rendering, the reviewer and publishing, as plain functions behind a CLI. Tested step by step on copies of the repos, then against GitHub (see [Stage A](../idea-catcher-service-architecture/#mvp-stage-a)).
+2. **Stage A, the Python pipeline, run locally:** ingest, `reason()` through the API profiles, rendering, the free YouTube checks and publishing, as plain functions behind a CLI. **Done (2026-10-01).** What was built, what changed from the plan and what we learned: [Stage A: what we built and what we learned](../idea-catcher-stage-a-lessons-learned/). See also [Stage A](../idea-catcher-service-architecture/#mvp-stage-a).
 3. **Stage B, Postgres + the queue, locally:** the same functions wrapped in jobs, with next-day deferral, stuck rules, metrics and the scheduler (see [Stage B](../idea-catcher-service-architecture/#mvp-stage-b)).
 4. **Stage C, the API, locally:** start runs and read jobs and items over HTTP. The full Compose stack runs on the Mac (see [Stage C](../idea-catcher-service-architecture/#mvp-stage-c)).
 5. **Proxmox:** the LXC, `deploy.sh`, the schedule, and a fine-grained PAT for the real repos (later the GitHub App).
