@@ -24,7 +24,9 @@ from catcher.modules.pipeline.inbox import (
 )
 from catcher.modules.pipeline.process import ProcessedPage, ProcessOptions, Services, process_note
 from catcher.modules.pipeline.publish import write_output, write_page
+from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
 from catcher.modules.youtube.facts import FactsUnavailable
+from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.run")
 
@@ -39,6 +41,7 @@ Status = Literal[
     "would_copy",
     "requeued",
     "would_requeue",
+    "waiting",
 ]
 
 
@@ -63,6 +66,8 @@ class RunOptions:
     requeue: list[str] | None = (
         None  # first copy these documents from archive/ back into inbox/, then run them
     )
+    refresh_facts: bool = False  # fetch the YouTube facts again even when they are saved
+    wait_youtube: bool = False  # sleep through a short gap between YouTube calls instead of waiting
 
 
 @dataclass
@@ -83,8 +88,7 @@ class RunReport:
 
 def finish(ideas: Path, note: Note, processed: ProcessedPage) -> list[Path]:
     """The document is ready: the working copy in `output/` becomes the final page."""
-    facts_json = processed.facts.model_dump_json(indent=2) if processed.facts else None
-    return write_output(ideas, note, processed.page, facts_json)
+    return write_output(ideas, note, processed.page)
 
 
 def copy_artifacts(
@@ -158,6 +162,7 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
 
     touched_ideas: list[Path] = []
     touched_docs: list[Path] = []
+    facts_dir = ideas / FACTS_DIR  # the saved YouTube facts, one file per video
     requeued: list[Requeued] = []
     if opts.requeue:
         requeued, report.not_in_archive = requeue_from_archive(ideas, opts.requeue, dry_run=opts.dry_run)
@@ -250,6 +255,16 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             item.message = "run limit reached"
             log.info("%s: skipped, %s", who, item.message)
             continue
+        vid = video_id(str(note.doc.fm.get("source") or "")) if note.doctype.name == "youtube" else None
+        if vid and svc.youtube is not None:
+            # A clip that must wait for YouTube stays in inbox/ untouched: the next run picks it up.
+            waiting = svc.youtube.wait_needed(
+                vid, facts_dir=facts_dir, refresh=opts.refresh_facts, wait=opts.wait_youtube
+            )
+            if waiting is not None:
+                item.status, item.message = "waiting", f"{waiting.message()} (stays in inbox/)"
+                log.info("%s: waiting, %s", who, item.message)
+                continue
         attempted += 1
         log.info("%s: processing", who)
         if not opts.dry_run:
@@ -258,6 +273,9 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             profile=opts.profile,
             dry_run=opts.dry_run,
             blocked_backends=frozenset(blocked),
+            facts_dir=facts_dir,
+            refresh_facts=opts.refresh_facts,
+            wait_youtube=opts.wait_youtube,
         )
         try:
             processed = process_note(note, svc, popts)
@@ -303,6 +321,11 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             log.exception("%s: failed, %s", who, item.message)
             file_as_failed(note, item.message)
             continue
+        finally:
+            if vid and not opts.dry_run:  # the saved facts are committed, whatever happened next
+                saved = FactsCache(facts_dir).path(vid)
+                if saved.exists():
+                    touched_ideas.append(saved)
 
         item.tokens_in, item.tokens_out = processed.llm.usage.tokens_in, processed.llm.usage.tokens_out
         item.page = processed.filename

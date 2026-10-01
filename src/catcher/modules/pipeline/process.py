@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import cast
 
 from catcher.core.config import Settings
@@ -15,6 +16,7 @@ from catcher.modules.pipeline.inputs import capture_tags, prompt_input
 from catcher.modules.pipeline.render import PageContext, page_name, render_page
 from catcher.modules.pipeline.tags import TagList, load_tags, normalize_tags
 from catcher.modules.pipeline.validate import validate_page
+from catcher.modules.youtube.access import YoutubeAccess, build_access
 from catcher.modules.youtube.checks import SummaryWarning, check_summary, verified_links
 from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, YoutubeFacts, fetch_facts
 from catcher.modules.youtube.urls import video_id
@@ -31,6 +33,9 @@ class Services:
     facts: FactsFetcher = fetch_facts
     glossary: Glossary = field(default_factory=Glossary)
     context: str = ""  # who Epiaku is, for the Channel Application part of YouTube summaries
+    youtube: YoutubeAccess | None = (
+        None  # the saved facts, the gap and the breaker. None: fetch directly (tests)
+    )
 
 
 @dataclass
@@ -38,6 +43,11 @@ class ProcessOptions:
     profile: str | None = None
     dry_run: bool = False
     blocked_backends: frozenset[str] = frozenset()
+    facts_dir: Path | None = (
+        None  # where the saved YouTube facts live (`facts/` in idea-bucket); None: no saving
+    )
+    refresh_facts: bool = False  # fetch again even when facts are saved
+    wait_youtube: bool = False  # sleep through a short gap instead of deferring
 
 
 @dataclass
@@ -53,15 +63,16 @@ class ProcessedPage:
 
 
 def default_services(settings: Settings) -> Services:
-    languages = settings.transcript_language_list
+    access = build_access(settings)
     return Services(
         settings=settings,
         profiles=load_profiles(settings.profiles_file),
         backends=lambda p: make_backend(p, settings),
         tags=load_tags(),
-        facts=lambda vid: fetch_facts(vid, languages=languages),
+        facts=access.fetch,
         glossary=load_glossary(),
         context=load_context(),
+        youtube=access,
     )
 
 
@@ -70,9 +81,18 @@ def check_not_blocked(profile: Profile, opts: ProcessOptions) -> None:
         raise UsageLimitReached("usage limit was reached earlier in this run", backend=profile.backend)
 
 
-def facts_for(note: Note, vid: str, svc: Services) -> YoutubeFacts:
-    log.info("%s: fetching YouTube facts for %s", note_label(note), vid)
-    facts = svc.facts(vid)
+def facts_for(note: Note, vid: str, svc: Services, opts: ProcessOptions) -> YoutubeFacts:
+    log.info("%s: getting the YouTube facts for %s", note_label(note), vid)
+    if svc.youtube is None:
+        facts = svc.facts(vid)
+    else:  # saved facts first, then the gap and the breaker, then YouTube
+        facts = svc.youtube.get(
+            vid,
+            facts_dir=opts.facts_dir,
+            refresh=opts.refresh_facts,
+            write_cache=not opts.dry_run,
+            wait=opts.wait_youtube,
+        )
     log.info(
         "%s: facts fetched (views=%s transcript=%s)",
         note_label(note),
@@ -131,7 +151,7 @@ def _process_youtube(note: Note, svc: Services, opts: ProcessOptions, profile_na
     vid = video_id(str(note.doc.fm.get("source") or ""))
     if not vid:
         raise FactsUnavailable(f"{note.doc_id}: no YouTube video id found")
-    facts = facts_for(note, vid, svc)
+    facts = facts_for(note, vid, svc, opts)
     if not facts.transcript:
         raise FactsUnavailable(f"{note.doc_id}: no transcript available for {vid}")
     result = _reason(note, svc, profile_name, facts)

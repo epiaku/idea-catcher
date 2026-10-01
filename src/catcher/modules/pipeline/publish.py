@@ -2,7 +2,7 @@ from pathlib import Path
 
 from catcher.core.frontmatter import FrontmatterError, load
 from catcher.modules.pipeline.doctypes import DocType
-from catcher.modules.pipeline.inbox import Note, facts_sidecar
+from catcher.modules.pipeline.inbox import Note
 
 
 def find_pages_by_id(out_dir: Path, doc_id: str) -> list[Path]:
@@ -32,14 +32,9 @@ def write_page(docs_repo: Path, doctype: DocType, doc_id: str, filename: str, pa
     return [target, *old]
 
 
-def write_output(ideas_repo: Path, note: Note, page: str, facts_json: str | None = None) -> list[Path]:
-    """Write the final page to `output/<same subfolder and name>`, plus the YouTube facts next to it."""
+def write_output(ideas_repo: Path, note: Note, page: str) -> list[Path]:
+    """Write the final page to `output/<same subfolder and name>`."""
     target = note.output_path(ideas_repo)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(page, encoding="utf-8")
-    touched = [target]
-    if facts_json is not None:
-        sidecar = facts_sidecar(target)
-        sidecar.write_text(facts_json, encoding="utf-8")
-        touched.append(sidecar)
-    return touched
+    return [target]

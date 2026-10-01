@@ -126,6 +126,5 @@ def yt_facts() -> YoutubeFacts:
     info = json.loads((folder / "nGVZS_wUDGM.info.json").read_text())
     captions = facts_mod._parse_vtt_captions((folder / "nGVZS_wUDGM.en.vtt").read_text())
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(facts_mod, "_extract_info", lambda url: info)
-        mp.setattr(facts_mod, "_fetch_transcript", lambda vid, langs: captions)
+        mp.setattr(facts_mod, "_extract", lambda *args, **kwargs: (info, captions))
         return facts_mod.fetch_facts("nGVZS_wUDGM", today=date(2026, 9, 30))

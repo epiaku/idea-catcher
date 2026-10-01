@@ -223,7 +223,6 @@ def test_youtube_without_facts_is_deferred_then_published(repos, make_services, 
     assert (
         final.name == stalled_path.name
     )  # the retry kept the calculated name and overwrote the stalled copy
-    assert final.with_suffix(".youtube.json").exists()
     assert "stage" not in load(final).fm
     assert find(repos.ideas, "archive", "clippings", "yt.md").name == final.name  # not a second archive copy
     assert (repos.docs / "hugo/content/en/docs/idea-bucket/youtube" / final.name).exists()
@@ -623,8 +622,6 @@ def test_requeue_moves_the_original_and_clears_the_stale_output_so_the_document_
     run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(facts=lambda vid: yt_facts))
     archived = find(repos.ideas, "archive", "clippings", "yt.md")
     output = find(repos.ideas, "output", "clippings", "yt.md")
-    sidecar = output.with_suffix(".youtube.json")
-    assert sidecar.exists()
 
     def unavailable(vid):
         raise FactsUnavailable("blocked")  # the run starts, then stalls again
@@ -632,7 +629,6 @@ def test_requeue_moves_the_original_and_clears_the_stale_output_so_the_document_
     run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["yt"]), make_services(facts=unavailable))
     assert not list((repos.ideas / "inbox").rglob("yt*.md"))  # the run took it out of inbox/ ...
     assert archived.exists() and load(output).fm["stage"] == "deferred"  # ... and wrote both folders again
-    assert not sidecar.exists()  # the old facts file did not survive the requeue
     assert sh(repos.ideas, "status", "--porcelain") == ""  # every move and delete was committed
 
 
@@ -663,3 +659,167 @@ def test_requeue_of_a_failed_note_clears_failed_and_its_error_file(repos, make_s
     )
     assert "stage" not in load(find(repos.ideas, "output", "notes", "YouTube walks.md")).fm
     assert sh(repos.ideas, "status", "--porcelain") == ""
+
+
+# ---- YouTube: the saved facts, the gap between calls and the breaker (real git, no network) ---------------
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1_700_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class HttpError429(Exception):
+    status = 429
+
+
+def clip(vid: str) -> str:
+    return f'---\nsource : "https://www.youtube.com/watch?v={vid}"\ncreated: 2026-09-25\n---\nclip\n'
+
+
+def youtube_services(make_services, tmp_path, yt_facts, *, error=None, wait_max_s=1800.0):
+    """Services whose 'YouTube' is a counter, behind the real gate (a 10 minute gap) and the saved facts."""
+    from catcher.modules.youtube.access import YoutubeAccess
+    from catcher.modules.youtube.gate import YoutubeGate
+
+    calls: list[str] = []
+    clock, sleeps = FakeClock(), []
+
+    def fetch(vid):
+        calls.append(vid)
+        if error is not None:
+            raise error
+        return yt_facts.model_copy(update={"video_id": vid, "url": f"https://www.youtube.com/watch?v={vid}"})
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock.now += seconds
+
+    gate = YoutubeGate(tmp_path / "state", min_gap_s=600, jitter_s=0, block_hours=6, clock=clock)
+    services = make_services(facts=fetch)
+    services.youtube = YoutubeAccess(fetch, gate, clock=clock, sleep=sleep, wait_max_s=wait_max_s)
+    return services, calls, clock, sleeps
+
+
+def statuses(report) -> dict[str, str]:
+    return {i.doc_id: i.status for i in report.items if i.doc_class == "youtube"}
+
+
+def test_a_second_clip_inside_the_gap_waits_in_the_inbox_and_the_next_run_takes_it(
+    repos, make_services, yt_facts, tmp_path, sh
+):
+    clips = repos.ideas / "inbox/clippings"
+    (clips / "a.md").write_text(clip("AAAAAAAAAAA"))
+    (clips / "b.md").write_text(clip("BBBBBBBBBBB"))
+    services, calls, clock, _ = youtube_services(make_services, tmp_path, yt_facts)
+
+    first = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    assert sorted(statuses(first).values()) == ["published", "waiting"]
+    [waiting_id] = [k for k, v in statuses(first).items() if v == "waiting"]
+    [waiting_item] = [i for i in first.items if i.doc_id == waiting_id]
+    assert "next call allowed at" in waiting_item.message and "stays in inbox/" in waiting_item.message
+    assert len(calls) == 1
+    left_in_inbox = [p.name for p in clips.glob("*.md") if p.name in ("a.md", "b.md")]
+    assert len(left_in_inbox) == 1  # untouched: no archive copy, no output, nothing to requeue
+    assert not list((repos.ideas / "failed").rglob("*")) if (repos.ideas / "failed").exists() else True
+
+    clock.now += 601  # the gap has passed: a plain run takes the waiting clip
+    second = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    assert statuses(second) == {waiting_id: "published"}
+    assert sorted(calls) == ["AAAAAAAAAAA", "BBBBBBBBBBB"]
+    assert not [p for p in clips.glob("*.md") if p.name in ("a.md", "b.md")]
+    assert sorted(p.name for p in (repos.ideas / "facts").glob("*.json")) == [
+        "AAAAAAAAAAA.json",
+        "BBBBBBBBBBB.json",
+    ]
+
+
+def test_the_saved_facts_are_committed_with_the_run(repos, make_services, yt_facts, tmp_path, sh):
+    (repos.ideas / "inbox/clippings/a.md").write_text(clip("AAAAAAAAAAA"))
+    services, _, _, _ = youtube_services(make_services, tmp_path, yt_facts)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    assert report.committed["ideas"] is True
+    assert "facts/AAAAAAAAAAA.json" in sh(repos.ideas, "ls-files", "facts")
+    assert sh(repos.ideas, "status", "--porcelain") == ""  # nothing is left uncommitted
+
+
+def test_a_requeue_or_a_rerun_never_asks_youtube_again(repos, make_services, yt_facts, tmp_path):
+    (repos.ideas / "inbox/clippings/a.md").write_text(clip("AAAAAAAAAAA"))
+    services, calls, clock, _ = youtube_services(make_services, tmp_path, yt_facts)
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    clock.now += 7 * 24 * 3600
+    for _ in range(2):
+        report = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["a"]), services)
+        assert statuses(report) == {"AAAAAAAAAAA": "published"}
+    assert calls == ["AAAAAAAAAAA"]  # one call to YouTube, ever
+
+
+def test_refresh_facts_asks_youtube_again(repos, make_services, yt_facts, tmp_path):
+    (repos.ideas / "inbox/clippings/a.md").write_text(clip("AAAAAAAAAAA"))
+    services, calls, clock, _ = youtube_services(make_services, tmp_path, yt_facts)
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    clock.now += 700
+    run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["a"], refresh_facts=True), services)
+    assert calls == ["AAAAAAAAAAA", "AAAAAAAAAAA"]
+
+
+def test_a_dry_run_saves_no_facts(repos, make_services, yt_facts, tmp_path):
+    (repos.ideas / "inbox/clippings/a.md").write_text(clip("AAAAAAAAAAA"))
+    services, calls, _, _ = youtube_services(make_services, tmp_path, yt_facts)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), services)
+    assert statuses(report) == {"AAAAAAAAAAA": "would_publish"} and len(calls) == 1
+    assert not (repos.ideas / "facts").exists()  # a dry run changes no files in the repos
+
+
+def test_a_429_opens_the_breaker_and_every_other_clip_waits_without_a_call(
+    repos, make_services, yt_facts, tmp_path
+):
+    clips = repos.ideas / "inbox/clippings"
+    (clips / "a.md").write_text(clip("AAAAAAAAAAA"))
+    (clips / "b.md").write_text(clip("BBBBBBBBBBB"))
+    services, calls, clock, _ = youtube_services(make_services, tmp_path, yt_facts, error=HttpError429("429"))
+
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    assert sorted(statuses(report).values()) == ["deferred", "waiting"]
+    [deferred] = [i for i in report.items if i.status == "deferred"]
+    assert "YouTube blocked until" in deferred.message
+    assert len(calls) == 1  # the one call that got the 429, and no more
+
+    clock.now += 3 * 3600  # hours later the gap is long gone, but the breaker is still open
+    again = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    assert set(statuses(again).values()) == {"waiting"}
+    assert "YouTube blocked until" in again.items[0].message
+    assert len(calls) == 1
+
+
+def test_wait_youtube_sleeps_through_the_gap_so_one_run_does_both_clips(
+    repos, make_services, yt_facts, tmp_path
+):
+    clips = repos.ideas / "inbox/clippings"
+    (clips / "a.md").write_text(clip("AAAAAAAAAAA"))
+    (clips / "b.md").write_text(clip("BBBBBBBBBBB"))
+    services, calls, _, sleeps = youtube_services(make_services, tmp_path, yt_facts)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(wait_youtube=True), services)
+    assert sorted(statuses(report).values()) == ["published", "published"]
+    assert len(calls) == 2 and len(sleeps) == 1 and 599 < sleeps[0] < 603
+
+
+def test_wait_youtube_still_defers_a_wait_longer_than_the_limit(repos, make_services, yt_facts, tmp_path):
+    clips = repos.ideas / "inbox/clippings"
+    (clips / "a.md").write_text(clip("AAAAAAAAAAA"))
+    (clips / "b.md").write_text(clip("BBBBBBBBBBB"))
+    services, calls, _, sleeps = youtube_services(make_services, tmp_path, yt_facts, wait_max_s=60)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(wait_youtube=True), services)
+    assert sorted(statuses(report).values()) == ["published", "waiting"] and sleeps == [] and len(calls) == 1
+
+
+def test_notes_and_chats_never_wait_for_youtube(repos, make_services, yt_facts, tmp_path):
+    (repos.ideas / "inbox/clippings/a.md").write_text(clip("AAAAAAAAAAA"))
+    services, calls, _, _ = youtube_services(make_services, tmp_path, yt_facts)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    assert {i.doc_class for i in report.items} >= {"note", "ai-chat", "youtube"}
+    assert all(i.status == "published" for i in report.items)  # the clip, the note and the chat
+    assert calls == ["AAAAAAAAAAA"]

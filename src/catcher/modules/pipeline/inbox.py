@@ -125,11 +125,6 @@ def new_id() -> str:
     return secrets.token_hex(3)
 
 
-def facts_sidecar(page_path: Path) -> Path:
-    """The YouTube facts file that sits next to a final page in `output/`."""
-    return page_path.with_suffix(".youtube.json")
-
-
 def captured_date(fm: dict[str, Any], now: datetime) -> str:
     raw = str(fm.get("captured") or fm.get("created") or "")[:10]
     try:
@@ -484,7 +479,7 @@ def requeue_from_archive(
     from scratch. Returns what was found and the queries that matched nothing in `archive/`.
 
     The move keeps the subfolder and the calculated name, and everything an earlier run left behind is
-    deleted: the working copy in `output/` (with its facts file) and, for a failed document, the copy in
+    deleted: the working copy in `output/` and, for a failed document, the copy in
     `failed/` with its `.error.txt`. So the document is in one place only, `inbox/`, until the run starts.
     The run then writes `archive/` and `output/` again under the same name, and overwrites the page in
     epiaku-docs. A name that `inbox/` already holds is left alone.
@@ -517,7 +512,7 @@ def requeue_from_archive(
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(path, dest)
             touched = [path, dest]
-            for stale in (output, facts_sidecar(output), failed, failed.with_suffix(".error.txt")):
+            for stale in (output, failed, failed.with_suffix(".error.txt")):
                 if stale.exists():
                     stale.unlink()
                     touched.append(stale)

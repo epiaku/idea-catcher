@@ -1,11 +1,15 @@
 import html
+import json
 import logging
 import re
+import time
 from collections.abc import Callable, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, cast
 
 from pydantic import BaseModel
+
+from catcher.modules.youtube.gate import is_block_error
 
 log = logging.getLogger("catcher.youtube")
 
@@ -41,6 +45,9 @@ class YoutubeFacts(BaseModel):
     chapters: list[Chapter] = []
     transcript: list[Segment] | None = None
     fetched_at: str
+    fetched_utc: str | None = (
+        None  # when it was fetched, to the second: a video without captions is asked again after a day
+    )
 
     def transcript_text(self) -> str | None:
         if not self.transcript:
@@ -52,25 +59,11 @@ class FactsUnavailable(Exception):
     pass
 
 
+class FactsDeferred(FactsUnavailable):
+    """Not now: the gap between two YouTube calls has not passed, or the breaker is open. Try again later."""
+
+
 FactsFetcher = Callable[[str], YoutubeFacts]
-
-
-def _extract_info(url: str) -> dict[str, Any]:
-    import yt_dlp
-
-    params = cast(Any, {"skip_download": True, "quiet": True, "no_warnings": True})
-    with yt_dlp.YoutubeDL(params) as ydl:
-        return cast(dict[str, Any], ydl.sanitize_info(ydl.extract_info(url, download=False)))
-
-
-def _fetch_transcript(video_id: str, languages: Sequence[str]) -> list[Segment] | None:
-    from youtube_transcript_api import NoTranscriptFound, TranscriptsDisabled, YouTubeTranscriptApi
-
-    try:
-        fetched = YouTubeTranscriptApi().fetch(video_id, languages=list(languages))
-    except (TranscriptsDisabled, NoTranscriptFound):
-        return None
-    return [Segment(start_s=snippet.start, text=snippet.text) for snippet in fetched]
 
 
 def _parse_json3_captions(data: dict[str, Any]) -> list[Segment]:
@@ -104,76 +97,84 @@ def _parse_vtt_captions(vtt: str) -> list[Segment]:
     return segments
 
 
-def _fetch_transcript_via_ytdlp(video_id: str, languages: Sequence[str]) -> list[Segment] | None:
-    """A second, independent path to the same captions, for when `youtube_transcript_api` fails
-    outright (for example a blocked request). yt-dlp hits a different YouTube endpoint, so a
-    block on one does not always mean the other is blocked too.
-
-    The caption file itself is fetched through yt-dlp's own HTTP client (`ydl.urlopen`), not a
-    plain `urllib` request: YouTube's caption endpoint expects the browser-like headers yt-dlp
-    already sends for its other requests, and a bare request without them gets rate-limited too.
-    """
-    import json
-
-    import yt_dlp
-
-    params = cast(
-        Any,
-        {
-            "skip_download": True,
-            "quiet": True,
-            "no_warnings": True,
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitleslangs": list(languages),
-            "subtitlesformat": "json3",
-        },
-    )
-    with yt_dlp.YoutubeDL(params) as ydl:
-        info = cast(
-            dict[str, Any],
-            ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False),
-        )
-        tracks = info.get("requested_subtitles") or {}
-        track = next((tracks[lang] for lang in languages if lang in tracks), None)
-        if track is None:
-            return None
+def _captions_from(
+    ydl: Any, info: dict[str, Any], languages: Sequence[str], delay_s: float, sleep: Callable[[float], None]
+) -> list[Segment] | None:
+    """The transcript, from the caption track yt-dlp already found: one more request."""
+    tracks = info.get("requested_subtitles") or {}
+    track = next((tracks[lang] for lang in languages if lang in tracks), None)
+    if track is None:
+        return None
+    sleep(delay_s)  # the caption file is a request too: pace it like the others
+    try:
         data = json.loads(ydl.urlopen(track["url"]).read())
+    except Exception as e:
+        if is_block_error(e):
+            raise  # a block must reach the breaker, not hide as "no captions"
+        log.warning("could not read the caption file: %s", e)
+        return None
     return _parse_json3_captions(data) or None
 
 
-def _best_effort_transcript(video_id: str, languages: Sequence[str]) -> list[Segment] | None:
-    """Try both transcript sources; give up quietly rather than failing this whole fetch.
+def _extract(
+    video_id: str,
+    *,
+    languages: Sequence[str],
+    request_delay_s: float,
+    skip_manifests: bool,
+    sleep: Callable[[float], None],
+) -> tuple[dict[str, Any], list[Segment] | None]:
+    """ONE yt-dlp extraction for everything: the info and the caption track (the watch page, the player
+    data, and the caption file). Every request is paced, and yt-dlp's own retries are kept to one, because
+    retrying while YouTube is saying no only makes the block longer."""
+    import yt_dlp
 
-    A blocked or failed fetch is treated the same as "this video genuinely has no captions":
-    `fetch_facts()` still returns the rest (title, counts, description) instead of raising, so
-    the caller gets real facts even when the transcript is missing. What the caller then does
-    without a transcript is its own call: `_process_youtube()` in `pipeline/process.py` defers
-    the document rather than asking the LLM to summarize from a title and description alone.
-    """
-    try:
-        return _fetch_transcript(video_id, languages)
-    except Exception as e:
-        log.warning("transcript fetch failed for %s, trying yt-dlp instead: %s", video_id, e)
-    try:
-        transcript = _fetch_transcript_via_ytdlp(video_id, languages)
-    except Exception as e:
-        log.warning("yt-dlp transcript fallback failed for %s too, continuing without one: %s", video_id, e)
-        return None
-    if transcript is None:
-        log.warning("yt-dlp found no captions for %s either, continuing without a transcript", video_id)
-    return transcript
+    params: dict[str, Any] = {
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": list(languages),
+        "subtitlesformat": "json3",
+        "sleep_interval_requests": request_delay_s,
+        "retries": 1,
+        "extractor_retries": 1,
+    }
+    if skip_manifests:  # we never download the video, so the list of formats is not needed
+        params["extractor_args"] = {"youtube": {"skip": ["hls", "dash", "translated_subs"]}}
+        params["ignore_no_formats_error"] = True
+    with yt_dlp.YoutubeDL(cast(Any, params)) as ydl:
+        info = cast(
+            dict[str, Any], ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+        )
+        transcript = _captions_from(ydl, info, languages, request_delay_s, sleep)
+    return info, transcript
 
 
 def fetch_facts(
-    video_id: str, *, languages: Sequence[str] = ("en",), today: date | None = None
+    video_id: str,
+    *,
+    languages: Sequence[str] = ("en",),
+    today: date | None = None,
+    now: datetime | None = None,
+    request_delay_s: float = 10.0,
+    skip_manifests: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> YoutubeFacts:
+    """Fetch the facts of one video from YouTube: about 3 paced requests (the watch page, the player data
+    and the caption file). The caller decides whether it may (the gap, the breaker, the saved facts)."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        info = _extract_info(url)
+        info, transcript = _extract(
+            video_id,
+            languages=languages,
+            request_delay_s=request_delay_s,
+            skip_manifests=skip_manifests,
+            sleep=sleep,
+        )
     except Exception as e:
         raise FactsUnavailable(f"yt-dlp failed for {video_id}: {e}") from e
-    transcript = _best_effort_transcript(video_id, languages)
     raw_date = str(info.get("upload_date") or "")
     return YoutubeFacts(
         video_id=video_id,
@@ -192,4 +193,5 @@ def fetch_facts(
         ],
         transcript=transcript,
         fetched_at=(today or date.today()).isoformat(),
+        fetched_utc=(now or datetime.now(UTC)).isoformat(timespec="seconds"),
     )

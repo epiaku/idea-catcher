@@ -13,7 +13,6 @@ from catcher.modules.pipeline.inbox import (
     assign_name,
     calculated_stem,
     copy_artifact,
-    facts_sidecar,
     is_snapshot_of,
     mark_deferred,
     move_to_duplicates,
@@ -332,11 +331,6 @@ def test_move_to_duplicates_archives_moves_and_records_the_winner(tmp_path):
     assert fm["duplicate_of"] == "clippings/long.md" and fm["original_filename"] == "short.md"
     assert load(moved).body == "short\n" and moved in touched
     assert (tmp_path / "inbox/clippings/long.md").exists()
-
-
-def test_the_facts_sidecar_sits_next_to_the_page(tmp_path):
-    path = tmp_path / "output/clippings/A video.md"
-    assert facts_sidecar(path) == tmp_path / "output/clippings/A video.youtube.json"
 
 
 def chat_turns(n: int, last: str = "the last answer") -> str:

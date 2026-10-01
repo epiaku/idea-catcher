@@ -5,7 +5,6 @@ from typer.testing import CliRunner
 from catcher.cli import app
 from catcher.core.frontmatter import Doc, dump, load
 from catcher.modules.pipeline.doctypes import NOTE, YOUTUBE
-from catcher.modules.pipeline.inbox import facts_sidecar
 from catcher.modules.pipeline.publish import find_pages_by_id, write_output, write_page
 
 REPO = Path(__file__).parents[2]
@@ -50,18 +49,12 @@ def test_ids_match_exactly_even_with_underscores(tmp_path):
     assert [p.name for p in find_pages_by_id(out, "ab")] == ["20260927_ab_y.md"]
 
 
-def test_write_output_keeps_the_subfolder_and_name_and_writes_the_facts_next_to_it(tmp_path, make_note):
+def test_write_output_keeps_the_subfolder_and_name(tmp_path, make_note):
     note = make_note("youtube", doc_id="MBPHU7aaklM", root=tmp_path)
-    touched = write_output(tmp_path, note, page("MBPHU7aaklM"), facts_json="{}")
+    touched = write_output(tmp_path, note, page("MBPHU7aaklM"))
     out = tmp_path / "output/notes/MBPHU7aaklM.md"
     assert load(out).fm == {"title": "T", "id": "MBPHU7aaklM"}
-    assert facts_sidecar(out).read_text() == "{}"
-    assert touched == [out, facts_sidecar(out)]
-
-
-def test_write_output_without_facts_writes_only_the_page(tmp_path, make_note):
-    note = make_note("note", root=tmp_path)
-    assert write_output(tmp_path, note, page("a7b2c9")) == [tmp_path / "output/notes/a7b2c9.md"]
+    assert touched == [out]
 
 
 def test_render_command_writes_the_page(tmp_path, make_note, monkeypatch):

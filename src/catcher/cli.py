@@ -29,7 +29,9 @@ from catcher.modules.pipeline.process import ProcessOptions, default_services, p
 from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.pipeline.tags import load_tags
-from catcher.modules.youtube.facts import FactsUnavailable, fetch_facts
+from catcher.modules.youtube.access import build_access
+from catcher.modules.youtube.cache import FACTS_DIR
+from catcher.modules.youtube.facts import FactsUnavailable
 from catcher.modules.youtube.urls import video_id
 
 app = typer.Typer(
@@ -128,6 +130,15 @@ def _read_document(path: Path) -> Note:
     raise typer.Exit(2)
 
 
+def _facts_dir_of(document: Path) -> Path | None:
+    """Where `render` may save YouTube facts: `facts/` of the idea-bucket the document is in. A document
+    that is not in an `inbox/` gets no saving, so a stray path never writes into the wrong repo."""
+    parts = document.resolve().parts
+    if "inbox" not in parts:
+        return None
+    return Path(*parts[: parts.index("inbox")]) / FACTS_DIR
+
+
 def _check_ideas_inbox(ideas: Path) -> None:
     if not (ideas / "inbox").is_dir():
         log.error("no inbox/ folder in %s: check --ideas or IDEAS_REPO", ideas)
@@ -179,7 +190,7 @@ def render(
     docs_repo = docs or settings.docs_repo
     note = _read_document(document)
     note.name = f"{calculated_stem(str(note.doc.fm['captured']), secrets.token_hex(3), name_title(note))}.md"
-    opts = ProcessOptions(profile=profile)
+    opts = ProcessOptions(profile=profile, facts_dir=_facts_dir_of(document))
     try:
         processed = process_note(note, default_services(settings), opts)
     except (LlmError, UnknownProfile) as e:
@@ -217,10 +228,30 @@ def run_pipeline_cmd(
     limit: Annotated[int | None, typer.Option("--limit", help="process at most N notes")] = None,
     file: FileOpt = None,
     requeue: RequeueOpt = None,
+    refresh_facts: Annotated[
+        bool, typer.Option("--refresh-facts", help="fetch the YouTube facts again even when they are saved")
+    ] = False,
+    wait_youtube: Annotated[
+        bool,
+        typer.Option(
+            "--wait-youtube",
+            help="when a clip must wait for the gap between YouTube calls, sleep (up to YOUTUBE_WAIT_MAX_S) "
+            "instead of leaving it in inbox/ for a later run",
+        ),
+    ] = False,
 ) -> None:
     """Process the documents in inbox/: publish pages, file failures and duplicates, and commit."""
     settings = Settings()
-    opts = RunOptions(profile=profile, dry_run=dry_run, push=push, limit=limit, only=file, requeue=requeue)
+    opts = RunOptions(
+        profile=profile,
+        dry_run=dry_run,
+        push=push,
+        limit=limit,
+        only=file,
+        requeue=requeue,
+        refresh_facts=refresh_facts,
+        wait_youtube=wait_youtube,
+    )
     report = run_pipeline(
         ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
     )
@@ -256,10 +287,14 @@ def youtube_group() -> None:
 
 @youtube_app.command("facts")
 def youtube_facts(url: str) -> None:
-    """Print the facts (counts, description, transcript) for one video as JSON."""
+    """Print the facts (counts, description, transcript) for one video as JSON.
+
+    It goes through the same gap and breaker as a run (YOUTUBE_MIN_GAP_S, YOUTUBE_BLOCK_HOURS), and saves
+    nothing. To try it twice in a row, set YOUTUBE_MIN_GAP_S=0 for the second call.
+    """
     vid = video_id(url) or url
     try:
-        facts = fetch_facts(vid, languages=Settings().transcript_language_list)
+        facts = build_access(Settings()).get(vid, facts_dir=None)
     except FactsUnavailable as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(2) from e
