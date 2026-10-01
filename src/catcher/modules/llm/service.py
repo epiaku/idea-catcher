@@ -40,6 +40,10 @@ class BackendUnavailable(LlmError):
     pass
 
 
+class TransientBackendError(BackendUnavailable):
+    """A failure that may not happen on the next call (a 5xx, a timeout, a dropped connection)."""
+
+
 class UsageLimitReached(BackendUnavailable):
     def __init__(self, message: str, backend: str) -> None:
         super().__init__(message)

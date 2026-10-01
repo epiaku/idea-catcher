@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     llm_timeout_s: int = 600
+    llm_max_attempts: int = 5  # calls per request on a transient error (5xx, timeout); 1 turns retrying off
+    llm_retry_wait_s: float = 2.0  # wait before the 2nd attempt, doubled before each one after it
     transcript_languages: str = "en"
     git_author_name: str = "idea-catcher"
     git_author_email: str = "idea-catcher@users.noreply.github.com"

@@ -143,3 +143,67 @@ def test_make_backend_builds_all_three():
     free = make_backend(Profile(backend="freellmapi"), settings)
     assert (free.name, free.json_mode) == ("freellmapi", False)
     assert make_backend(Profile(backend="fake"), settings).name == "fake"
+
+
+def retrying_backend(max_attempts: int = 5) -> tuple[OpenAiCompatibleBackend, list[float]]:
+    waits: list[float] = []
+    backend = OpenAiCompatibleBackend(
+        "freellmapi", BASE, "k", max_attempts=max_attempts, retry_wait_s=2, sleep=waits.append
+    )
+    return backend, waits
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "failure",
+    [error(502), error(503), httpx.ConnectError("no route"), httpx.ReadTimeout("slow")],
+    ids=["502", "503", "connection", "timeout"],
+)
+def test_a_transient_failure_is_retried_until_a_call_works(failure):
+    respx.post(URL).mock(side_effect=[failure, failure, httpx.Response(200, json=completion("{}"))])
+    backend, waits = retrying_backend()
+    assert backend.complete("p", model="m", task="ai-chat").text == "{}"
+    assert waits == [2, 4]  # the wait doubles
+
+
+@respx.mock
+def test_it_gives_up_after_the_last_attempt_with_the_same_error_as_before():
+    route = respx.post(URL).mock(return_value=error(502, "upstream"))
+    backend, waits = retrying_backend(max_attempts=5)
+    with pytest.raises(BackendUnavailable, match="502") as info:
+        backend.complete("p", model="m", task="ai-chat")
+    assert not isinstance(info.value, UsageLimitReached)
+    assert route.call_count == 5 and waits == [2, 4, 8, 16]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "status, message, code",
+    [
+        (402, "x", None),
+        (429, "Project budget limit reached", "billing_hard_limit_reached"),
+        (429, "slow down", "rate_limit_exceeded"),
+        (401, "bad key", None),
+        (413, "too large", None),
+    ],
+)
+def test_failures_that_cannot_pass_next_time_are_not_retried(status, message, code):
+    route = respx.post(URL).mock(return_value=error(status, message, code))
+    backend, waits = retrying_backend()
+    with pytest.raises(BackendUnavailable):
+        backend.complete("p", model="m", task="ai-chat")
+    assert route.call_count == 1 and waits == []
+
+
+@respx.mock
+def test_one_attempt_turns_retrying_off():
+    route = respx.post(URL).mock(return_value=error(502))
+    backend, waits = retrying_backend(max_attempts=1)
+    with pytest.raises(BackendUnavailable):
+        backend.complete("p", model="m", task="ai-chat")
+    assert route.call_count == 1 and waits == []
+
+
+def test_the_settings_reach_the_backends():
+    backend = make_backend(Profile(backend="freellmapi"), Settings(llm_max_attempts=3, llm_retry_wait_s=0.5))
+    assert (backend.max_attempts, backend.retry_wait_s) == (3, 0.5)  # type: ignore[attr-defined]

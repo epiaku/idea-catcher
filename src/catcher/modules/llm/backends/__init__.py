@@ -14,6 +14,8 @@ def make_backend(profile: Profile, settings: Settings) -> Backend:
             settings.freellmapi_url,
             settings.freellmapi_api_key,
             timeout_s=settings.llm_timeout_s,
+            max_attempts=settings.llm_max_attempts,
+            retry_wait_s=settings.llm_retry_wait_s,
         )
     if profile.backend == "openai":
         if not settings.openai_api_key:
@@ -24,5 +26,7 @@ def make_backend(profile: Profile, settings: Settings) -> Backend:
             settings.openai_api_key,
             json_mode=True,
             timeout_s=settings.llm_timeout_s,
+            max_attempts=settings.llm_max_attempts,
+            retry_wait_s=settings.llm_retry_wait_s,
         )
     raise BackendUnavailable(f"backend {profile.backend!r} is not available")
