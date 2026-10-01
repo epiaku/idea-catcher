@@ -1,0 +1,1 @@
+Maak het mogelijk om de Notes ook in het Nederlands op te slaan en in het te versturen. De AI moet dan zelf ontdekken of het Nederlands of Engels is. Als het Nederlands is laat het dan automatisch vertalen naar het Engels.
