@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from catcher import __version__
 from catcher.core.git import commit_paths, pull, push
 from catcher.modules.llm.profiles import UnknownProfile
 from catcher.modules.llm.service import BackendUnavailable, BudgetExhausted, InvalidOutput, UsageLimitReached
@@ -131,7 +132,8 @@ def copy_artifacts(
 def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     report = RunReport()
     log.info(
-        "run started: ideas=%s docs=%s profile=%s dry_run=%s push=%s limit=%s",
+        "run started: version=%s ideas=%s docs=%s profile=%s dry_run=%s push=%s limit=%s",
+        __version__,
         ideas,
         docs,
         opts.profile or "class default",

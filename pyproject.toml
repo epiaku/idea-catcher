@@ -1,6 +1,6 @@
 [project]
 name = "idea-catcher"
-version = "0.1.0"
+dynamic = ["version"]  # the one place for it: `__version__` in src/catcher/__init__.py
 description = "Turns idea-bucket captures into epiaku-docs pages"
 requires-python = ">=3.12"
 dependencies = [
@@ -32,6 +32,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/catcher/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/catcher"]
