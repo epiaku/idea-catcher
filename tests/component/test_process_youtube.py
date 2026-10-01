@@ -44,7 +44,7 @@ def test_youtube_page_has_python_metrics_and_embed(make_note, make_services, yt_
         "{{< youtube-lite nGVZS_wUDGM `I blew up a coaching business to prove its not luck` >}}" in doc.body
     )
     assert "[6:50] stadium, and make a video about getting" in chats.prompts[0]
-    assert processed.llm.prompt_version == "youtube-5"
+    assert processed.llm.prompt_version == "youtube-6"
     assert "## 🛠️ Tech Stack" in doc.body and "Tools and Services" not in doc.body
 
 
@@ -105,7 +105,7 @@ def test_gemini_youtube_chat_is_converted_in_one_call_with_no_youtube_api_call_a
     assert "Metrics" not in processed.page  # no facts, so no metrics table on the page
     assert processed.facts is None
     assert parse(processed.page).fm["video_id"] == "nGVZS_wUDGM"
-    assert processed.llm.prompt_version == "youtube-gemini-6"
+    assert processed.llm.prompt_version == "youtube-gemini-7"
     assert "## 🛠️ Tech Stack" in processed.page and "Tools and Services" not in processed.page
 
 

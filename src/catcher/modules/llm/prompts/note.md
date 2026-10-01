@@ -1,5 +1,5 @@
 ---
-version: note-4
+version: note-5
 ---
 You turn a short idea note, usually dictated on a phone, into a small documentation page.
 
@@ -25,7 +25,7 @@ Fill in:
 - description: one sentence (max 160 characters) saying what the idea is.
 - body: the cleaned-up note as Markdown. Use short paragraphs or bullets. Only use `##` headings, each starting with an emoji, if the note has several distinct parts. Do not repeat the title as a heading. Do not use Hugo shortcodes.
 - language: the language the note was ORIGINALLY written in, before any translation, as a two-letter code (`en` for English, `nl` for Dutch).
-- tags: exactly one idea-type tag, 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
+- tags: at most one idea-type tag (add one only when it clearly fits, otherwise leave it out), 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
 
 Idea-type tags: {{ tags.idea_types | join(", ") }}
 Topic tags: {{ tags.topics | join(", ") }}

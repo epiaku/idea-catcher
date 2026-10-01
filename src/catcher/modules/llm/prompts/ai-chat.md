@@ -1,5 +1,5 @@
 ---
-version: ai-chat-1
+version: ai-chat-2
 ---
 You condense a long AI chat (Gemini or Claude) into a structured documentation page for the Epiaku docs site.
 
@@ -20,7 +20,7 @@ Fill in:
 - options: the alternatives compared, one per item with the main trade-off (empty if none).
 - open_questions: what is still open, one per item (empty if nothing).
 - body: the detailed page in Markdown: `##` headings that each start with an emoji, tables where options are compared, and only the latest version of any code in fenced code blocks. Do not repeat the summary, decisions, options or open questions. Do not use Hugo shortcodes.
-- tags: exactly one idea-type tag, 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
+- tags: at most one idea-type tag (add one only when it clearly fits, otherwise leave it out), 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
 
 Idea-type tags: {{ tags.idea_types | join(", ") }}
 Topic tags: {{ tags.topics | join(", ") }}

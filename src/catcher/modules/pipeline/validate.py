@@ -33,8 +33,8 @@ def validate_page(page: str, tags: TagList) -> list[str]:
         if unknown:
             problems.append(f"tags not in the allowed list: {', '.join(unknown)}")
         idea_types = [t for t in page_tags if t in tags.idea_types]
-        if len(idea_types) != 1:
-            problems.append(f"need exactly one idea-type tag, found {len(idea_types)}")
+        if len(idea_types) > 1:  # an idea-type tag is optional, but a page has at most one
+            problems.append(f"at most one idea-type tag is allowed, found {len(idea_types)}")
 
     if not doc.body.strip():
         problems.append("page body is empty")

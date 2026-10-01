@@ -1,5 +1,5 @@
 ---
-version: youtube-5
+version: youtube-6
 ---
 You summarize a YouTube video for the Epiaku documentation site. You cannot watch the video: work only from the facts and the transcript below. Never invent views, likes, subscriber counts or dates, because code adds those.
 
@@ -38,7 +38,7 @@ Fill in:
 - tips: tips that are shared, each with a short explanation and how to apply it.
 - channel_application: how to apply the lessons to Epiaku{% if context %}, using the context about Epiaku above. Give 2 to 4 concrete suggestions that fit it, as a Markdown bulleted list with one bullet (starting with "- ") per suggestion, and name only what the video really teaches. If the video does not fit Epiaku, say so in one sentence instead of forcing a fit{% else %}: the YouTube channel, Vibe Coding Tech Stack demos, and building phone apps or small SaaS applications, as a Markdown bulleted list with one bullet per suggestion{% endif %}.
 - links: the links in the description that the video itself points to for its code, sample data, documentation or other resources it uses, each with a short label. Copy each URL exactly as written in the description. Leave out social media, sponsors, affiliate links, merchandise, newsletters, courses for sale and other videos. Leave it empty if there are none.
-- tags: exactly one idea-type tag, 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
+- tags: at most one idea-type tag (add one only when it clearly fits, otherwise leave it out), 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
 
 When you mention a moment in the video, add its timestamp from the transcript (for example 12:40). Do not use Hugo shortcodes.
 

@@ -44,12 +44,16 @@ def test_tag_rules():
     assert "tags not in the allowed list: apps" in validate_page(
         page({**GOOD_FM, "tags": ["app-idea", "apps"]}), TAGS
     )
-    assert "need exactly one idea-type tag, found 0" in validate_page(
-        page({**GOOD_FM, "tags": ["obsidian"]}), TAGS
-    )
-    assert "need exactly one idea-type tag, found 2" in validate_page(
+    assert "at most one idea-type tag is allowed, found 2" in validate_page(
         page({**GOOD_FM, "tags": ["app-idea", "todo"]}), TAGS
     )
+
+
+def test_an_idea_type_tag_is_optional():
+    for tags in (["obsidian"], ["app-idea"], ["app-idea", "obsidian"]):
+        assert validate_page(page({**GOOD_FM, "tags": tags}), TAGS) == []
+    fm_without_tags = {k: v for k, v in GOOD_FM.items() if k != "tags"}
+    assert validate_page(page(fm_without_tags), TAGS) == []
 
 
 def test_empty_body():

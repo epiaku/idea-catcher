@@ -1,5 +1,5 @@
 ---
-version: web-clip-1
+version: web-clip-2
 ---
 You condense a web page that the author clipped with the Obsidian Web Clipper (an article, blog post, documentation page or tutorial) into a structured documentation page for the Epiaku docs site.
 
@@ -19,7 +19,7 @@ Fill in:
 - key_points: the concrete facts, numbers, steps or claims worth remembering, one per item (empty if there are none).
 - ideas_to_use: how the author could use this in their own projects, one per item, concrete and short (empty if nothing fits).
 - body: the detailed page in Markdown: `##` headings that each start with an emoji, tables where things are compared, code in fenced code blocks. Do not repeat the summary, key points or ideas. Do not use Hugo shortcodes.
-- tags: exactly one idea-type tag, 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
+- tags: at most one idea-type tag (add one only when it clearly fits, otherwise leave it out), 1 to 4 topic tags and at most one project tag, chosen ONLY from the lists below.
 
 Idea-type tags: {{ tags.idea_types | join(", ") }}
 Topic tags: {{ tags.topics | join(", ") }}

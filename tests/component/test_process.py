@@ -43,12 +43,22 @@ def test_capture_tags_are_merged_and_unknown_tags_dropped(make_note, make_servic
     assert processed.dropped_tags == ["nonsense"]
 
 
-def test_page_without_an_idea_type_has_a_problem(make_note, make_services):
+def test_a_page_without_an_idea_type_is_fine(make_note, make_services):
+    """The idea-type tag is optional: a page with only a topic tag is published, not failed."""
     reply = json.dumps({**CANNED["note"], "tags": ["obsidian"]})
     processed = process_note(
         make_note("note"), make_services(note_backend=FakeBackend([reply])), ProcessOptions()
     )
-    assert processed.problems == ["need exactly one idea-type tag, found 0"]
+    assert processed.problems == []
+    assert parse(processed.page).fm["tags"] == ["obsidian"]
+
+
+def test_a_page_with_no_tags_at_all_is_fine(make_note, make_services):
+    reply = json.dumps({**CANNED["note"], "tags": []})
+    processed = process_note(
+        make_note("note"), make_services(note_backend=FakeBackend([reply])), ProcessOptions()
+    )
+    assert processed.problems == []
 
 
 def test_blocked_backend_is_not_called(make_note, make_services):
@@ -68,7 +78,7 @@ def test_a_web_clip_uses_its_own_prompt_the_clippings_profile_and_its_own_folder
     note = make_note("web-clip", doc_id="a1b2c3d4e5f6", source="https://example.com/blog/hugo")
     processed = process_note(note, make_services(chat_backend=chats), ProcessOptions())
     assert processed.problems == []
-    assert processed.llm.profile == "clippings" and processed.llm.prompt_version == "web-clip-1"
+    assert processed.llm.profile == "clippings" and processed.llm.prompt_version == "web-clip-2"
     assert "<page>" in chats.prompts[0]  # the web-clip prompt, not the chat or note prompt
     assert "## 🔑 Key Points" in processed.page and "Fake Web Clip" in processed.page
 
