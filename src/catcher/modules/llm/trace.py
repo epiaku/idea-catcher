@@ -69,6 +69,13 @@ class TraceStore:
         path = self.path_for(target_rel)
         old = self._read(path) if path.is_file() else None
         if old is not None and any(a.reply is not None for a in old.attempts):
+            if old.outcome == "ok" and model.outcome != "ok":
+                log.warning(
+                    "keeping the existing trace %s: it holds a good reply and the new call ended %s",
+                    path,
+                    model.outcome,
+                )
+                return path
             if not any(a.reply is not None for a in model.attempts):
                 log.warning(
                     "keeping the existing trace %s: it holds replies and the new one holds none", path
@@ -85,16 +92,21 @@ class TraceStore:
         _write(path, model)
         return path
 
-    def mark_unusable(self, target_rel: Path, *, reason: str) -> bool:
+    def mark_unusable(
+        self, path: Path, *, reason: str, output: dict[str, Any], content_key: str, backend: str
+    ) -> bool:
         """The reply of this `ok` trace made an invalid page: it is not a good reply, so it is not reused.
-        Rewrites the file with `outcome = "invalid_page"` and `error = reason` (the replies stay). Returns
+        Only the trace that made the page is marked: its output, content_key and backend must be those of the
+        result. Rewrites it with `outcome = "invalid_page"` and `error = reason` (the replies stay). Returns
         whether anything changed; never raises."""
-        path = self.path_for(target_rel)
         try:
             if not path.is_file():
                 return False
             old = self._read(path)
             if old is None or old.outcome != "ok":
+                return False
+            if (old.output, old.content_key, old.backend) != (output, content_key, backend):
+                log.info("not marking the trace %s: its reply did not make this page", path)
                 return False
             _write(path, old.model_copy(update={"outcome": INVALID_PAGE, "error": reason}))
             return True
@@ -132,6 +144,7 @@ class TraceStore:
                 tokens_in=sum(a.tokens_in or 0 for a in trace.attempts),
                 tokens_out=sum(a.tokens_out or 0 for a in trace.attempts),
                 duration_ms=trace.attempts[-1].duration_ms,
+                path=path,
             )
             candidate = (saved_at, path.as_posix(), saved)
             if best is None or candidate[:2] >= best[:2]:

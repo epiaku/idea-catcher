@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -164,7 +165,15 @@ def test_content_key_ignores_everything_but_task_body_and_transcript(fake_profil
 
 
 def saved(*replies: str, backend: str = "openai", model: str | None = "m-saved") -> SavedReply:
-    return SavedReply(list(replies), backend=backend, model=model, tokens_in=30, tokens_out=12, duration_ms=9)
+    return SavedReply(
+        list(replies),
+        backend=backend,
+        model=model,
+        tokens_in=30,
+        tokens_out=12,
+        duration_ms=9,
+        path=Path("llm/notes/source.json"),
+    )
 
 
 def test_a_replayer_supplies_the_replies_and_the_backend_is_never_built(fake_profiles, prompt_tags):
@@ -244,7 +253,18 @@ def test_a_saved_result_carries_the_recorded_backend_model_and_tokens(prompt_tag
     assert (result.backend, result.model, result.profile) == ("openai", "gpt-x-2026-01-01", "fake")
     assert (result.usage.tokens_in, result.usage.tokens_out, result.usage.duration_ms) == (30, 12, 9)
     assert result.from_saved and result.attempts == 1
+    assert result.saved_from == Path("llm/notes/source.json")  # the file to mark if the page is invalid
+    assert result.content_key == content_key("note", BODY, None)
     assert calls == []  # no recorder call for a saved reply
+
+
+def test_a_live_result_says_where_it_did_not_come_from(fake_profiles, prompt_tags):
+    fake = FakeBackend()
+    req = note_request(prompt_tags)
+    plain = reason(req, profiles=fake_profiles, backends=lambda p: fake)
+    assert plain.saved_from is None and plain.content_key is None  # no hooks: nothing computed
+    traced = reason(req, profiles=fake_profiles, backends=lambda p: fake, recorder=lambda t: None)
+    assert traced.saved_from is None and traced.content_key == content_key("note", BODY, None)
 
 
 def test_a_recorder_that_raises_does_not_break_the_call(fake_profiles, prompt_tags, caplog):

@@ -262,59 +262,99 @@ def test_find_returns_the_recorded_backend_model_and_tokens(tmp_path):
         LlmAttempt("bad", 100, 20, 7, "gpt-x-2026", "e"),
         LlmAttempt("good", 120, 30, 9, "gpt-x-2026", None),
     ]
-    TraceStore(tmp_path).put(REL, trace, now=NOW)
-    saved = TraceStore(tmp_path).find("note", "k1", **SAME)
-    assert saved == SavedReply(["bad", "good"], "openai", "gpt-x-2026", 220, 50, 9)
+    store = TraceStore(tmp_path)
+    store.put(REL, trace, now=NOW)
+    saved = store.find("note", "k1", **SAME)
+    assert saved == SavedReply(["bad", "good"], "openai", "gpt-x-2026", 220, 50, 9, path=store.path_for(REL))
+
+
+MADE_IT = {"output": {"title": "Ünï"}, "content_key": "k1", "backend": "fake"}  # what make_trace() holds
 
 
 def test_mark_unusable_changes_only_an_ok_trace(tmp_path, caplog):
     store = TraceStore(tmp_path)
     path = store.put(REL, make_trace(replies=("ok \ud83d done",)), now=NOW)
     before = json.loads(path.read_text(encoding="utf-8"))
-    assert store.mark_unusable(REL, reason="page is invalid: unknown shortcodes: nope") is True
+    reason = "page is invalid: unknown shortcodes: nope"
+    assert store.mark_unusable(path, reason=reason, **MADE_IT) is True
     after = json.loads(path.read_text(encoding="utf-8"))
-    assert (
-        after["outcome"] == "invalid_page" and after["error"] == "page is invalid: unknown shortcodes: nope"
-    )
+    assert after["outcome"] == "invalid_page" and after["error"] == reason
     assert {k: v for k, v in after.items() if k not in ("outcome", "error")} == {
         k: v for k, v in before.items() if k not in ("outcome", "error")
     }  # replies (a lone surrogate too), output and time stay
     assert found(store, "note", "k1") is None  # no longer reused
     assert [p.name for p in path.parent.iterdir()] == [path.name]  # atomic: no temp file left
     unchanged = path.read_bytes()
-    assert store.mark_unusable(REL, reason="again") is False and path.read_bytes() == unchanged
+    assert store.mark_unusable(path, reason="again", **MADE_IT) is False and path.read_bytes() == unchanged
 
-    other = Path("notes/failed.md")
-    failed = store.put(other, make_trace(replies=("x", "y"), outcome="invalid_output"), now=NOW)
+    failed = store.put(
+        Path("notes/failed.md"), make_trace(replies=("x", "y"), outcome="invalid_output"), now=NOW
+    )
     text = failed.read_bytes()
-    assert store.mark_unusable(other, reason="r") is False and failed.read_bytes() == text
+    assert store.mark_unusable(failed, reason="r", **MADE_IT) is False and failed.read_bytes() == text
 
-    assert store.mark_unusable(Path("notes/missing.md"), reason="r") is False
+    assert store.mark_unusable(store.path_for(Path("notes/missing.md")), reason="r", **MADE_IT) is False
     broken = store.path_for(Path("notes/broken.md"))
     broken.write_bytes(b"\xff{not json")
     with caplog.at_level(logging.WARNING, logger="catcher.llm"):
-        assert store.mark_unusable(Path("notes/broken.md"), reason="r") is False
+        assert store.mark_unusable(broken, reason="r", **MADE_IT) is False
     assert broken.read_bytes() == b"\xff{not json"
+
+
+def test_mark_unusable_only_marks_the_trace_that_made_the_page(tmp_path, caplog):
+    store = TraceStore(tmp_path)
+    path = store.put(REL, make_trace(replies=("paid",), backend="openai"), now=NOW)
+    before = path.read_bytes()
+    paid = {**MADE_IT, "backend": "openai"}
+    with caplog.at_level(logging.INFO, logger="catcher.llm"):
+        assert (
+            store.mark_unusable(path, reason="r", **MADE_IT) is False
+        )  # the page came from the fake backend
+        assert store.mark_unusable(path, reason="r", **{**paid, "content_key": "edited"}) is False
+        assert store.mark_unusable(path, reason="r", **{**paid, "output": {"title": "other"}}) is False
+    assert path.read_bytes() == before
+    assert store.mark_unusable(path, reason="r", **paid) is True
 
 
 def test_mark_unusable_never_raises(tmp_path, caplog, monkeypatch):
     from catcher.modules.llm import trace as trace_mod
 
     store = TraceStore(tmp_path)
-    store.put(REL, make_trace(), now=NOW)
+    path = store.put(REL, make_trace(), now=NOW)
 
     def fail(path, text):
         raise OSError("read-only")
 
     monkeypatch.setattr(trace_mod, "write_atomic", fail)
     with caplog.at_level(logging.WARNING, logger="catcher.llm"):
-        assert store.mark_unusable(REL, reason="r") is False
+        assert store.mark_unusable(path, reason="r", **MADE_IT) is False
     assert any("read-only" in r.getMessage() for r in caplog.records)
 
 
 def test_a_new_reply_replaces_an_invalid_page_trace(tmp_path):
     store = TraceStore(tmp_path)
-    store.put(REL, make_trace(replies=("made a bad page",)), now=NOW)
-    store.mark_unusable(REL, reason="page is invalid")
+    path = store.put(REL, make_trace(replies=("made a bad page",)), now=NOW)
+    store.mark_unusable(path, reason="page is invalid", **MADE_IT)
     store.put(REL, make_trace(replies=("fresh",)), now=NOW + timedelta(hours=1))
     assert found(store, "note", "k1") == ["fresh"]
+    store.mark_unusable(path, reason="page is invalid", **MADE_IT)
+    store.put(
+        REL, make_trace(replies=("bad", "worse"), outcome="invalid_output"), now=NOW + timedelta(hours=2)
+    )
+    assert json.loads(path.read_text())["outcome"] == "invalid_output"  # an invalid_page is not "ok"
+
+
+def test_an_ok_trace_is_never_replaced_by_a_failed_one(tmp_path, caplog):
+    store = TraceStore(tmp_path)
+    path = store.put(REL, make_trace(replies=("paid",)), now=NOW)
+    before = path.read_bytes()
+    for outcome in ("invalid_output", "backend_error"):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="catcher.llm"):
+            again = store.put(
+                REL, make_trace(replies=("bad", "worse"), outcome=outcome), now=NOW + timedelta(hours=1)
+            )
+        assert again == path and path.read_bytes() == before
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    store.put(REL, make_trace(replies=("paid again",)), now=NOW + timedelta(hours=2))
+    assert found(store, "note", "k1") == ["paid again"]  # ok over ok: what --refresh-llm is for

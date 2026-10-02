@@ -159,6 +159,24 @@ def apply_outcome(
     return []  # would_fetch: a dry run only
 
 
+def mark_unusable(
+    llm_dir: Path, note: Note, processed: ProcessedPage, svc: Services, reason: str
+) -> list[Path]:
+    """A reply that made an invalid page is not a good one: mark the trace it came from, so a plain requeue
+    asks the model again. That is the file a saved reply was read from (maybe another document's), else this
+    document's own trace, which the store only marks when it holds this very reply. With LLM_TRACE=false
+    nothing in `llm/` is written. Returns the marked file, to commit."""
+    llm = processed.llm
+    if not svc.settings.llm_trace or llm.content_key is None:
+        return []
+    path = llm.saved_from or TraceStore(llm_dir).path_for(note.target_rel)
+    output = llm.output.model_dump(mode="json")
+    marked = TraceStore(llm_dir).mark_unusable(
+        path, reason=reason, output=output, content_key=llm.content_key, backend=llm.backend
+    )
+    return [path] if marked else []
+
+
 def finish(ideas: Path, note: Note, processed: ProcessedPage) -> list[Path]:
     """The document is ready: the working copy in `output/` becomes the final page."""
     return write_output(ideas, note, processed.page)
@@ -389,9 +407,9 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             item.status, item.message = "failed", "; ".join(processed.problems)
             log.error("%s: failed, page is invalid: %s", who, item.message)
             if not opts.dry_run:
-                # a reply that made an invalid page is not a good one: a plain requeue asks the model again
-                # (the trace file is already in touched_ideas, from the `finally` above)
-                TraceStore(llm_dir).mark_unusable(note.target_rel, reason=f"page is invalid: {item.message}")
+                touched_ideas += mark_unusable(
+                    llm_dir, note, processed, svc, f"page is invalid: {item.message}"
+                )
                 touched_ideas += move_to_failed(
                     ideas,
                     note.output_path(ideas),

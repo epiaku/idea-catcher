@@ -387,3 +387,107 @@ def test_a_dry_run_marks_no_trace(repos, make_services):
     (item,) = report.items
     assert item.status == "failed" and "unknown shortcodes" in item.message  # the saved reply, no call
     assert path.read_bytes() == before and read(path)["outcome"] == "ok"
+
+
+class PaidBackend(FakeBackend):
+    """A fake that says it is a real provider, so its traces count as paid replies."""
+
+    name = "openai"
+
+
+def test_an_invalid_page_from_a_reply_saved_for_another_document_marks_that_file(repos, make_services, sh):
+    # `a` holds an ok trace whose reply makes an invalid page (as if an older validator had accepted it)
+    (repos.ideas / "inbox/notes/b.md").unlink(missing_ok=True)
+    run_pipeline(
+        repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services(FakeBackend([BAD_PAGE]))
+    )
+    source = trace_of(repos.ideas, "notes", "YouTube walks.md")
+    data = read(source)
+    assert data["outcome"] == "invalid_page"
+    data["outcome"], data["error"] = "ok", None
+    source.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    sh(repos.ideas, "commit", "-qam", "older validator")
+
+    # `b`: the same text under another name, so the saved reply of `a` is used for it
+    (repos.ideas / "inbox/notes/b.md").write_text(NOTE_BODY)
+    notes = FakeBackend()
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(only=["b"]), make_services(note_backend=notes))
+    assert report.counts() == {"failed": 1} and notes.prompts == []
+    assert read(source)["outcome"] == "invalid_page"  # the file the reply came from is marked
+    assert not trace_of(repos.ideas, "notes", "b.md").exists()  # `b` has no trace of its own
+    assert sh(repos.ideas, "status", "--porcelain") == ""  # the marked file is committed
+
+    again = run_pipeline(
+        repos.ideas, repos.docs, RunOptions(requeue=["b"]), make_services(note_backend=notes)
+    )
+    assert again.counts() == {"requeued": 1, "published": 1}
+    assert len(notes.prompts) == 1  # a plain requeue asks the model again
+    assert read(trace_of(repos.ideas, "notes", "b.md"))["outcome"] == "ok"
+
+
+def test_a_fake_run_never_marks_a_paid_trace(repos, make_services):
+    run_pipeline(
+        repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services(note_backend=PaidBackend())
+    )
+    path = trace_of(repos.ideas, "notes", "YouTube walks.md")
+    paid = path.read_bytes()
+    assert read(path)["backend"] == "openai" and read(path)["outcome"] == "ok"
+
+    opts = RunOptions(requeue=["YouTube walks"], refresh_llm=True)
+    report = run_pipeline(repos.ideas, repos.docs, opts, make_services(note_backend=FakeBackend([BAD_PAGE])))
+    assert report.counts() == {"requeued": 1, "failed": 1}  # the fake reply made the invalid page
+    assert path.read_bytes() == paid  # not overwritten (fake over real) and not marked
+
+    report = run_pipeline(
+        repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"]), no_backend(make_services)
+    )
+    assert report.counts() == {"requeued": 1, "published": 1}  # the paid reply is reused
+
+
+@pytest.mark.parametrize("fresh", [{"refresh_llm": True}, {"llm_cache": False}])
+def test_llm_trace_false_never_marks_a_trace(repos, make_services, fresh):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services())
+    path = trace_of(repos.ideas, "notes", "YouTube walks.md")
+    before = path.read_bytes()
+
+    services = make_services(note_backend=FakeBackend([BAD_PAGE]))
+    services.settings = Settings(llm_trace=False, llm_cache=fresh.get("llm_cache", True))
+    opts = RunOptions(requeue=["YouTube walks"], refresh_llm=fresh.get("refresh_llm", False))
+    report = run_pipeline(repos.ideas, repos.docs, opts, services)
+    assert report.counts() == {"requeued": 1, "failed": 1}
+    assert path.read_bytes() == before  # the live reply was not recorded, and llm/ is not written
+
+
+def test_an_edited_document_marks_only_its_new_trace(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services())
+    path = trace_of(repos.ideas, "notes", "YouTube walks.md")
+    old_key = read(path)["content_key"]
+    copy = archived(repos.ideas, "notes", "YouTube walks.md")
+    copy.write_text(copy.read_text().replace("walking around", "walking around the lake"))
+
+    report = run_pipeline(
+        repos.ideas,
+        repos.docs,
+        RunOptions(requeue=["YouTube walks"]),
+        make_services(note_backend=FakeBackend([BAD_PAGE])),
+    )
+    assert report.counts() == {"requeued": 1, "failed": 1}
+    trace = read(path)
+    assert trace["content_key"] != old_key and trace["outcome"] == "invalid_page"  # the reply that made it
+    assert trace["attempts"][0]["reply"] == BAD_PAGE
+
+
+def test_a_failed_refresh_keeps_the_good_paid_reply(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["systeme"]), make_services())
+    path = trace_of(repos.ideas, "clippings", "systeme.md")
+    good = path.read_bytes()
+
+    opts = RunOptions(requeue=["systeme"], refresh_llm=True)
+    report = run_pipeline(
+        repos.ideas, repos.docs, opts, make_services(chat_backend=FakeBackend(["nope", "still nope"]))
+    )
+    assert report.counts() == {"requeued": 1, "failed": 1}
+    assert path.read_bytes() == good  # an ok trace is never replaced by a failed one
+
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), no_backend(make_services))
+    assert report.counts() == {"requeued": 1, "published": 1}  # the next plain run reuses it

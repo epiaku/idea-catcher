@@ -3,6 +3,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ValidationError
@@ -84,6 +85,8 @@ class LlmResult:
     usage: Usage
     attempts: int
     from_saved: bool = False  # made from a saved reply: no model was called
+    saved_from: Path | None = None  # the trace file the saved reply came from (None for a live call)
+    content_key: str | None = None  # the request's content_key, when a recorder or replayer was given
 
 
 def extract_json(text: str) -> str:
@@ -139,6 +142,7 @@ class SavedReply:
     tokens_in: int  # summed over the attempts
     tokens_out: int
     duration_ms: int | None  # of the last attempt, like a live result
+    path: Path | None = None  # the trace file it was read from
 
 
 Replayer = Callable[[LlmRequest, str, str], SavedReply | None]  # request, content_key, prompt_version
@@ -169,7 +173,7 @@ def reason(
     saved = replayer(req, key, version) if replayer is not None else None
     if saved is not None:
         try:
-            return _from_saved(req, saved, schema, profile, version)
+            return _from_saved(req, saved, schema, profile, version, key)
         except InvalidOutput as e:  # edited by hand, or the schema changed: ask the model instead
             log.warning("%s: the saved LLM reply is no longer valid, calling the model: %s", req.task, e)
     backend = backends(profile)
@@ -216,7 +220,14 @@ def reason(
             if recorder is not None:
                 output_json = output.model_dump(mode="json")
             return LlmResult(
-                output, req.profile, backend_name, reply.model or profile.model, version, usage, attempt
+                output,
+                req.profile,
+                backend_name,
+                reply.model or profile.model,
+                version,
+                usage,
+                attempt,
+                content_key=key or None,
             )
         outcome, trace_error = "invalid_output", error
         raise InvalidOutput(f"{req.task}: invalid output after 2 attempts: {error}")
@@ -243,7 +254,7 @@ def reason(
 
 
 def _from_saved(
-    req: LlmRequest, saved: SavedReply, schema: type[BaseModel], profile: Profile, version: str
+    req: LlmRequest, saved: SavedReply, schema: type[BaseModel], profile: Profile, version: str, key: str
 ) -> LlmResult:
     """The result from saved raw replies, through the same parsing, validation and second-attempt rule as
     a real call. It mirrors the recorded call (backend, model, tokens), so the page equals the live one.
@@ -257,5 +268,16 @@ def _from_saved(
             continue
         usage = Usage(tokens_in=saved.tokens_in, tokens_out=saved.tokens_out, duration_ms=saved.duration_ms)
         model = saved.model or profile.model
-        return LlmResult(output, req.profile, saved.backend, model, version, usage, attempt, from_saved=True)
+        return LlmResult(
+            output,
+            req.profile,
+            saved.backend,
+            model,
+            version,
+            usage,
+            attempt,
+            from_saved=True,
+            saved_from=saved.path,
+            content_key=key,
+        )
     raise InvalidOutput(f"{req.task}: the saved replies are not valid: {error}")
