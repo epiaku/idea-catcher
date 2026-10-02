@@ -1,5 +1,5 @@
 ---
-title: "obsidian github link"
+title: "Idea Catcher"
 source: "https://gemini.google.com/app/2446cd9c762c9cc9?is_sa=1&is_sa=1&android-min-version=301356232&ios-min-version=322.0&campaign_id=bkws&utm_source=sem&utm_medium=paid-media&utm_campaign=bkws&pt=9008&mt=8&ct=p-growth-sem-bkws&gclsrc=aw.ds&gad_source=1&gad_campaignid=22921538072&gbraid=0AAAAApk5BhmhKd8GXD9a-E1e32DpF91oV&gclid=CjwKCAjwx7LSBhB3EiwAjcodxKVVuc2PHBDRoUP4FIzmbqaPcwryazHwldPqN_Sz3aPwDNZC7W2XvhoC4QgQAvD_BwE"
 author:
   - "[[installing the free community plugin (]]"
