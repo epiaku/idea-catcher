@@ -88,12 +88,51 @@ def test_the_state_is_shared_through_the_file(tmp_path):
     assert second.peek().blocked  # type: ignore[union-attr]
 
 
-def test_a_corrupt_state_file_is_ignored(tmp_path):
+@pytest.mark.parametrize(
+    "content",
+    ["{not json", "[]", '{"blocked_until": "soon"}', '{"blocked_until": NaN}', '{"next_allowed_at": -5}'],
+)
+def test_a_damaged_state_file_closes_the_gate_and_is_kept(tmp_path, content):
+    """Losing an active 24 hour block to a damaged file is the expensive mistake: fail closed."""
     clock = Clock()
     gate = make_gate(tmp_path, clock)
     gate.state_file.parent.mkdir(parents=True, exist_ok=True)
-    gate.state_file.write_text("{not json")
-    assert gate.reserve() is None
+    gate.state_file.write_text(content)
+    wait = gate.reserve()
+    assert wait is not None and wait.blocked
+    assert wait.until == clock.now + 6 * 3600  # block_hours of the test gate
+    assert gate.state_file.with_suffix(".corrupt").read_text() == content  # kept for a look
+    assert gate.reserve() is not None  # and it stays closed on the next call
+
+
+def test_a_block_from_the_far_future_is_capped_at_24_hours(tmp_path):
+    clock = Clock()
+    gate = make_gate(tmp_path, clock)
+    gate.state_file.parent.mkdir(parents=True, exist_ok=True)
+    gate.state_file.write_text(json.dumps({"blocked_until": clock.now + 10**12}))
+    wait = gate.peek()
+    assert wait is not None and wait.until == clock.now + 24 * 3600
+
+
+def test_a_success_that_started_before_a_newer_block_does_not_close_the_breaker(tmp_path):
+    clock = Clock()
+    gate = make_gate(tmp_path, clock)
+    started = clock.now  # fetch A is reserved ...
+    clock.now += 5
+    gate.record_block()  # ... fetch B gets a 429 while A is still running ...
+    gate.record_success(started)  # ... and A then works: B's block stays
+    assert gate.peek() is not None and gate.peek().blocked  # type: ignore[union-attr]
+
+
+def test_two_fetches_that_both_get_a_block_are_one_block_not_two(tmp_path):
+    clock = Clock()
+    gate = make_gate(tmp_path, clock)
+    started = clock.now
+    first = gate.record_block(started)
+    clock.now += 5
+    second = gate.record_block(started)  # the other fetch, started at the same time, gets its 429 too
+    assert second == first  # not doubled to 12 hours
+    assert json.loads(gate.state_file.read_text())["streak"] == 1
 
 
 def test_two_threads_asking_at_once_cannot_both_go(tmp_path):
@@ -115,7 +154,7 @@ def test_the_state_file_is_plain_json_on_this_machine(tmp_path):
     gate = make_gate(tmp_path, Clock())
     gate.reserve()
     data = json.loads(gate.state_file.read_text())
-    assert set(data) == {"next_allowed_at", "blocked_until", "streak"}
+    assert set(data) == {"next_allowed_at", "blocked_until", "blocked_at", "streak"}
 
 
 def test_the_wait_message_says_what_and_when(tmp_path):

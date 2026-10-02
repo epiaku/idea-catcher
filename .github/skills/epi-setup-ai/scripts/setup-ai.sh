@@ -78,7 +78,7 @@ fi
 # 5b. Ensure .roo/rules directory exists and physically copy copilot-instructions.md
 # (Roo Code inherited a lot of Cline's file-loading code; copying defensively
 # here for the same reason .clinerules/ uses copies, not symlinks — see
-# docs/ai-tooling-distribution.md.)
+# ../references/ai-agents-layout.md.)
 ROORULES_DIR=".roo/rules"
 TARGET_ROORULE="$ROORULES_DIR/copilot-instructions.md"
 
@@ -99,6 +99,23 @@ fi
 AGENTS_SRC=".github/agents"
 CLINERULES_DIR=".clinerules"
 CLAUDE_DIR=".claude/agents"
+
+# 6a. Remove what an earlier run generated for agents, so a removed or renamed agent does not leave
+# stale files behind. These paths are generated and git-ignored (edit only in .github/):
+#   - symlinks in .claude/agents (real files there are left alone)
+#   - everything in .clinerules except the instructions copy made in step 5
+#   - the .roo/rules-<agent>/ folders
+if [ -d "$CLAUDE_DIR" ]; then
+    find "$CLAUDE_DIR" -type l -exec rm -f {} +
+fi
+if [ -d "$CLINERULES_DIR" ]; then
+    find "$CLINERULES_DIR" -depth -mindepth 1 ! -path "$CLINERULES_DIR/copilot-instructions.md" -delete
+fi
+for stale_dir in .roo/rules-*; do
+    if [ -d "$stale_dir" ]; then
+        rm -rf "$stale_dir"
+    fi
+done
 
 if [ -d "$AGENTS_SRC" ]; then
     echo "Processing custom agents..."
@@ -150,10 +167,14 @@ if [ -d "$AGENTS_SRC" ]; then
         # for files in this folder).
         slug="$(basename "$agent_file" .md)"
         target_roo_rules_dir=".roo/rules-$slug"
+        if [ -e "$target_roo_rules_dir" ]; then
+            echo "Warning: another agent already uses the Roo slug '$slug' ($agent_file); skipping Roo for this one. Give the agents different file names."
+            continue
+        fi
         mkdir -p "$target_roo_rules_dir"
         target_roo_rule="$target_roo_rules_dir/$(basename "$agent_file")"
         rm -f "$target_roo_rule"
-        awk 'BEGIN{d=0} /^---[ \t]*$/{d++; next} d>=2{print}' "$agent_file" > "$target_roo_rule"
+        awk 'NR==1 && !/^---/{d=2} d>=2{print; next} /^---[ \t\r]*$/{d++}' "$agent_file" > "$target_roo_rule"
         echo "Copied stripped agent body to $target_roo_rule for Roo Code."
 
         # 4. Append this agent as a Roo custom mode. `roleDefinition` comes
@@ -165,7 +186,7 @@ if [ -d "$AGENTS_SRC" ]; then
         # grant. Narrow a specific mode's `groups`/`fileRegex` by hand-editing
         # .roomodes locally if needed; it'll be overwritten on the next run,
         # so a permanent narrowing belongs as a script change instead.
-        description="$(sed -n 's/^description: *"\(.*\)" *$/\1/p' "$agent_file" | head -n1)"
+        description="$(tr -d '\r' < "$agent_file" | sed -n 's/^description: *"\(.*\)" *$/\1/p' | head -n1)"
         if [ -n "$description" ]; then
             display_name="$(echo "$slug" | awk -F'-' '{for(i=1;i<=NF;i++){$i=toupper(substr($i,1,1)) substr($i,2)}; print}' OFS=' ')"
             {
@@ -202,6 +223,11 @@ fi
 if [ ! -f ".gitignore" ]; then
     touch .gitignore
     echo "Created .gitignore file."
+fi
+
+# A .gitignore that does not end in a newline would get the first new entry glued to its last line
+if [ -s .gitignore ] && [ -n "$(tail -c1 .gitignore)" ]; then
+    echo >> .gitignore
 fi
 
 grep -qxF ".cline/" .gitignore || echo ".cline/" >> .gitignore

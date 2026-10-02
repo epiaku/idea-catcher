@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from catcher.core.files import write_atomic
 from catcher.core.frontmatter import FrontmatterError, load
 from catcher.modules.pipeline.doctypes import DocType
 from catcher.modules.pipeline.inbox import Note
@@ -27,14 +28,12 @@ def write_page(docs_repo: Path, doctype: DocType, doc_id: str, filename: str, pa
     old = [p for p in find_pages_by_id(out_dir, doc_id) if p != target]
     for path in old:
         path.unlink()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    target.write_text(page, encoding="utf-8")
+    write_atomic(target, page)
     return [target, *old]
 
 
 def write_output(ideas_repo: Path, note: Note, page: str) -> list[Path]:
     """Write the final page to `output/<same subfolder and name>`."""
     target = note.output_path(ideas_repo)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(page, encoding="utf-8")
+    write_atomic(target, page)
     return [target]

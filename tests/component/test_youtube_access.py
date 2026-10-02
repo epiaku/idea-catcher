@@ -196,3 +196,60 @@ def test_the_cache_refuses_a_bad_video_id(tmp_path):
     with pytest.raises(ValueError):
         FactsCache(tmp_path).path("../../etc/passwd")
     assert isinstance(FactsCache(tmp_path).path(VID), Path)
+
+
+def test_a_dry_run_uses_saved_facts_but_never_asks_youtube_or_the_gate(tmp_path):
+    from catcher.modules.youtube.facts import FetchSkipped
+
+    fetch = Fetcher()
+    access, _, _ = make(tmp_path, fetch)
+    with pytest.raises(FetchSkipped):
+        access.get(VID, facts_dir=tmp_path / "facts", fetch_allowed=False)
+    assert fetch.calls == [] and not access.gate.state_file.exists()
+    access.get(VID, facts_dir=tmp_path / "facts")  # a real fetch saves the facts ...
+    assert (
+        access.get(VID, facts_dir=tmp_path / "facts", fetch_allowed=False).title == "T"
+    )  # ... a dry run reads them
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "ERROR: [youtube] AAAAAAAAAAA: Private video. Sign in",
+        "Video unavailable. This video has been removed",
+    ],
+)
+def test_a_video_that_is_gone_for_good_is_remembered_so_a_requeue_does_not_ask_again(tmp_path, message):
+    fetch = Fetcher(error=FactsUnavailable(f"yt-dlp failed: {message}"))
+    access, clock, _ = make(tmp_path, fetch)
+    with pytest.raises(FactsUnavailable):
+        access.get(VID, facts_dir=tmp_path / "facts")
+    saved = FactsCache(tmp_path / "facts", clock=clock).get(VID)
+    assert saved is not None and saved.unavailable_reason and "yt-dlp failed" in saved.unavailable_reason
+    clock.now += 700  # the gap has passed, but the answer is still saved
+    assert access.get(VID, facts_dir=tmp_path / "facts").unavailable_reason == saved.unavailable_reason
+    assert fetch.calls == [VID]
+    clock.now += 25 * 3600  # a day later it may be asked again
+    with pytest.raises(FactsUnavailable):
+        access.get(VID, facts_dir=tmp_path / "facts")
+    assert fetch.calls == [VID, VID]
+
+
+def test_an_ordinary_failure_is_not_remembered(tmp_path):
+    fetch = Fetcher(error=FactsUnavailable("yt-dlp failed: connection reset"))
+    access, clock, _ = make(tmp_path, fetch)
+    with pytest.raises(FactsUnavailable):
+        access.get(VID, facts_dir=tmp_path / "facts")
+    assert not (tmp_path / "facts").exists()
+    clock.now += 700
+    with pytest.raises(FactsUnavailable):
+        access.get(VID, facts_dir=tmp_path / "facts")
+    assert fetch.calls == [VID, VID]  # asked again: it may well work now
+
+
+def test_a_dry_run_does_not_save_a_gone_video_either(tmp_path):
+    fetch = Fetcher(error=FactsUnavailable("Private video"))
+    access, _, _ = make(tmp_path, fetch)
+    with pytest.raises(FactsUnavailable):
+        access.get(VID, facts_dir=tmp_path / "facts", write_cache=False)
+    assert not (tmp_path / "facts").exists()

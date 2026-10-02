@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -7,7 +8,14 @@ from catcher.core.config import Settings
 from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import Profile, ProfilesConfig, load_profiles, resolve_profile
 from catcher.modules.llm.schemas import Summary, YoutubeSummary
-from catcher.modules.llm.service import BackendFactory, LlmRequest, LlmResult, UsageLimitReached, reason
+from catcher.modules.llm.service import (
+    BackendFactory,
+    InputRejected,
+    LlmRequest,
+    LlmResult,
+    UsageLimitReached,
+    reason,
+)
 from catcher.modules.pipeline.context import load_context
 from catcher.modules.pipeline.doctypes import gemini_video_id
 from catcher.modules.pipeline.glossary import Glossary, load_glossary
@@ -92,6 +100,7 @@ def facts_for(note: Note, vid: str, svc: Services, opts: ProcessOptions) -> Yout
             refresh=opts.refresh_facts,
             write_cache=not opts.dry_run,
             wait=opts.wait_youtube,
+            fetch_allowed=not opts.dry_run,  # a dry run never costs YouTube a request
         )
     log.info(
         "%s: facts fetched (views=%s transcript=%s)",
@@ -120,9 +129,18 @@ def log_llm(note: Note, step: str, result: LlmResult) -> None:
 
 
 def _reason(note: Note, svc: Services, profile_name: str, facts: YoutubeFacts | None = None) -> LlmResult:
+    if facts is None and not note.doc.body.strip():
+        raise InputRejected(f"{note.doc_id}: the document is empty")
+    prompt = prompt_input(note, svc.tags, facts, svc.glossary, svc.context)
+    size = len(json.dumps(prompt, ensure_ascii=False, default=str))
+    if size > svc.settings.llm_max_input_chars:
+        raise InputRejected(
+            f"{note.doc_id}: {size:,} characters is over the {svc.settings.llm_max_input_chars:,} "
+            "limit (LLM_MAX_INPUT_CHARS): not sent to the LLM"
+        )
     request = LlmRequest(
         task=note.doctype.task,
-        input=prompt_input(note, svc.tags, facts, svc.glossary, svc.context),
+        input=prompt,
         schema_name=note.doctype.schema_name,
         profile=profile_name,
     )
@@ -152,6 +170,10 @@ def _process_youtube(note: Note, svc: Services, opts: ProcessOptions, profile_na
     if not vid:
         raise FactsUnavailable(f"{note.doc_id}: no YouTube video id found")
     facts = facts_for(note, vid, svc, opts)
+    if facts.unavailable_reason:
+        raise FactsUnavailable(
+            f"{note.doc_id}: YouTube says {vid} is unavailable: {facts.unavailable_reason}"
+        )
     if not facts.transcript:
         raise FactsUnavailable(f"{note.doc_id}: no transcript available for {vid}")
     result = _reason(note, svc, profile_name, facts)

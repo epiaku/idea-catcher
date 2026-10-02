@@ -10,6 +10,7 @@ from catcher.modules.llm.service import (
     BackendReply,
     BackendUnavailable,
     BudgetExhausted,
+    InputRejected,
     TransientBackendError,
     Usage,
     UsageLimitReached,
@@ -17,7 +18,15 @@ from catcher.modules.llm.service import (
 
 log = logging.getLogger("catcher.llm")
 
-_BUDGET_WORDS = re.compile(r"quota|billing|credit|budget|spend", re.IGNORECASE)
+# Phrases of an empty wallet, not single words: "spend" or "credit" turn up in unrelated error texts
+_BUDGET_WORDS = re.compile(
+    r"insufficient[_ ](?:quota|credits?|funds)|exceeded your (?:current )?quota|billing|"
+    r"out of credits?|credit balance|budget (?:exceeded|reached|limit)|spend limit",
+    re.IGNORECASE,
+)
+_TOO_LONG = re.compile(
+    r"context[_ ]length|maximum context|too many tokens|reduce the length|prompt is too long", re.IGNORECASE
+)
 _KEY_VARIABLES = {"openai": "OPENAI_API_KEY", "freellmapi": "FREELLMAPI_API_KEY"}
 
 
@@ -88,6 +97,10 @@ class OpenAiCompatibleBackend:
             log.error("%s (%s, HTTP %s)", message, self.name, e.status_code)
             raise UsageLimitReached(message, backend=self.name) from e
         except openai.APIStatusError as e:
+            if e.status_code in (400, 413) and _TOO_LONG.search(f"{getattr(e, 'code', '')} {e.message}"):
+                message = f"{self.name}: the document is too long for the model: {e.message[:200]}"
+                log.error(message)
+                raise InputRejected(message) from e
             if _is_budget_problem(e):
                 message = f"{self.name} budget reached: {e.message[:200]}"
                 log.warning(message)

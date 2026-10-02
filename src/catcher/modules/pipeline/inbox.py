@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from catcher.core.files import write_atomic
 from catcher.core.frontmatter import Doc, FrontmatterError, dump, load
 from catcher.modules.pipeline.doctypes import DocType, derive_id, detect
 
@@ -20,6 +21,7 @@ _LONGEST_SUFFIX = ".youtube.json"
 MAX_STEM = MAX_NAME - len(_LONGEST_SUFFIX)
 ARTIFACTS_DIR = "artifacts"  # archive/artifacts/ and <epiaku-docs>/idea-bucket/artifacts/
 _NAMED = re.compile(r"^\d{8}-[0-9a-f]{6}-")  # a name that already has its date and guid
+_CALCULATED_NAME = re.compile(r"^\d{8}-[0-9a-f]{6}-[a-z0-9-]+\.md$")  # exactly what `calculated_stem` makes
 _JUNK = frozenset({"thumbs.db", "desktop.ini"})
 _ILLEGAL = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 ORIGINAL_KEY = "original_filename"
@@ -41,6 +43,7 @@ class Note:
     path: Path  # the inbox file
     name: str | None = None  # the calculated file name (with .md) once it has one
     original: str | None = None  # the file name it had when it was captured
+    inbox_rel: Path | None = None  # the path under `inbox/`, fixed when the inbox was scanned
 
     @property
     def original_name(self) -> str:
@@ -57,8 +60,19 @@ class Note:
     @property
     def rel(self) -> Path:
         """The path under `inbox/`, for example `clippings/New chat.md`. Every folder uses the same path."""
-        parts = self.path.parts
-        return Path(*parts[parts.index("inbox") + 1 :]) if "inbox" in parts else Path(self.path.name)
+        if self.inbox_rel is not None:
+            return self.inbox_rel
+        root = inbox_root(self.path)  # a document read from anywhere (`reason`, `render`)
+        return self.path.resolve().relative_to(root) if root else Path(self.path.name)
+
+
+def inbox_root(path: Path) -> Path | None:
+    """The `inbox/` folder a document is in. A path can hold the word `inbox` more than once (a repo in
+    `~/inbox/idea-bucket/`): the one next to a `.git` wins, else the nearest to the file."""
+    candidates = [p for p in path.resolve().parents if p.name == "inbox"]
+    if not candidates:
+        return None
+    return next((p for p in candidates if (p.parent / ".git").exists()), candidates[0])
 
 
 @dataclass
@@ -289,7 +303,7 @@ def archive_copy(ideas_repo: Path, note: Note) -> Path:
     dest = ideas_repo / "archive" / note.rel.parent / name
     dest.parent.mkdir(parents=True, exist_ok=True)
     raw = note.path.read_bytes().decode("utf-8")
-    dest.write_bytes(with_filename_fields(raw, note.original_name, name).encode("utf-8"))
+    write_atomic(dest, with_filename_fields(raw, note.original_name, name).encode("utf-8"))
     log.info("archived %s", dest.relative_to(ideas_repo).as_posix())
     return dest
 
@@ -308,10 +322,47 @@ def start_work(ideas_repo: Path, note: Note, now: datetime | None = None) -> lis
         "analyzed_at": now.isoformat(timespec="seconds"),
         "stage": STAGE_ANALYZED,
     }
-    out.write_text(dump(Doc(fm, note.doc.body)), encoding="utf-8")
-    note.path.unlink()
+    write_atomic(out, dump(Doc(fm, note.doc.body)))
+    note.path.unlink()  # last: until now a crash leaves the document in inbox/ as well, never nowhere
     log.info("started work: %s -> output/%s", note.path.name, note.target_rel.as_posix())
     return [*touched, out, note.path]
+
+
+def return_to_inbox(ideas_repo: Path, note: Note) -> list[Path]:
+    """Undo `start_work`: the archived original goes back to `inbox/` where it was (with the file name fields,
+    like a requeued document), and the working copy in `output/` is deleted. The document is then in one
+    place only, so the next run starts it again under the same name. For a run that was interrupted, or a
+    clip that has to wait for YouTube after work had begun."""
+    if note.name is None:
+        return []
+    archived = ideas_repo / "archive" / note.rel.parent / note.name
+    out = note.output_path(ideas_repo)
+    if not archived.is_file():
+        if not note.path.exists():  # never started is fine: it is still in inbox/
+            log.error("cannot return %s to inbox/: its archive copy %s is missing", note.name, archived)
+        return []
+    write_atomic(note.path, archived.read_bytes())
+    archived.unlink()
+    out.unlink(missing_ok=True)
+    log.info("returned %s to inbox/%s", note.name, note.rel.as_posix())
+    return [archived, note.path, out]
+
+
+def deferred_in_output(ideas_repo: Path) -> list[str]:
+    """The documents a temporary error stalled: their paths under `output/` (the same as under `archive/`)."""
+    found: list[str] = []
+    output = ideas_repo / "output"
+    for path in sorted(output.rglob("*.md")) if output.is_dir() else []:
+        rel = path.relative_to(output)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        try:
+            stage = load(path).fm.get("stage")
+        except (FrontmatterError, UnicodeDecodeError):
+            continue
+        if stage == STAGE_DEFERRED:
+            found.append(rel.as_posix())
+    return found
 
 
 def mark_deferred(ideas_repo: Path, note: Note, reason: str, now: datetime | None = None) -> list[Path]:
@@ -325,7 +376,7 @@ def mark_deferred(ideas_repo: Path, note: Note, reason: str, now: datetime | Non
         "deferred_at": now.isoformat(timespec="seconds"),
         "deferred_reason": reason,
     }
-    out.write_text(dump(Doc(fm, doc.body)), encoding="utf-8")
+    write_atomic(out, dump(Doc(fm, doc.body)))
     return [out]
 
 
@@ -361,14 +412,14 @@ def move_to_failed(
     dest.unlink(missing_ok=True)
     shutil.move(src, dest)
     error_file = dest.with_suffix(".error.txt")
-    error_file.write_text(
+    write_atomic(
+        error_file,
         f"time: {now.isoformat(timespec='seconds')}\n"
         f"original file: {original}\n"
         f"calculated file: {rel.as_posix()}\n"
         f"id: {doc_id or '-'}\n"
         f"class: {doc_class or '-'}\n"
         f"reason: {reason}\n",
-        encoding="utf-8",
     )
     log.info("moved to failed/%s (reason in %s)", rel.as_posix(), error_file.name)
     return [*touched, src, dest, error_file]
@@ -385,10 +436,20 @@ def move_to_duplicates(ideas_repo: Path, note: Note, winner: Note) -> list[Path]
         CALCULATED_KEY: note.name,
         "duplicate_of": winner.rel.as_posix(),
     }
-    dest.write_text(dump(Doc(fm, note.doc.body)), encoding="utf-8")
+    write_atomic(dest, dump(Doc(fm, note.doc.body)))
     note.path.unlink()
     log.info("moved to duplicates/%s (duplicate of %s)", note.target_rel.as_posix(), winner.rel.as_posix())
     return [*touched, note.path, dest]
+
+
+def _plain_file_name(name: str) -> bool:
+    return (
+        bool(name)
+        and name == Path(name).name
+        and "\\" not in name
+        and "\x00" not in name
+        and len(name) <= 255
+    )
 
 
 def _analyse(path: Path, doc: Doc, source_file: str, now: datetime) -> Note:
@@ -401,18 +462,18 @@ def _analyse(path: Path, doc: Doc, source_file: str, now: datetime) -> Note:
         "captured": captured_date(doc.fm, now),
         "source_file": source_file,
     }
-    name, original = (
-        doc.fm.get(CALCULATED_KEY),
-        doc.fm.get(ORIGINAL_KEY),
-    )  # set when it comes back from archive/
-    return Note(
-        doc_id,
-        doctype,
-        Doc(fm, doc.body),
-        path,
-        name if isinstance(name, str) and name else None,
-        original if isinstance(original, str) and original else None,
-    )
+    # Both are set when a document comes back from archive/. They are text from a file, so they are only
+    # trusted when they look like what we write: a name with a path in it must never reach the file system.
+    name, original = doc.fm.get(CALCULATED_KEY), doc.fm.get(ORIGINAL_KEY)
+    if name is not None and not (
+        isinstance(name, str) and _CALCULATED_NAME.match(name) and len(name) <= MAX_NAME
+    ):
+        log.warning("%s: ignoring a %s that is not one of our names: %r", path.name, CALCULATED_KEY, name)
+        name = None
+    if original is not None and not (isinstance(original, str) and _plain_file_name(original)):
+        log.warning("%s: ignoring an %s that is not a plain file name: %r", path.name, ORIGINAL_KEY, original)
+        original = None
+    return Note(doc_id, doctype, Doc(fm, doc.body), path, name or None, original or None)
 
 
 def scan_inbox(ideas_repo: Path, *, now: datetime | None = None, only: list[str] | None = None) -> ScanResult:
@@ -457,7 +518,9 @@ def scan_inbox(ideas_repo: Path, *, now: datetime | None = None, only: list[str]
             result.errors[f"inbox/{rel.as_posix()}"] = error or "unreadable"
             log.error("cannot read inbox/%s: %s", rel.as_posix(), error)
             continue
-        result.notes.append(_analyse(path, doc, f"inbox/{rel.as_posix()}", now))
+        note = _analyse(path, doc, f"inbox/{rel.as_posix()}", now)
+        note.inbox_rel = rel
+        result.notes.append(note)
     return result
 
 

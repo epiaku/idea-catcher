@@ -1,6 +1,7 @@
 import logging
 import os
 import secrets
+import signal
 from pathlib import Path
 from typing import Annotated
 
@@ -19,6 +20,7 @@ from catcher.modules.pipeline.glossary import load_glossary
 from catcher.modules.pipeline.inbox import (
     Note,
     calculated_stem,
+    inbox_root,
     is_snapshot_of,
     name_title,
     read_note,
@@ -133,10 +135,8 @@ def _read_document(path: Path) -> Note:
 def _facts_dir_of(document: Path) -> Path | None:
     """Where `render` may save YouTube facts: `facts/` of the idea-bucket the document is in. A document
     that is not in an `inbox/` gets no saving, so a stray path never writes into the wrong repo."""
-    parts = document.resolve().parts
-    if "inbox" not in parts:
-        return None
-    return Path(*parts[: parts.index("inbox")]) / FACTS_DIR
+    root = inbox_root(document)
+    return root.parent / FACTS_DIR if root else None
 
 
 def _check_ideas_inbox(ideas: Path) -> None:
@@ -218,6 +218,10 @@ def run_group() -> None:
     """Run a whole flow."""
 
 
+def _terminate(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 @run_app.command("pipeline")
 def run_pipeline_cmd(
     ideas: IdeasOpt = None,
@@ -239,9 +243,18 @@ def run_pipeline_cmd(
             "instead of leaving it in inbox/ for a later run",
         ),
     ] = False,
+    retry_deferred: Annotated[
+        bool,
+        typer.Option(
+            "--retry-deferred",
+            help="first put the documents a temporary error stalled (in output/, stage deferred) back into "
+            "inbox/, so they run again without a --requeue per document",
+        ),
+    ] = False,
 ) -> None:
     """Process the documents in inbox/: publish pages, file failures and duplicates, and commit."""
     settings = Settings()
+    signal.signal(signal.SIGTERM, _terminate)  # a `kill` ends the run like Ctrl-C: the document goes back
     opts = RunOptions(
         profile=profile,
         dry_run=dry_run,
@@ -251,6 +264,7 @@ def run_pipeline_cmd(
         requeue=requeue,
         refresh_facts=refresh_facts,
         wait_youtube=wait_youtube,
+        retry_deferred=retry_deferred,
     )
     report = run_pipeline(
         ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)

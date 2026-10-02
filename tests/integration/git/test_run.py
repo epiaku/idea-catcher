@@ -9,7 +9,7 @@ from catcher.cli import app
 from catcher.core.frontmatter import load
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import BudgetExhausted, UsageLimitReached
-from catcher.modules.pipeline.inbox import slugify_title
+from catcher.modules.pipeline.inbox import deferred_in_output, slugify_title
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.youtube.facts import FactsUnavailable
 
@@ -770,8 +770,10 @@ def test_a_dry_run_saves_no_facts(repos, make_services, yt_facts, tmp_path):
     (repos.ideas / "inbox/clippings/a.md").write_text(clip("AAAAAAAAAAA"))
     services, calls, _, _ = youtube_services(make_services, tmp_path, yt_facts)
     report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), services)
-    assert statuses(report) == {"AAAAAAAAAAA": "would_publish"} and len(calls) == 1
+    assert statuses(report) == {"AAAAAAAAAAA": "would_fetch"}
+    assert calls == []  # a dry run never asks YouTube, so it cannot cost a request
     assert not (repos.ideas / "facts").exists()  # a dry run changes no files in the repos
+    assert not (tmp_path / "state" / "youtube-gate.json").exists()  # and it does not use up the gap either
 
 
 def test_a_429_opens_the_breaker_and_every_other_clip_waits_without_a_call(
@@ -783,10 +785,11 @@ def test_a_429_opens_the_breaker_and_every_other_clip_waits_without_a_call(
     services, calls, clock, _ = youtube_services(make_services, tmp_path, yt_facts, error=HttpError429("429"))
 
     report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
-    assert sorted(statuses(report).values()) == ["deferred", "waiting"]
-    [deferred] = [i for i in report.items if i.status == "deferred"]
-    assert "YouTube blocked until" in deferred.message
+    assert sorted(statuses(report).values()) == ["waiting", "waiting"]  # the 429 one too: no requeue needed
+    assert all("YouTube blocked until" in i.message for i in report.items if i.doc_class == "youtube")
     assert len(calls) == 1  # the one call that got the 429, and no more
+    assert sorted(p.name for p in clips.glob("*.md") if p.name in ("a.md", "b.md")) == ["a.md", "b.md"]
+    assert deferred_in_output(repos.ideas) == []  # nothing stalled in output/: no requeue needed
 
     clock.now += 3 * 3600  # hours later the gap is long gone, but the breaker is still open
     again = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
@@ -823,3 +826,161 @@ def test_notes_and_chats_never_wait_for_youtube(repos, make_services, yt_facts, 
     assert {i.doc_class for i in report.items} >= {"note", "ai-chat", "youtube"}
     assert all(i.status == "published" for i in report.items)  # the clip, the note and the chat
     assert calls == ["AAAAAAAAAAA"]
+
+
+# ---- safety: interrupts, one run at a time, git failures, documents the LLM cannot take ------------------
+
+
+def in_inbox(ideas: Path) -> list[str]:
+    return sorted(p.name for p in (ideas / "inbox").rglob("*.md"))
+
+
+def test_ctrl_c_in_the_middle_of_a_note_puts_it_back_in_the_inbox_and_still_commits(
+    repos, make_services, monkeypatch, sh
+):
+    real = process_note_of_run()
+    calls = []
+
+    def interrupt_on_second(note, svc, opts):
+        calls.append(note.doc_id)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return real(note, svc, opts)
+
+    monkeypatch.setattr("catcher.modules.pipeline.run.process_note", interrupt_on_second)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert report.counts() == {"published": 1, "interrupted": 1}
+    assert any("interrupted" in p for p in report.problems)
+    assert len(in_inbox(repos.ideas)) == 1  # the interrupted one is back, as it was captured
+    assert len(list((repos.ideas / "archive").rglob("*.md"))) == 1  # and only the finished one is archived
+    assert len(list((repos.ideas / "output").rglob("*.md"))) == 1
+    assert report.committed == {"docs": True, "ideas": True}  # what was done is not left uncommitted
+    assert sh(repos.ideas, "status", "--porcelain") == ""
+    again = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert again.counts() == {"published": 1}  # nothing lost, nothing archived twice
+    assert len(list((repos.ideas / "archive").rglob("*.md"))) == 2
+
+
+def process_note_of_run():
+    from catcher.modules.pipeline.process import process_note
+
+    return process_note
+
+
+def test_a_second_run_at_the_same_time_is_refused_and_touches_nothing(repos, make_services):
+    from catcher.core.files import file_lock
+
+    services = make_services()
+    lock = services.settings.catcher_state_dir / "pipeline.lock"
+    with file_lock(lock, blocking=False) as held:
+        assert held
+        report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    assert report.items == [] and "another catcher run is in progress" in report.problems[0]
+    assert len(in_inbox(repos.ideas)) == 2
+    assert run_pipeline(repos.ideas, repos.docs, RunOptions(), services).counts() == {"published": 2}
+
+
+def test_a_dry_run_does_not_need_the_run_lock(repos, make_services):
+    from catcher.core.files import file_lock
+
+    services = make_services()
+    with file_lock(services.settings.catcher_state_dir / "pipeline.lock", blocking=False):
+        report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), services)
+    assert report.counts() == {"would_publish": 2}
+
+
+def test_a_failed_pull_is_a_reported_problem_and_nothing_is_changed(repos, make_services, monkeypatch):
+    from catcher.core.git import GitError
+
+    def boom(repo):
+        raise GitError("git pull failed in idea-bucket: could not resolve host")
+
+    monkeypatch.setattr("catcher.modules.pipeline.run.pull", boom)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(push=True), make_services())
+    assert report.items == [] and "could not resolve host" in report.problems[0]
+    assert len(in_inbox(repos.ideas)) == 2
+
+
+def test_a_failed_push_is_a_reported_problem_after_the_work_is_committed(repos, make_services, monkeypatch):
+    from catcher.core.git import GitError
+
+    def boom(repo):
+        raise GitError("git push failed in epiaku-docs: rejected")
+
+    monkeypatch.setattr("catcher.modules.pipeline.run.push", boom)
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(push=True), make_services())
+    assert report.counts() == {"published": 2} and report.committed == {"docs": True, "ideas": True}
+    assert not report.pushed and "rejected" in report.problems[0]
+
+
+def test_an_empty_document_fails_without_an_llm_call(repos, make_services):
+    (repos.ideas / "inbox/notes/empty.md").write_text("---\ncreated: 2026-09-25\n---\n  \n")
+    notes = FakeBackend()
+    report = run_pipeline(
+        repos.ideas, repos.docs, RunOptions(only=["empty"]), make_services(note_backend=notes)
+    )
+    assert report.counts() == {"failed": 1} and "empty" in report.items[0].message
+    assert notes.prompts == []
+    failed = find(repos.ideas, "failed", "notes", "empty.md")
+    assert "empty" in failed.with_suffix(".error.txt").read_text()
+
+
+def test_a_document_over_the_size_limit_fails_without_an_llm_call(repos, make_services):
+    services = make_services()
+    services.settings = services.settings.model_copy(update={"llm_max_input_chars": 50})
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), services)
+    assert report.counts() == {"failed": 1} and "LLM_MAX_INPUT_CHARS" in report.items[0].message
+
+
+def test_retry_deferred_puts_the_stalled_documents_back_so_they_run_again(repos, make_services):
+    chats = FakeBackend([UsageLimitReached("limit", backend="openai")])
+    first = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    assert first.counts() == {"published": 1, "deferred": 1}
+    assert run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services()).items == []  # not alone
+    second = run_pipeline(repos.ideas, repos.docs, RunOptions(retry_deferred=True), make_services())
+    assert second.counts() == {"requeued": 1, "published": 1}
+    final = find(repos.ideas, "output", "clippings", "systeme.md")
+    assert "stage" not in load(final).fm
+
+
+def test_retry_deferred_with_nothing_stalled_does_nothing(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert run_pipeline(repos.ideas, repos.docs, RunOptions(retry_deferred=True), make_services()).items == []
+
+
+def test_a_gate_that_closes_after_the_check_sends_the_clip_back_to_the_inbox(
+    repos, make_services, yt_facts, tmp_path
+):
+    """The run checks the gate before it starts a clip; another process can use the gap in between."""
+    (repos.ideas / "inbox/clippings/a.md").write_text(clip("AAAAAAAAAAA"))
+    services, calls, _, _ = youtube_services(make_services, tmp_path, yt_facts)
+    services.youtube.gate.reserve()  # another process just took the slot
+    services.youtube.wait_needed = lambda *args, **kwargs: None  # the earlier check said "go ahead"
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(limit=1), services)
+    assert statuses(report) == {"AAAAAAAAAAA": "waiting"} and calls == []
+    assert "a.md" in in_inbox(repos.ideas)  # back where it was, no requeue needed
+    assert not [p for p in (repos.ideas / "output").rglob("*") if p.is_file() and "a" in p.name[:0]]
+    assert not list((repos.ideas / "failed").rglob("*")) if (repos.ideas / "failed").exists() else True
+
+
+def test_two_different_clips_with_one_id_warn_that_the_later_page_replaces_the_earlier(
+    repos, make_services, caplog
+):
+    caplog.set_level("WARNING", logger="catcher")
+    clips = repos.ideas / "inbox/clippings"
+    (clips / "one.md").write_text(chat("2446cd9c762c9cc9", turns(3).replace("question 2", "something else")))
+    (clips / "two.md").write_text(chat("2446cd9c762c9cc9", turns(6)))
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    same = [i for i in report.items if i.doc_id == "2446cd9c762c9cc9"]
+    assert len(same) == 2 and any("replaces the earlier one" in i.message for i in same)
+    assert "replaces the earlier one" in caplog.text
+
+
+def test_retry_deferred_flag_on_the_command_line(repos, make_services, monkeypatch):
+    chats = FakeBackend([UsageLimitReached("limit", backend="openai")])
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())
+    base = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs)]
+    ok = CliRunner().invoke(app, [*base, "--retry-deferred"])
+    assert ok.exit_code == 0, ok.output
+    assert "requeued" in ok.output and "published" in ok.output

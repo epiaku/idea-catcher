@@ -1,22 +1,27 @@
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]  # where `profiles.yaml` lives; the repos sit beside it
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
-    ideas_repo: Path = Path("../idea-bucket")
-    docs_repo: Path = Path("../epiaku-docs")
-    profiles_file: Path = Path("profiles.yaml")
+    # The defaults hang off the project folder, not off the folder the command is run from.
+    ideas_repo: Path = PROJECT_ROOT.parent / "idea-bucket"
+    docs_repo: Path = PROJECT_ROOT.parent / "epiaku-docs"
+    profiles_file: Path = PROJECT_ROOT / "profiles.yaml"
     freellmapi_url: str = "http://localhost:3001/v1"
     freellmapi_model: str = "auto"
-    freellmapi_api_key: str = "not-needed"
-    openai_api_key: str = ""
+    freellmapi_api_key: SecretStr = SecretStr("not-needed")  # SecretStr: a repr or a traceback shows ****
+    openai_api_key: SecretStr = SecretStr("")
     openai_base_url: str = "https://api.openai.com/v1"
     llm_timeout_s: int = 600
     llm_max_attempts: int = 5  # calls per request on a transient error (5xx, timeout); 1 turns retrying off
     llm_retry_wait_s: float = 2.0  # wait before the 2nd attempt, doubled before each one after it
+    llm_max_input_chars: int = 400_000  # a document (with its facts) longer than this is not sent to the LLM
     transcript_languages: str = "en"
     # How we talk to YouTube. A ban is per IP and about request rate, so we go slowly and stop when told no.
     youtube_request_delay_s: float = 10.0  # seconds between the requests inside one fetch

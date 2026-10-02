@@ -1,6 +1,6 @@
-# CLAUDE.md
+# Project instructions
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for the AI coding agents (Claude Code, GitHub Copilot, Cline, Roo Code) working in this repository.
 
 ## AI agents, skills and instructions
 

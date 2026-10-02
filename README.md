@@ -40,7 +40,7 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 
 | Command | What it does |
 | --- | --- |
-| `catcher run pipeline` | Process the inbox: summarize, write pages, archive, commit. `--file`, `--requeue`, `--limit`, `--dry-run`, `--push`, `--profile`, `--wait-youtube`, `--refresh-facts` |
+| `catcher run pipeline` | Process the inbox: summarize, write pages, archive, commit. `--file`, `--requeue`, `--limit`, `--dry-run`, `--push`, `--profile`, `--wait-youtube`, `--refresh-facts`, `--retry-deferred` |
 | `catcher scan` | List what is in the inbox, without changing anything |
 | `catcher reason`, `catcher render` | Try the LLM step, or write one page, on a single document |
 | `catcher youtube facts` | Print the facts of one YouTube video (it respects the YouTube rate limits) |

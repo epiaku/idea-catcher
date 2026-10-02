@@ -13,6 +13,7 @@ from catcher.modules.pipeline.inbox import (
     assign_name,
     calculated_stem,
     copy_artifact,
+    deferred_in_output,
     is_snapshot_of,
     mark_deferred,
     move_to_duplicates,
@@ -20,6 +21,7 @@ from catcher.modules.pipeline.inbox import (
     name_matches,
     name_title,
     read_note,
+    return_to_inbox,
     scan_inbox,
     start_work,
     with_filename_fields,
@@ -456,3 +458,72 @@ def test_file_finds_an_artifact_by_its_original_name_too(tmp_path):
         assert [a.path.name for a in scan_inbox(tmp_path, now=NOW, only=[query]).artifacts] == [
             "20260925-a1b2c3-report.pdf"
         ], query
+
+
+# ---- names read from a file are not trusted; a repo path may contain "inbox"; undoing start_work ---------
+
+
+def test_a_name_with_a_path_in_it_is_ignored_and_never_reaches_the_file_system(tmp_path, caplog):
+    evil = '---\ncalculated_filename: "../../outside.md"\noriginal_filename: "../x/y.md"\n---\nbody\n'
+    put(tmp_path, "inbox/notes/evil.md", evil)
+    [note] = scan_inbox(tmp_path, now=NOW).notes
+    assert note.name is None and note.original is None  # both ignored
+    assert "not one of our names" in caplog.text
+    start_work(tmp_path, note, now=NOW)
+    assert note.name and "/" not in note.name
+    assert not (tmp_path.parent / "outside.md").exists()
+    assert (tmp_path / "output/notes" / note.name).exists()
+
+
+def test_a_name_we_wrote_ourselves_is_kept(tmp_path):
+    put(tmp_path, "inbox/notes/a.md", '---\ncalculated_filename: "20260927-a1b2c3-my-idea.md"\n---\nbody\n')
+    [note] = scan_inbox(tmp_path, now=NOW).notes
+    assert note.name == "20260927-a1b2c3-my-idea.md"
+
+
+def test_the_path_under_inbox_is_right_when_the_repo_path_also_holds_the_word_inbox(tmp_path):
+    repo = tmp_path / "inbox" / "idea-bucket"
+    (repo / ".git").mkdir(parents=True)
+    put(repo, "inbox/notes/a.md", "an idea\n")
+    [note] = scan_inbox(repo, now=NOW).notes
+    assert note.rel == Path("notes/a.md")
+    assert read_note(repo / "inbox/notes/a.md", NOW).rel == Path("notes/a.md")  # also when read from anywhere
+    start_work(repo, note, now=NOW)
+    assert (repo / "archive/notes" / note.name).exists() and not (tmp_path / "archive").exists()
+
+
+def test_return_to_inbox_undoes_start_work_and_keeps_the_name(tmp_path):
+    original = "---\nsource: x\n---\nan idea\n"
+    path = put(tmp_path, "inbox/notes/a.md", original)
+    [note] = scan_inbox(tmp_path, now=NOW).notes
+    start_work(tmp_path, note, now=NOW)
+    assert not path.exists()
+    return_to_inbox(tmp_path, note)
+    assert path.exists() and not list((tmp_path / "archive").rglob("*.md"))
+    assert not list((tmp_path / "output").rglob("*.md"))  # in one place only
+    [again] = scan_inbox(tmp_path, now=NOW).notes
+    assert again.name == note.name  # the same calculated name, so nothing is archived twice
+
+
+def test_return_to_inbox_of_a_document_that_never_started_changes_nothing(tmp_path):
+    path = put(tmp_path, "inbox/notes/a.md", "an idea\n")
+    [note] = scan_inbox(tmp_path, now=NOW).notes
+    assert return_to_inbox(tmp_path, note) == [] and path.read_text() == "an idea\n"
+
+
+def test_a_write_is_never_half_done_no_temp_files_are_left(tmp_path):
+    put(tmp_path, "inbox/notes/a.md", "an idea\n")
+    [note] = scan_inbox(tmp_path, now=NOW).notes
+    start_work(tmp_path, note, now=NOW)
+    mark_deferred(tmp_path, note, "limit", now=NOW)
+    assert not [p for p in tmp_path.rglob("*") if p.name.endswith(".tmp")]
+
+
+def test_deferred_in_output_lists_only_the_stalled_documents(tmp_path):
+    put(tmp_path, "inbox/notes/a.md", "one\n")
+    put(tmp_path, "inbox/notes/b.md", "two\n")
+    a, b = scan_inbox(tmp_path, now=NOW).notes
+    start_work(tmp_path, a, now=NOW)
+    start_work(tmp_path, b, now=NOW)
+    mark_deferred(tmp_path, a, "limit", now=NOW)
+    assert deferred_in_output(tmp_path) == [f"notes/{a.name}"]

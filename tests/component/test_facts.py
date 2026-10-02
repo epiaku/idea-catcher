@@ -242,3 +242,21 @@ def test_fetch_facts_on_a_real_video_from_its_saved_info_and_captions(monkeypatc
     assert (facts.transcript_text() or "").startswith(
         "[0:00] This is Marine and she is a rockstar\n[0:02] with"
     )
+
+
+def test_both_dates_of_the_facts_are_utc(monkeypatch):
+    patch_extract(monkeypatch)
+    late = datetime(
+        2026, 9, 27, 23, 30, tzinfo=UTC
+    )  # still the 27th in UTC, whatever zone this machine is in
+    facts = fetch_facts("MBPHU7aaklM", now=late)
+    assert (facts.fetched_at, facts.fetched_utc) == ("2026-09-27", "2026-09-27T23:30:00+00:00")
+
+
+def test_only_a_video_that_is_gone_counts_as_gone_for_good():
+    from catcher.modules.youtube.facts import is_gone_for_good
+
+    assert is_gone_for_good(Exception("ERROR: [youtube] x: Private video. Sign in if you've been granted"))
+    assert is_gone_for_good(Exception("Video unavailable"))
+    assert not is_gone_for_good(Exception("connection reset by peer"))
+    assert not is_gone_for_good(Exception("HTTP Error 503"))

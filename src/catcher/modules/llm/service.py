@@ -40,6 +40,11 @@ class BackendUnavailable(LlmError):
     pass
 
 
+class InputRejected(LlmError):
+    """The document itself cannot be sent (empty, or too long for the model). A retry would fail the same
+    way and cost the same, so it is a failure of the document, not a deferral."""
+
+
 class TransientBackendError(BackendUnavailable):
     """A failure that may not happen on the next call (a 5xx, a timeout, a dropped connection)."""
 

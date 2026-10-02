@@ -207,3 +207,25 @@ def test_one_attempt_turns_retrying_off():
 def test_the_settings_reach_the_backends():
     backend = make_backend(Profile(backend="freellmapi"), Settings(llm_max_attempts=3, llm_retry_wait_s=0.5))
     assert (backend.max_attempts, backend.retry_wait_s) == (3, 0.5)  # type: ignore[attr-defined]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "message",
+    ["This model's maximum context length is 128000 tokens, you sent 300000", "Please reduce the length"],
+)
+def test_a_document_too_long_for_the_model_is_rejected_not_retried_forever(message):
+    from catcher.modules.llm.service import InputRejected
+
+    route = respx.post(URL).mock(return_value=error(400, message, "context_length_exceeded"))
+    with pytest.raises(InputRejected):
+        openai_backend().complete("p", model="m", task="ai-chat")
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_a_word_like_spend_in_an_unrelated_error_is_not_a_budget_problem():
+    respx.post(URL).mock(return_value=error(404, "The model 'x' does not exist; we spend no time on credit"))
+    with pytest.raises(BackendUnavailable) as info:
+        openai_backend().complete("p", model="m", task="ai-chat")
+    assert not isinstance(info.value, UsageLimitReached)

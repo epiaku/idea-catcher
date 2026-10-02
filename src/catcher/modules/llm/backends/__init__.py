@@ -12,18 +12,18 @@ def make_backend(profile: Profile, settings: Settings) -> Backend:
         return OpenAiCompatibleBackend(
             "freellmapi",
             settings.freellmapi_url,
-            settings.freellmapi_api_key,
+            settings.freellmapi_api_key.get_secret_value(),
             timeout_s=settings.llm_timeout_s,
             max_attempts=settings.llm_max_attempts,
             retry_wait_s=settings.llm_retry_wait_s,
         )
     if profile.backend == "openai":
-        if not settings.openai_api_key:
+        if not settings.openai_api_key.get_secret_value():
             raise BackendUnavailable("OPENAI_API_KEY is not set")
         return OpenAiCompatibleBackend(
             "openai",
             settings.openai_base_url,
-            settings.openai_api_key,
+            settings.openai_api_key.get_secret_value(),
             json_mode=True,
             timeout_s=settings.llm_timeout_s,
             max_attempts=settings.llm_max_attempts,

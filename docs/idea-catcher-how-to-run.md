@@ -113,7 +113,13 @@ What one run does, in order:
   uv run catcher run pipeline --refresh-facts    # fetch the YouTube facts again, even when they are saved
   ```
 
-- **`--dry-run`**: change no files and commit nothing. Note that with a real profile a dry run **still calls the LLM**. Combine it with `--profile fake` for a free check.
+- **`--retry-deferred`**: first put every document that a temporary error stalled (in `output/` with `stage: deferred`) back into `inbox/`, so they run again together with the rest, without a `--requeue` per document.
+
+  ```bash
+  uv run catcher run pipeline --retry-deferred
+  ```
+
+- **`--dry-run`**: change no files and commit nothing. Note that with a real profile a dry run **still calls the LLM**. Combine it with `--profile fake` for a free check. A dry run **never calls YouTube**, and does not use up the gap: a clip with no saved facts shows `would_fetch`.
 
   ```bash
   uv run catcher run pipeline --profile fake --dry-run
@@ -211,7 +217,7 @@ YouTube blocks an IP address that asks too fast, and retrying during a block mak
 
 - **Saved facts.** The facts of a video (title, description, chapters, transcript, counts) are saved once in `facts/<video id>.json` in `idea-bucket` and committed with everything else. A retry, a requeue or a rerun reads that file and **never calls YouTube again**. `--refresh-facts` fetches again. A video without captions is asked again only after a day.
 - **One fetch, paced.** One yt-dlp extraction gets the info and the captions: about 3 requests, `YOUTUBE_REQUEST_DELAY_S` (10 s) apart.
-- **A gap between fetches.** At least `YOUTUBE_MIN_GAP_S` (2 minutes) plus up to `YOUTUBE_GAP_JITTER_S` (5 minutes) of random time between the start of two fetches. The state is a small file on this machine (`~/.catcher/state/youtube-gate.json`), shared by every run.
+- **A gap between fetches.** At least `YOUTUBE_MIN_GAP_S` (2 minutes) plus up to `YOUTUBE_GAP_JITTER_S` (5 minutes) of random time between the start of two fetches. The state is a small file on this machine (`~/.catcher/state/youtube-gate.json`), shared by every run. A file that cannot be read is kept as `youtube-gate.corrupt` and the gate **closes** for `YOUTUBE_BLOCK_HOURS`, because losing an active block by accident is the expensive mistake.
 - **A clip that must wait stays in `inbox/`** with the status `waiting` and a message. It is not an error, and there is nothing to requeue: the next run takes it. With `--wait-youtube` the run sleeps instead (up to `YOUTUBE_WAIT_MAX_S`, 30 minutes).
 - **The breaker.** After a 429 or a bot check, no call is made for `YOUTUBE_BLOCK_HOURS` (6), then 12, then 24 hours. A fetch that works closes it.
 - **How to see whether YouTube is blocking you.** When the breaker opens, the log has an ERROR line: `YouTube is blocking us (block 1): no calls for 6 hours, until <time>`. Every clip that is waiting then says `YouTube blocked until <time>`. The state is in `~/.catcher/state/youtube-gate.json`: `blocked_until` is the end of the block, and `streak` counts the blocks in a row (0 means none). If it happens, raise `YOUTUBE_MIN_GAP_S` (for example back to `600`) before the block ends.
@@ -235,9 +241,11 @@ The status in the first column is one of:
 - **`published`**: the page is written to `epiaku-docs` and to `output/`, the original is in `archive/`, and the document is gone from `inbox/`.
 - **`would_publish`**: the same, in a `--dry-run`. Nothing was written.
 - **`requeued`** / **`would_requeue`**: `--requeue` moved the original from `archive/` back into `inbox/` (`would_requeue` in a `--dry-run`: nothing moved).
-- **`waiting`**: a YouTube clip that has to wait for the gap between YouTube calls (or for a block to end). It is **not touched and stays in `inbox/`**: nothing to requeue, the next run takes it. The message says when the next call is allowed.
-- **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, run it again with `--requeue NAME`, or move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting.
-- **`failed`**: could not be processed for good, for example invalid LLM output twice or an invalid page. The note moves to `failed/` with a `.error.txt` that says why. To try it again after fixing the cause, use `--requeue NAME`.
+- **`would_fetch`**: a YouTube clip with no saved facts, in a `--dry-run`. A dry run does not call YouTube.
+- **`waiting`**: a YouTube clip that has to wait for the gap between YouTube calls (or for a block to end). It is **not touched and stays in `inbox/`**: nothing to requeue, the next run takes it. The message says when the next call is allowed. If another run used the gap after this run had started the clip, or YouTube answered with a block, the clip is put **back** in `inbox/` with the same name and shows `waiting` too.
+- **`interrupted`**: Ctrl-C or a `kill` stopped the run during this document. It is put back in `inbox/` under the same name, what was already done is committed, and the run reports a problem (exit code 2). Run again to continue. Only one run can work at a time on a machine: a second one is refused with "another catcher run is in progress".
+- **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, run it again with `--requeue NAME`, or move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting. `--retry-deferred` does this for all of them at once.
+- **`failed`**: could not be processed for good, for example invalid LLM output twice, an invalid page, an empty document, or one longer than `LLM_MAX_INPUT_CHARS` (it is not sent to the LLM). The note moves to `failed/` with a `.error.txt` that says why. To try it again after fixing the cause, use `--requeue NAME`.
 - **`duplicate`**: an earlier snapshot of a longer clip. Moved to `duplicates/`, no LLM call.
 - **`skipped`**: left for the next run because of `--limit`, or an artifact over the size limit.
 - **`artifact`**: a file that is not markdown was renamed, archived and copied to epiaku-docs (`would_copy` in a `--dry-run`).

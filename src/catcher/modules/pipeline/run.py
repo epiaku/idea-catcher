@@ -5,27 +5,36 @@ from pathlib import Path
 from typing import Literal
 
 from catcher import __version__
-from catcher.core.git import commit_paths, pull, push
+from catcher.core.files import file_lock
+from catcher.core.git import GitError, commit_paths, pull, push
 from catcher.modules.llm.profiles import UnknownProfile
-from catcher.modules.llm.service import BackendUnavailable, BudgetExhausted, InvalidOutput, UsageLimitReached
+from catcher.modules.llm.service import (
+    BackendUnavailable,
+    BudgetExhausted,
+    InputRejected,
+    InvalidOutput,
+    UsageLimitReached,
+)
 from catcher.modules.pipeline.inbox import (
     Note,
     Requeued,
     ScanResult,
     copy_artifact,
+    deferred_in_output,
     is_snapshot_of,
     mark_deferred,
     move_to_duplicates,
     move_to_failed,
     note_label,
     requeue_from_archive,
+    return_to_inbox,
     scan_inbox,
     start_work,
 )
 from catcher.modules.pipeline.process import ProcessedPage, ProcessOptions, Services, process_note
 from catcher.modules.pipeline.publish import write_output, write_page
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
-from catcher.modules.youtube.facts import FactsUnavailable
+from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable, FetchSkipped
 from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.run")
@@ -42,6 +51,8 @@ Status = Literal[
     "requeued",
     "would_requeue",
     "waiting",
+    "would_fetch",
+    "interrupted",
 ]
 
 
@@ -68,6 +79,7 @@ class RunOptions:
     )
     refresh_facts: bool = False  # fetch the YouTube facts again even when they are saved
     wait_youtube: bool = False  # sleep through a short gap between YouTube calls instead of waiting
+    retry_deferred: bool = False  # first put the documents a temporary error stalled back into inbox/
 
 
 @dataclass
@@ -135,6 +147,20 @@ def copy_artifacts(
 
 
 def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
+    """One run over the inbox. Only one run at a time per machine: a second one is refused, because both
+    would pick up the same documents. A dry run changes nothing, so it needs no lock."""
+    if opts.dry_run:
+        return _run(ideas, docs, opts, svc)
+    lock_file = svc.settings.catcher_state_dir.expanduser() / "pipeline.lock"
+    with file_lock(lock_file, blocking=False) as held:
+        if not held:
+            message = f"another catcher run is in progress on this machine ({lock_file}): nothing was done"
+            log.error(message)
+            return RunReport(problems=[message])
+        return _run(ideas, docs, opts, svc)
+
+
+def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     report = RunReport()
     log.info(
         "run started: version=%s ideas=%s docs=%s profile=%s dry_run=%s push=%s limit=%s",
@@ -157,15 +183,22 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
     if report.problems:
         return report  # nothing was touched
     if opts.push:
-        pull(ideas)
-        pull(docs)
+        try:
+            pull(ideas)
+            pull(docs)
+        except GitError as e:
+            report.problems.append(f"{e}: nothing was changed")
+            return report
 
     touched_ideas: list[Path] = []
     touched_docs: list[Path] = []
     facts_dir = ideas / FACTS_DIR  # the saved YouTube facts, one file per video
     requeued: list[Requeued] = []
-    if opts.requeue:
-        requeued, report.not_in_archive = requeue_from_archive(ideas, opts.requeue, dry_run=opts.dry_run)
+    explicit = opts.requeue or []
+    stalled = deferred_in_output(ideas) if opts.retry_deferred else []
+    if explicit or stalled:
+        requeued, not_found = requeue_from_archive(ideas, [*explicit, *stalled], dry_run=opts.dry_run)
+        report.not_in_archive = [q for q in not_found if q in explicit]
         for query in report.not_in_archive:
             log.warning('no document named "%s" found in archive/: nothing to requeue', query)
         for item in requeued:
@@ -176,7 +209,7 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
                 message = f"inbox/{item.rel.as_posix()} already exists, not overwritten"
             report.items.append(ItemReport(item.doc_id, item.doc_class, status, message))
     # `--requeue` runs only the requeued documents, like `--file` does for the ones it names
-    only = None if opts.only is None and not opts.requeue else [*(opts.only or []), *(opts.requeue or [])]
+    only = None if opts.only is None and not explicit else [*(opts.only or []), *explicit]
     scan = scan_inbox(ideas, only=only)
     for rel, reason in scan.errors.items():  # unreadable: archive it and move it to failed/
         report.unreadable[rel] = reason
@@ -247,6 +280,7 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
     blocked: set[str] = set()
     budget_blocked: dict[str, int] = {}  # backend -> notes waiting because its budget is used up
     attempted = 0
+    seen_ids: set[str] = set()
     for position, note in enumerate(ordered, start=1):
         who = f"({position}/{total}) {note_label(note)}"
         item = ItemReport(note.doc_id, note.doctype.name, "skipped")
@@ -267,8 +301,10 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
                 continue
         attempted += 1
         log.info("%s: processing", who)
-        if not opts.dry_run:
-            touched_ideas += start_work(ideas, note)  # out of inbox/: archive + working copy in output/
+        if note.doc_id in seen_ids:
+            item.message = "same id as an earlier document in this run: this page replaces the earlier one"
+            log.warning("%s: %s", who, item.message)
+        seen_ids.add(note.doc_id)
         popts = ProcessOptions(
             profile=opts.profile,
             dry_run=opts.dry_run,
@@ -278,7 +314,22 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             wait_youtube=opts.wait_youtube,
         )
         try:
+            if not opts.dry_run:  # out of inbox/: archive + working copy in output/
+                try:
+                    touched_ideas += start_work(ideas, note)
+                except OSError as e:  # the document is still in inbox/ (or comes back in the handler)
+                    touched_ideas += return_to_inbox(ideas, note)
+                    item.status, item.message = "failed", f"could not start work: {e}"
+                    log.error("%s: %s", who, item.message)
+                    continue
             processed = process_note(note, svc, popts)
+        except KeyboardInterrupt:  # Ctrl-C or SIGTERM: leave the document where the next run finds it
+            if not opts.dry_run:
+                touched_ideas += return_to_inbox(ideas, note)
+            item.status, item.message = "interrupted", "back in inbox/"
+            log.warning("%s: interrupted, back in inbox/", who)
+            report.problems.append("interrupted: the remaining documents were not processed")
+            break
         except BudgetExhausted as e:
             blocked.add(e.backend)
             budget_blocked[e.backend] = budget_blocked.get(e.backend, 0) + 1
@@ -306,10 +357,21 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
             log.error("%s: deferred, configuration error: %s", who, item.message)
             stall(note, item.message)
             continue
-        except InvalidOutput as e:
+        except (InvalidOutput, InputRejected) as e:  # the document itself: a retry would fail the same way
             item.status, item.message = "failed", str(e)
             log.error("%s: failed, %s", who, item.message)
             file_as_failed(note, item.message)
+            continue
+        except FactsDeferred as e:  # YouTube is closed for now (the gap, the breaker): wait in inbox/
+            if not opts.dry_run:
+                touched_ideas += return_to_inbox(ideas, note)
+            attempted -= 1  # it was not worked on, so it does not count against --limit
+            item.status, item.message = "waiting", f"{e} (back in inbox/)"
+            log.info("%s: waiting, %s", who, item.message)
+            continue
+        except FetchSkipped as e:  # a dry run does not call YouTube
+            item.status, item.message = "would_fetch", str(e)
+            log.info("%s: %s", who, item.message)
             continue
         except FactsUnavailable as e:
             item.status, item.message = "deferred", str(e)
@@ -368,16 +430,19 @@ def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> Ru
         docs_message = f"idea-catcher: publish {published} page(s)"
         if artifacts:
             docs_message += f" and {artifacts} artifact(s)"
-        report.committed["docs"] = commit_paths(docs, touched_docs, docs_message, author=author)
-        report.committed["ideas"] = commit_paths(
-            ideas,
-            touched_ideas,
-            f"idea-catcher: process the inbox ({published} published)",
-            author=author,
-        )
-        if opts.push:
-            push(docs)
-            push(ideas)
-            report.pushed = True
+        try:
+            report.committed["docs"] = commit_paths(docs, touched_docs, docs_message, author=author)
+            report.committed["ideas"] = commit_paths(
+                ideas,
+                touched_ideas,
+                f"idea-catcher: process the inbox ({published} published)",
+                author=author,
+            )
+            if opts.push:
+                push(docs)
+                push(ideas)
+                report.pushed = True
+        except GitError as e:  # the files are written; only the git step failed
+            report.problems.append(f"{e}: the changes are in the files but not (fully) committed or pushed")
     log.info("run finished: %s committed=%s pushed=%s", report.counts(), report.committed, report.pushed)
     return report

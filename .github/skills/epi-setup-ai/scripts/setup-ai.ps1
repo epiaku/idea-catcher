@@ -23,6 +23,22 @@ if ($GitRoot) {
     1..4 | ForEach-Object { $RepoRoot = Split-Path -Parent $RepoRoot }
 }
 
+# Remove a file, folder or link. A symlink is removed WITHOUT following it: Remove-Item -Recurse on a
+# directory symlink can delete the contents of the target in Windows PowerShell 5.1, and that would
+# destroy .github\skills. Test-Path is not used, because it is false for a dangling link.
+function Remove-PathSafe([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return }
+    if ($item.LinkType) {
+        try { [System.IO.File]::Delete($item.FullName) } catch { [System.IO.Directory]::Delete($item.FullName) }
+        if (Test-Path -LiteralPath $item.FullName) { [System.IO.Directory]::Delete($item.FullName) }
+    } elseif ($item.PSIsContainer) {
+        Remove-Item -LiteralPath $Path -Recurse -Force
+    } else {
+        Remove-Item -LiteralPath $Path -Force
+    }
+}
+
 Set-Location $RepoRoot
 Write-Host "Working in repository root: $RepoRoot" -ForegroundColor Cyan
 
@@ -54,14 +70,14 @@ if (!(Test-Path ".roo")) { New-Item -ItemType Directory -Path ".roo" | Out-Null 
 # 3. Create skills folder symlinks
 $ToolsToLink = @(".cline\skills", ".claude\skills", ".roo\skills")
 foreach ($LinkPath in $ToolsToLink) {
-    if (Test-Path $LinkPath) { Remove-Item -Recurse -Force $LinkPath }
+    Remove-PathSafe $LinkPath
     New-Item -ItemType SymbolicLink -Path $LinkPath -Target "..\.github\skills" | Out-Null
     Write-Host "Created symlink: $LinkPath -> .github\skills" -ForegroundColor Green
 }
 
 # 4. Create root CLAUDE.md file symlink pointing to copilot-instructions.md
 $ClaudeMd = "CLAUDE.md"
-if (Test-Path $ClaudeMd) { Remove-Item -Force $ClaudeMd }
+Remove-PathSafe $ClaudeMd
 New-Item -ItemType SymbolicLink -Path $ClaudeMd -Target ".github\copilot-instructions.md" | Out-Null
 Write-Host "Created symlink: CLAUDE.md -> .github/copilot-instructions.md" -ForegroundColor Green
 
@@ -85,7 +101,7 @@ if (Test-Path $SourceInstructions) {
 # 5b. Ensure .roo\rules directory exists and physically copy copilot-instructions.md
 # (Roo Code inherited a lot of Cline's file-loading code; copying defensively
 # here for the same reason .clinerules\ uses copies, not symlinks — see
-# docs/ai-tooling-distribution.md.)
+# ..\references\ai-agents-layout.md.)
 $RooRulesDir = ".roo\rules"
 $TargetRooRule = Join-Path $RooRulesDir "copilot-instructions.md"
 
@@ -106,6 +122,21 @@ if (Test-Path $SourceInstructions) {
 $AgentsSrc = ".github/agents"
 $ClinerulesDir = ".clinerules"
 $ClaudeDir = ".claude/agents"
+
+# 6a. Remove what an earlier run generated for agents, so a removed or renamed agent does not leave
+# stale files behind. These paths are generated and git-ignored (edit only in .github\):
+#   - symlinks in .claude\agents (real files there are left alone)
+#   - everything in .clinerules except the instructions copy made in step 5
+#   - the .roo\rules-<agent>\ folders
+if (Test-Path $ClaudeDir) {
+    Get-ChildItem -Path $ClaudeDir -Recurse -Force | Where-Object { $_.LinkType } | ForEach-Object { Remove-PathSafe $_.FullName }
+}
+if (Test-Path $ClinerulesDir) {
+    Get-ChildItem -Path $ClinerulesDir -Force | Where-Object { $_.Name -ne "copilot-instructions.md" } | ForEach-Object { Remove-PathSafe $_.FullName }
+}
+if (Test-Path ".roo") {
+    Get-ChildItem -Path ".roo" -Directory -Filter "rules-*" -Force | ForEach-Object { Remove-PathSafe $_.FullName }
+}
 
 if (Test-Path $AgentsSrc) {
     Write-Host "Processing custom agents..." -ForegroundColor Cyan
@@ -137,8 +168,11 @@ if (Test-Path $AgentsSrc) {
         Write-Host "Copied agent to $targetClinerules" -ForegroundColor Green
         
         # 2. Create symbolic link in .claude pointing to the agent file
-        if (Test-Path $targetClaude) { Remove-Item -Force $targetClaude }
-        New-Item -ItemType SymbolicLink -Path $targetClaude -Value $_.FullName | Out-Null
+        # Relative target, like the .sh: one "..\" per folder level of the link's own folder
+        Remove-PathSafe $targetClaude
+        $depth = ($claudeParent -split '[\\/]').Count
+        $relTarget = ("..\" * $depth) + ".github\agents\$relPath"
+        New-Item -ItemType SymbolicLink -Path $targetClaude -Target $relTarget | Out-Null
         Write-Host "Created symlink at $targetClaude" -ForegroundColor Green
 
         # 3. Roo Code has no "drop a markdown file in" agent mechanism (unlike
@@ -149,7 +183,11 @@ if (Test-Path $AgentsSrc) {
         # for files in this folder).
         $slug = $_.BaseName
         $targetRooRulesDir = ".roo\rules-$slug"
-        if (!(Test-Path $targetRooRulesDir)) { New-Item -ItemType Directory -Path $targetRooRulesDir | Out-Null }
+        if (Test-Path $targetRooRulesDir) {
+            Write-Host "Warning: another agent already uses the Roo slug '$slug' ($($_.Name)); skipping Roo for this one. Give the agents different file names." -ForegroundColor Yellow
+            return
+        }
+        New-Item -ItemType Directory -Path $targetRooRulesDir | Out-Null
         $targetRooRule = Join-Path $targetRooRulesDir $_.Name
         if (Test-Path $targetRooRule) { Remove-Item -Force $targetRooRule }
 
@@ -160,7 +198,11 @@ if (Test-Path $AgentsSrc) {
         }
         if ($delimiterIndices.Count -ge 2) {
             $bodyStart = $delimiterIndices[1] + 1
-            $lines[$bodyStart..($lines.Count - 1)] | Set-Content -Path $targetRooRule -Encoding utf8
+            if ($bodyStart -lt $lines.Count) {
+                $lines[$bodyStart..($lines.Count - 1)] | Set-Content -Path $targetRooRule -Encoding utf8
+            } else {
+                Set-Content -Path $targetRooRule -Value "" -Encoding utf8
+            }
         } else {
             $lines | Set-Content -Path $targetRooRule -Encoding utf8
         }
@@ -212,6 +254,9 @@ if (!(Test-Path ".gitignore")) {
     New-Item -ItemType File -Path ".gitignore" | Out-Null
     Write-Host "Created .gitignore file." -ForegroundColor Green
 }
+# A .gitignore that does not end in a newline would get the first new entry glued to its last line
+$GitIgnoreRaw = Get-Content ".gitignore" -Raw -ErrorAction SilentlyContinue
+if ($GitIgnoreRaw -and -not $GitIgnoreRaw.EndsWith("`n")) { Add-Content -Path ".gitignore" -Value "" }
 $GitIgnoreContent = Get-Content ".gitignore" -ErrorAction SilentlyContinue
 if ($GitIgnoreContent -notcontains ".cline/") {
     Add-Content -Path ".gitignore" -Value ".cline/"

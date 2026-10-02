@@ -51,13 +51,15 @@ It is **idempotent**: running it again rebuilds the same result. It needs no `su
 
 ## What it creates
 
+(The step numbers below are for reading; the comments in the script are numbered differently.)
+
 | Step | Result | Kind |
 | --- | --- | --- |
 | 1 | Makes `.github/`, `.github/skills/`, and a placeholder `.github/copilot-instructions.md` **only if it is missing** | folders and a file |
 | 2 | `.claude/skills`, `.cline/skills` and `.roo/skills` point to `.github/skills` | **symlinks** |
 | 3 | `CLAUDE.md` in the repo root points to `.github/copilot-instructions.md` | **symlink** |
 | 4 | `.clinerules/copilot-instructions.md` and `.roo/rules/copilot-instructions.md` | **copies** |
-| 5 | For every agent in `.github/agents/` (nested folders too): `.claude/agents/<agent>.md` points to the source | **symlinks** |
+| 5 | First **removes what an earlier run generated for agents** (see "What it deletes or replaces"), so a removed agent leaves nothing behind. Then, for every agent in `.github/agents/` (nested folders too): `.claude/agents/<agent>.md` points to the source | **symlinks** |
 | 6 | For every agent: `.clinerules/<agent>.md` is a copy for Cline | **copy** |
 | 7 | For every agent: `.roo/rules-<agent>/<agent>.md` holds the agent text **without its frontmatter** | **copy** |
 | 8 | `.roomodes` is **generated** from the agents' frontmatter: one Roo custom mode per agent | generated file |
@@ -94,12 +96,15 @@ Read this before running it, and tell the user:
 - **`.claude/skills`, `.cline/skills` and `.roo/skills`:** if one of them is a **real folder** (not a symlink), the script **deletes it with `rm -rf`** and puts the symlink there. Move anything you want to keep into `.github/skills/` first.
 - **`CLAUDE.md`:** if it is a **regular file**, the script **deletes it without copying it** and makes the symlink. Its text is lost unless it is already in `.github/copilot-instructions.md`. If `CLAUDE.md` was tracked by git, its deletion is also **staged** (it shows as a change to commit).
 - **The copies** (`.clinerules/`, `.roo/rules/`, `.roo/rules-<agent>/`) are **overwritten**. Edit the source in `.github/`, never the copy.
+- **Stale agent files are removed on every run.** Before it rebuilds the agents, the script deletes the symlinks in `.claude/agents/` (real files there stay), everything in `.clinerules/` except `copilot-instructions.md`, and every `.roo/rules-*/` folder. That is how a removed or renamed agent disappears. Do not keep hand-written files in those places.
+- **Two agents with the same file name** (for example `a/foo.md` and `b/foo.md`) would share one Roo slug. The script warns and skips Roo for the second one. Give agents unique file names.
 - **`.roomodes`** is rewritten on every run. Hand edits are lost. A permanent change belongs in the agent file or in the script.
 - **`.gitignore`** gets up to six lines added, so it will show as modified.
 - If `.github/copilot-instructions.md` does not exist, a **placeholder** is created. Write the real instructions there.
 
 ## Notes
 
+- **Windows PowerShell 5.1 and links.** The `.ps1` removes links without following them (a recursive delete of a directory link can wipe the target in PowerShell 5.1), but it is untested, so run it on a copy of the repo the first time or use PowerShell 7+.
 - **Windows needs symlink permission.** Creating symlinks needs PowerShell **as Administrator**, or **Developer Mode** turned on. The `.ps1` copy of the script has **not been tested** by the author of this skill (no PowerShell was available), so check its result.
 - **The script finds the project root by itself.** It lives three levels below the root (`.github/skills/epi-setup-ai/scripts/`), so it asks git for the repository root, and falls back to going four folders up. That is why it works from any working directory, and through the `.claude/skills` symlink. The scripts live **only in this skill folder**.
 - **Roo Code on macOS** may also need `epi-fix-roo-code`: a separate problem with its ripgrep path, unrelated to this layout.

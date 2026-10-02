@@ -5,14 +5,15 @@ is committed with everything else, so it is backed up and it survives a new mach
 """
 
 import logging
-import os
 import re
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from catcher.core.files import write_atomic
 from catcher.modules.youtube.facts import YoutubeFacts
 
 log = logging.getLogger("catcher.youtube")
@@ -52,13 +53,11 @@ class FactsCache:
         except (ValidationError, OSError, ValueError) as e:
             log.warning("ignoring unreadable saved facts %s: %s", path.name, e)
             return None
-        if not facts.transcript and not self._fresh(facts):
+        if not facts.transcript and not self._fresh(facts):  # also a video that is gone for good
             return None
         return facts
 
     def _fresh(self, facts: YoutubeFacts) -> bool:
-        from datetime import datetime
-
         if not facts.fetched_utc:
             return False
         try:
@@ -69,8 +68,5 @@ class FactsCache:
 
     def put(self, facts: YoutubeFacts) -> Path:
         path = self.path(facts.video_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_suffix(".tmp")
-        temp.write_text(facts.model_dump_json(indent=2), encoding="utf-8")
-        os.replace(temp, path)  # never a half-written file
+        write_atomic(path, facts.model_dump_json(indent=2))  # never a half-written file
         return path

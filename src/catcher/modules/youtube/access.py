@@ -10,6 +10,7 @@ YouTube says no (a 429, a bot check) -> open the breaker, and "try later"
 import logging
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from catcher.core.config import Settings
@@ -18,8 +19,10 @@ from catcher.modules.youtube.facts import (
     FactsDeferred,
     FactsFetcher,
     FactsUnavailable,
+    FetchSkipped,
     YoutubeFacts,
     fetch_facts,
+    is_gone_for_good,
 )
 from catcher.modules.youtube.gate import Wait, YoutubeGate, is_block_error
 
@@ -83,7 +86,10 @@ class YoutubeAccess:
         refresh: bool = False,
         write_cache: bool = True,
         wait: bool = False,
+        fetch_allowed: bool = True,
     ) -> YoutubeFacts:
+        """The facts of a video. With `fetch_allowed=False` (a dry run) only saved facts are used: nothing is
+        asked of YouTube and the gate is not touched, so a dry run never costs a request."""
         cache = self.cache(facts_dir)
         if not refresh and cache is not None:
             saved = cache.get(video_id)
@@ -92,18 +98,40 @@ class YoutubeAccess:
                 return saved
         if self.offline:
             raise FactsUnavailable(f"YOUTUBE_OFFLINE is on and there are no saved facts for {video_id}")
+        if not fetch_allowed:
+            raise FetchSkipped(f"no saved facts for {video_id}: a dry run does not call YouTube")
         self._pass_the_gate(wait)
+        started = self.clock()
         try:
             facts = self.fetch(video_id)
         except Exception as e:
             if is_block_error(e):
-                until = self.gate.record_block()
+                until = self.gate.record_block(started)
                 raise FactsDeferred(Wait(until, blocked=True).message(self.clock())) from e
+            if is_gone_for_good(e):
+                self._remember_gone(video_id, cache, write_cache, e)
             raise
-        self.gate.record_success()
+        self.gate.record_success(started)
         if write_cache and cache is not None:
             cache.put(facts)
         return facts
+
+    def _remember_gone(
+        self, video_id: str, cache: FactsCache | None, write_cache: bool, error: Exception
+    ) -> None:
+        """A private or removed video: save that, so a requeue does not ask YouTube again for a day."""
+        if not write_cache or cache is None:
+            return
+        moment = datetime.fromtimestamp(self.clock(), UTC)
+        cache.put(
+            YoutubeFacts(
+                video_id=video_id,
+                url=f"https://www.youtube.com/watch?v={video_id}",
+                fetched_at=moment.date().isoformat(),
+                fetched_utc=moment.isoformat(timespec="seconds"),
+                unavailable_reason=str(error)[:300],
+            )
+        )
 
     def _pass_the_gate(self, wait: bool) -> None:
         while True:

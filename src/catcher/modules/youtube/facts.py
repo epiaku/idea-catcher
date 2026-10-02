@@ -48,6 +48,9 @@ class YoutubeFacts(BaseModel):
     fetched_utc: str | None = (
         None  # when it was fetched, to the second: a video without captions is asked again after a day
     )
+    unavailable_reason: str | None = (
+        None  # set when YouTube said this video is gone for good (private, removed): saved like facts
+    )
 
     def transcript_text(self) -> str | None:
         if not self.transcript:
@@ -61,6 +64,28 @@ class FactsUnavailable(Exception):
 
 class FactsDeferred(FactsUnavailable):
     """Not now: the gap between two YouTube calls has not passed, or the breaker is open. Try again later."""
+
+
+class FetchSkipped(FactsUnavailable):
+    """A dry run does not call YouTube, and there are no saved facts to use instead."""
+
+
+_GONE = (
+    "private video",
+    "video unavailable",
+    "this video is not available",
+    "this video is no longer available",
+    "has been removed",
+    "account associated with this video has been terminated",
+    "members-only",
+)
+
+
+def is_gone_for_good(error: BaseException) -> bool:
+    """True when YouTube says the video itself is unavailable (private, removed), so asking again at every
+    requeue would only be more requests. Anything else (a network error, an odd answer) is not remembered."""
+    text = str(error).lower()
+    return any(phrase in text for phrase in _GONE)
 
 
 FactsFetcher = Callable[[str], YoutubeFacts]
@@ -165,6 +190,7 @@ def fetch_facts(
     """Fetch the facts of one video from YouTube: about 3 paced requests (the watch page, the player data
     and the caption file). The caller decides whether it may (the gap, the breaker, the saved facts)."""
     url = f"https://www.youtube.com/watch?v={video_id}"
+    moment = now or datetime.now(UTC)  # both dates are UTC, so they agree whatever this machine's zone is
     try:
         info, transcript = _extract(
             video_id,
@@ -192,6 +218,6 @@ def fetch_facts(
             for c in info.get("chapters") or []
         ],
         transcript=transcript,
-        fetched_at=(today or date.today()).isoformat(),
-        fetched_utc=(now or datetime.now(UTC)).isoformat(timespec="seconds"),
+        fetched_at=(today or moment.date()).isoformat(),
+        fetched_utc=moment.isoformat(timespec="seconds"),
     )
