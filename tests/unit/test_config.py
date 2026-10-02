@@ -31,3 +31,15 @@ def test_the_api_keys_do_not_show_in_a_repr():
     settings = Settings(openai_api_key="sk-secret", freellmapi_api_key="free-secret")
     assert "sk-secret" not in repr(settings) and "free-secret" not in repr(settings)
     assert settings.openai_api_key.get_secret_value() == "sk-secret"
+
+
+def test_settings_llm_trace_defaults(monkeypatch):
+    monkeypatch.delenv("LLM_TRACE", raising=False)
+    monkeypatch.delenv("LLM_TRACE_PROMPT", raising=False)
+    settings = Settings()
+    assert settings.llm_trace is True
+    assert settings.llm_trace_prompt is False
+    monkeypatch.setenv("LLM_TRACE", "false")
+    monkeypatch.setenv("LLM_TRACE_PROMPT", "1")
+    settings = Settings()
+    assert settings.llm_trace is False and settings.llm_trace_prompt is True

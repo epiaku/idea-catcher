@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     llm_max_attempts: int = 5  # calls per request on a transient error (5xx, timeout); 1 turns retrying off
     llm_retry_wait_s: float = 2.0  # wait before the 2nd attempt, doubled before each one after it
     llm_max_input_chars: int = 400_000  # a document (with its facts) longer than this is not sent to the LLM
+    llm_trace: bool = True  # every LLM call of a run leaves a trace in `llm/` of the idea-bucket
+    llm_trace_prompt: bool = False  # also save the full prompt in the trace (large; it holds the document)
     transcript_languages: str = "en"
     # How we talk to YouTube. A ban is per IP and about request rate, so we go slowly and stop when told no.
     youtube_request_delay_s: float = 10.0  # seconds between the requests inside one fetch

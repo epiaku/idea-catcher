@@ -7,6 +7,7 @@ from typing import Literal
 from catcher import __version__
 from catcher.core.files import file_lock
 from catcher.core.git import GitError, commit_paths, pull, push
+from catcher.modules.llm.trace import LLM_DIR, TraceStore
 from catcher.modules.pipeline.inbox import (
     Note,
     Requeued,
@@ -252,6 +253,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     touched_ideas: list[Path] = []
     touched_docs: list[Path] = []
     facts_dir = ideas / FACTS_DIR  # the saved YouTube facts, one file per video
+    llm_dir = ideas / LLM_DIR  # the LLM traces, one file per processed document
     requeued: list[Requeued] = []
     explicit = opts.requeue or []
     stalled = deferred_in_output(ideas) if opts.retry_deferred else []
@@ -344,6 +346,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             facts_dir=facts_dir,
             refresh_facts=opts.refresh_facts,
             wait_youtube=opts.wait_youtube,
+            llm_dir=llm_dir,
         )
         try:
             if not opts.dry_run:  # out of inbox/: archive + working copy in output/
@@ -373,6 +376,10 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
                 saved = FactsCache(facts_dir).path(vid)
                 if saved.exists():
                     touched_ideas.append(saved)
+            if not opts.dry_run:  # the LLM trace too, also when the call failed (same name as output/)
+                trace = TraceStore(llm_dir).path_for(note.target_rel)
+                if trace.is_file():
+                    touched_ideas.append(trace)
 
         item.tokens_in, item.tokens_out = processed.llm.usage.tokens_in, processed.llm.usage.tokens_out
         item.page = processed.filename

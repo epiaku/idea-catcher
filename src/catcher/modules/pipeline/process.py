@@ -1,6 +1,7 @@
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -13,9 +14,12 @@ from catcher.modules.llm.service import (
     InputRejected,
     LlmRequest,
     LlmResult,
+    LlmTrace,
+    Recorder,
     UsageLimitReached,
     reason,
 )
+from catcher.modules.llm.trace import TraceStore
 from catcher.modules.pipeline.context import load_context
 from catcher.modules.pipeline.doctypes import gemini_video_id
 from catcher.modules.pipeline.glossary import Glossary, load_glossary
@@ -56,6 +60,7 @@ class ProcessOptions:
     )
     refresh_facts: bool = False  # fetch again even when facts are saved
     wait_youtube: bool = False  # sleep through a short gap instead of deferring
+    llm_dir: Path | None = None  # where the LLM traces go (`llm/` in idea-bucket); None: no trace
 
 
 @dataclass
@@ -128,7 +133,28 @@ def log_llm(note: Note, step: str, result: LlmResult) -> None:
     )
 
 
-def ask_llm(note: Note, svc: Services, profile_name: str, facts: YoutubeFacts | None = None) -> LlmResult:
+def trace_recorder(note: Note, llm_dir: Path) -> Recorder:
+    """Write the trace of this document's LLM call to `llm/<subfolder>/<calculated name>.json`. A trace that
+    cannot be written is logged and skipped: it must never fail the document."""
+
+    def record(trace: LlmTrace) -> None:
+        try:
+            TraceStore(llm_dir).put(note.target_rel, trace, now=datetime.now(UTC))
+        except Exception as e:
+            log.warning("%s: could not write the LLM trace: %s", note_label(note), e)
+
+    return record
+
+
+def ask_llm(
+    note: Note,
+    svc: Services,
+    profile_name: str,
+    facts: YoutubeFacts | None = None,
+    *,
+    llm_dir: Path | None = None,
+    dry_run: bool = False,
+) -> LlmResult:
     if facts is None and not note.doc.body.strip():
         raise InputRejected(f"{note.doc_id}: the document is empty")
     prompt = prompt_input(note, svc.tags, facts, svc.glossary, svc.context)
@@ -145,7 +171,16 @@ def ask_llm(note: Note, svc: Services, profile_name: str, facts: YoutubeFacts | 
         profile=profile_name,
     )
     log.info("%s: asking the LLM (profile=%s)", note_label(note), profile_name)
-    result = reason(request, profiles=svc.profiles, backends=svc.backends)
+    recorder = None
+    if llm_dir is not None and svc.settings.llm_trace and not dry_run:
+        recorder = trace_recorder(note, llm_dir)
+    result = reason(
+        request,
+        profiles=svc.profiles,
+        backends=svc.backends,
+        recorder=recorder,
+        keep_prompt=svc.settings.llm_trace_prompt,
+    )
     log_llm(note, "reason", result)
     return result
 
@@ -249,5 +284,5 @@ def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPa
     )
     check_not_blocked(profile, opts)
     facts = get_facts(note, svc, opts)
-    result = ask_llm(note, svc, profile_name, facts)
+    result = ask_llm(note, svc, profile_name, facts, llm_dir=opts.llm_dir, dry_run=opts.dry_run)
     return build_page(note, svc, result, facts)
