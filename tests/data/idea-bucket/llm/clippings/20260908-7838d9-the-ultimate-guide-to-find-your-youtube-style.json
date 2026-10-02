@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T18:54:00+00:00",
+  "task": "youtube-gemini",
+  "profile": "youtube",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "youtube-gemini-7",
+  "content_key": "9af277d55dd721fd33297ed0c069ac68ddbdc9b806136941b39a2d08c4308e82",
+  "prompt_sha256": "d6b7b67cc0c86e89bcb242ea1b12581d45fce4e065a0adbe35273d8630f5e0cd",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"Building a Distinct, Memorable YouTube Identity\",\n  \"creator\": \"Aprilynne Alter\",\n  \"description\": \"Build a distinctive YouTube identity by defining an archetype and developing a cohesive style across visuals, rhythm, and delivery.\",\n  \"summary\": \"The video presents a blueprint for avoiding copycat content and standing out authentically. It starts with a YouTube archetype, then develops three pillars of style: Visuals, Rhythm, and Delivery.\",\n  \"main_purpose\": \"Define a central YouTube Archetype (01:30) and build a cohesive style across Visuals (02:59), Rhythm (10:33), and Delivery (18:47).\",\n  \"key_examples\": [\n    \"Ali Abdaal represents the “Productive Friend” archetype (01:17); his turquoise and salmon color scheme projects warmth, creativity, and approachability (04:24).\",\n    \"Cleo Abram embodies the “Optimistic Tech Journalist” archetype (01:23), using a solar-punk palette of greens, earthy tones, and blues to reflect a positive future (05:06).\",\n    \"MrBeast uses massive-scale sets for high-stakes showmanship (05:55), while Legal Eagle uses professional bookshelves and static framing to communicate legal authority (06:03).\",\n    \"Nerd Forge combines a medieval wizard study set (06:16) with fantasy scores and futuristic beats (11:53).\",\n    \"MKBHD uses calm, measured delivery for tech reviews (19:09), while MrWhoIsTheBoss uses a high-energy, dynamic presentation for similar topics (19:24).\",\n    \"Moistcr1tikal shows that deadpan, low-energy delivery can be memorable and effective (23:31).\"\n  ],\n  \"action_plan\": [\n    \"Define your archetype by combining Vibe (feeling), Role (persona), and Value (viewer takeaway) (01:36).\",\n    \"Build your visual identity with 6 core colors (05:13), intentional set styling (06:41), consistent wardrobe (07:26), 2–3 main fonts (08:18), and a go-to visual effects pack (10:00).\",\n    \"Set your rhythmic style: choose music for the desired emotional tone (11:32), introduce sound effects one type at a time (16:25), and select fast/high-energy, medium/conversational, or slow/immersive pacing (16:50).\",\n    \"Refine your delivery: test scripted, bulleted, and unscripted speaking (20:10), choose camera movements that suit your archetype (21:41), and lean into your natural personality traits (23:51).\",\n    \"Continuously test minor style experiments and re-evaluate your brand setup yearly (24:44).\"\n  ],\n  \"tools\": [],\n  \"tips\": [\n    {\n      \"tip\": \"Start with an archetype\",\n      \"explanation\": \"Vibe, Role, and Value form a guiding identity (01:36).\",\n      \"how_to_apply\": \"Write down 3 words each for your channel’s Vibe, Role, and Value.\"\n    },\n    {\n      \"tip\": \"Keep visuals consistent\",\n      \"explanation\": \"Colors, fonts, set styling, wardrobe, and effects work together to establish a recognizable style.\",\n      \"how_to_apply\": \"Choose 6 brand colors and 2 font styles for overlays and thumbnails (05:13).\"\n    },\n    {\n      \"tip\": \"Test how you speak on camera\",\n      \"explanation\": \"Scripted, bulleted, and unscripted approaches can produce different delivery styles (20:10).\",\n      \"how_to_apply\": \"Record a short segment in each of the three styles and determine which feels most authentic.\"\n    },\n    {\n      \"tip\": \"Develop an audio style\",\n      \"explanation\": \"Music and sound effects help set the video’s emotional tone and reinforce key moments.\",\n      \"how_to_apply\": \"Select a go-to music library and experiment with a signature audio effect (12:22).\"\n    }\n  ],\n  \"channel_application\": \"- **Identify Core Identity:** Write down 3 words each for your channel's Vibe, Role, and Value to establish your guiding archetype (01:36).\\n- **Create a Visual Brand Kit:** Lock in 6 brand colors (1 dominant, 1 primary accent, 3 secondary accents, 1 text color) and 2 font styles for all future overlays and thumbnails (05:13).\\n- **Test Delivery Styles:** Record a short video segment using three different approaches—fully scripted, bullet points, and free-form—to determine which feels most authentic (20:10).\\n- **Audit Video Audio:** Select a go-to music library and experiment with adding a signature audio effect to reinforce key video moments (12:22).\",\n  \"metrics\": {\n    \"as_of\": null,\n    \"views\": null,\n    \"likes\": null,\n    \"subscribers\": null\n  },\n  \"chapters\": [],\n  \"tags\": [\n    \"strategy\",\n    \"content-creation\",\n    \"video-production\",\n    \"youtube-growth\"\n  ]\n}",
+      "tokens_in": 4381,
+      "tokens_out": 1375,
+      "duration_ms": 13704,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Building a Distinct, Memorable YouTube Identity",
+    "creator": "Aprilynne Alter",
+    "description": "Build a distinctive YouTube identity by defining an archetype and developing a cohesive style across visuals, rhythm, and delivery.",
+    "summary": "The video presents a blueprint for avoiding copycat content and standing out authentically. It starts with a YouTube archetype, then develops three pillars of style: Visuals, Rhythm, and Delivery.",
+    "main_purpose": "Define a central YouTube Archetype (01:30) and build a cohesive style across Visuals (02:59), Rhythm (10:33), and Delivery (18:47).",
+    "key_examples": [
+      "Ali Abdaal represents the “Productive Friend” archetype (01:17); his turquoise and salmon color scheme projects warmth, creativity, and approachability (04:24).",
+      "Cleo Abram embodies the “Optimistic Tech Journalist” archetype (01:23), using a solar-punk palette of greens, earthy tones, and blues to reflect a positive future (05:06).",
+      "MrBeast uses massive-scale sets for high-stakes showmanship (05:55), while Legal Eagle uses professional bookshelves and static framing to communicate legal authority (06:03).",
+      "Nerd Forge combines a medieval wizard study set (06:16) with fantasy scores and futuristic beats (11:53).",
+      "MKBHD uses calm, measured delivery for tech reviews (19:09), while MrWhoIsTheBoss uses a high-energy, dynamic presentation for similar topics (19:24).",
+      "Moistcr1tikal shows that deadpan, low-energy delivery can be memorable and effective (23:31)."
+    ],
+    "action_plan": [
+      "Define your archetype by combining Vibe (feeling), Role (persona), and Value (viewer takeaway) (01:36).",
+      "Build your visual identity with 6 core colors (05:13), intentional set styling (06:41), consistent wardrobe (07:26), 2–3 main fonts (08:18), and a go-to visual effects pack (10:00).",
+      "Set your rhythmic style: choose music for the desired emotional tone (11:32), introduce sound effects one type at a time (16:25), and select fast/high-energy, medium/conversational, or slow/immersive pacing (16:50).",
+      "Refine your delivery: test scripted, bulleted, and unscripted speaking (20:10), choose camera movements that suit your archetype (21:41), and lean into your natural personality traits (23:51).",
+      "Continuously test minor style experiments and re-evaluate your brand setup yearly (24:44)."
+    ],
+    "tools": [],
+    "tips": [
+      {
+        "tip": "Start with an archetype",
+        "explanation": "Vibe, Role, and Value form a guiding identity (01:36).",
+        "how_to_apply": "Write down 3 words each for your channel’s Vibe, Role, and Value."
+      },
+      {
+        "tip": "Keep visuals consistent",
+        "explanation": "Colors, fonts, set styling, wardrobe, and effects work together to establish a recognizable style.",
+        "how_to_apply": "Choose 6 brand colors and 2 font styles for overlays and thumbnails (05:13)."
+      },
+      {
+        "tip": "Test how you speak on camera",
+        "explanation": "Scripted, bulleted, and unscripted approaches can produce different delivery styles (20:10).",
+        "how_to_apply": "Record a short segment in each of the three styles and determine which feels most authentic."
+      },
+      {
+        "tip": "Develop an audio style",
+        "explanation": "Music and sound effects help set the video’s emotional tone and reinforce key moments.",
+        "how_to_apply": "Select a go-to music library and experiment with a signature audio effect (12:22)."
+      }
+    ],
+    "channel_application": "- **Identify Core Identity:** Write down 3 words each for your channel's Vibe, Role, and Value to establish your guiding archetype (01:36).\n- **Create a Visual Brand Kit:** Lock in 6 brand colors (1 dominant, 1 primary accent, 3 secondary accents, 1 text color) and 2 font styles for all future overlays and thumbnails (05:13).\n- **Test Delivery Styles:** Record a short video segment using three different approaches—fully scripted, bullet points, and free-form—to determine which feels most authentic (20:10).\n- **Audit Video Audio:** Select a go-to music library and experiment with adding a signature audio effect to reinforce key video moments (12:22).",
+    "links": [],
+    "metrics": {
+      "as_of": null,
+      "views": null,
+      "likes": null,
+      "subscribers": null
+    },
+    "chapters": [],
+    "tags": [
+      "strategy",
+      "content-creation",
+      "video-production",
+      "youtube-growth"
+    ]
+  }
+}

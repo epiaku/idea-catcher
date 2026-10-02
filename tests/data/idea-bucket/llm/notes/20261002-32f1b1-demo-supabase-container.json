@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:03:23+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "a217db40ec32fc0e9cb89f0dfca1f02a1d7de62867f2a0563ffca7d72deaff47",
+  "prompt_sha256": "9e732d19eda574c782452da98a2eaf4d202e02d7584a16c155ff9ef9aab90714",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\":\"Supabase, Redis & API in Azure Container Apps Demo\",\"description\":\"YouTube demo showing Supabase, an API, and Redis each running in Azure Container Apps, plus a simple React web app for mobile.\",\"body\":\"- YouTube demo showing how to run a Supabase database in a container on Azure Container Apps.\\n- Combine it with an API in a container and a Redis cache in a container for a more secure, scalable demo.\\n- Build a simple iPhone and Android app as a React web app for basic operations or user authentication.\",\"tags\":[\"youtube-idea\",\"content-creation\",\"video-production\",\"tech-channel\",\"idea-catcher\"],\"language\":\"en\"}",
+      "tokens_in": 1197,
+      "tokens_out": 1489,
+      "duration_ms": 16596,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Supabase, Redis & API in Azure Container Apps Demo",
+    "description": "YouTube demo showing Supabase, an API, and Redis each running in Azure Container Apps, plus a simple React web app for mobile.",
+    "body": "- YouTube demo showing how to run a Supabase database in a container on Azure Container Apps.\n- Combine it with an API in a container and a Redis cache in a container for a more secure, scalable demo.\n- Build a simple iPhone and Android app as a React web app for basic operations or user authentication.",
+    "tags": [
+      "youtube-idea",
+      "content-creation",
+      "video-production",
+      "tech-channel",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

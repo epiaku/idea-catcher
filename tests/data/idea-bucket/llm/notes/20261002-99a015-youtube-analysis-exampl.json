@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T20:03:31+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "b15a0928c1313a2295318edef5d3638b4d86a4e55429b10c0ce7ef1f1e07620f",
+  "prompt_sha256": "ee96810e1f822bd0f981b3f350e7028358d79fab21aaf5c1142f60a96c6b1570",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\":\"YouTube Video Analysis Demo with Python and Gemini\",\"description\":\"Create a demo video showing how to use Python or the Google Gemini API to analyze YouTube videos and generate summaries with a real dashboard.\",\"body\":\"Create a YouTube demo video that shows how to use libraries such as Python or the Google Gemini API to analyze YouTube videos. The video should demonstrate generating a summary from a video and include a built-in real demo or dashboard for analyzing multiple YouTube videos.\",\"tags\":[\"youtube-idea\",\"llm-models\",\"content-creation\",\"video-production\",\"idea-catcher\"],\"language\":\"en\"}",
+      "tokens_in": 1183,
+      "tokens_out": 1717,
+      "duration_ms": 18381,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "YouTube Video Analysis Demo with Python and Gemini",
+    "description": "Create a demo video showing how to use Python or the Google Gemini API to analyze YouTube videos and generate summaries with a real dashboard.",
+    "body": "Create a YouTube demo video that shows how to use libraries such as Python or the Google Gemini API to analyze YouTube videos. The video should demonstrate generating a summary from a video and include a built-in real demo or dashboard for analyzing multiple YouTube videos.",
+    "tags": [
+      "youtube-idea",
+      "llm-models",
+      "content-creation",
+      "video-production",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:03:37+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "4ba62a085ba4afac3c88b015299573165c022c4e518bb81ea9331cc79e0326d5",
+  "prompt_sha256": "1510f8a8524f8db8fc4d5ed2aa31367bc80a46f192c0c8b0c0a4ef307cd7b0a9",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\": \"YouTube Tutorial: Proxmox for AI Agents & Websites\", \"description\": \"A YouTube tutorial showing how to use Proxmox on your own server to run AI agents or websites.\", \"body\": \"- Create a YouTube tutorial demonstrating how to use Proxmox on your own server.\\n- Show practical examples, such as running AI agents or hosting websites.\", \"tags\": [\"youtube-idea\", \"ai-agents\", \"home-lab\", \"tech-channel\", \"content-creation\", \"idea-catcher\"], \"language\": \"en\"}",
+      "tokens_in": 1148,
+      "tokens_out": 1320,
+      "duration_ms": 14889,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "YouTube Tutorial: Proxmox for AI Agents & Websites",
+    "description": "A YouTube tutorial showing how to use Proxmox on your own server to run AI agents or websites.",
+    "body": "- Create a YouTube tutorial demonstrating how to use Proxmox on your own server.\n- Show practical examples, such as running AI agents or hosting websites.",
+    "tags": [
+      "youtube-idea",
+      "ai-agents",
+      "home-lab",
+      "tech-channel",
+      "content-creation",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:02:33+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "prompt_version": "note-7",
+  "content_key": "ea9ac22118eece7c7acf5515c6923f4141b9e3ce2841dadeec9b3332958c11a5",
+  "prompt_sha256": "2effc82b56f7f569f0dedfa810f13fc55619626cea2cce615da417938c93fd58",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\"title\": \"Creating a Start-up Brain with Hugo, Docsy, and AI\",\"description\": \"A YouTube video series idea for building a start-up brain using Hugo, Docsy, and AI to summarize and connect docs.\",\"body\":\"Great series of YouTube videos about creating a start-up brain.\\n\\n- The brain is a Hugo site with Docsy theme.\\n- Add AI to:\\n  - fetch docs from Gemini\\n  - check YouTube links in the docs and create a summary with the tags and link in a separate Markdown format\\n  - connect using second brain technology\\n- The website can also have an extra dialogue to prompt the second brain.\\n- Show how to prompt it by having this starter brain in VS Code.\",\"tags\":[\"youtube-idea\",\"second-brain\",\"hugo\",\"ai-agents\",\"content-creation\"],\"language\":\"en\"}",
+      "tokens_in": 1228,
+      "tokens_out": 3869,
+      "duration_ms": 18220,
+      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Creating a Start-up Brain with Hugo, Docsy, and AI",
+    "description": "A YouTube video series idea for building a start-up brain using Hugo, Docsy, and AI to summarize and connect docs.",
+    "body": "Great series of YouTube videos about creating a start-up brain.\n\n- The brain is a Hugo site with Docsy theme.\n- Add AI to:\n  - fetch docs from Gemini\n  - check YouTube links in the docs and create a summary with the tags and link in a separate Markdown format\n  - connect using second brain technology\n- The website can also have an extra dialogue to prompt the second brain.\n- Show how to prompt it by having this starter brain in VS Code.",
+    "tags": [
+      "youtube-idea",
+      "second-brain",
+      "hugo",
+      "ai-agents",
+      "content-creation"
+    ],
+    "language": "en"
+  }
+}

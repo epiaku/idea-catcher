@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:09:58+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "e5b3e3ed78ae5f94a2e1b8015bd5458504bf6da3b7d6257543e599a52dafa451",
+  "prompt_sha256": "090e4b7b341a9a84b49beeee37a492fd86953dcc5275992ea0ffbb01e593d82d",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\": \"Forward non-Markdown inbox files to Epiaku-docs artifacts\", \"description\": \"Non-Markdown files in the inbox should be sent to Epiaku-docs without analysis, into the artifacts subfolder.\", \"body\": \"If a file in the inbox is not a Markdown (.md) file, simply send it to Epiaku-docs without analyzing it, placing it in the artifacts subfolder.\", \"tags\": [\"todo\", \"automation\", \"idea-catcher\"], \"language\": \"en\"}",
+      "tokens_in": 1152,
+      "tokens_out": 442,
+      "duration_ms": 5633,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Forward non-Markdown inbox files to Epiaku-docs artifacts",
+    "description": "Non-Markdown files in the inbox should be sent to Epiaku-docs without analysis, into the artifacts subfolder.",
+    "body": "If a file in the inbox is not a Markdown (.md) file, simply send it to Epiaku-docs without analyzing it, placing it in the artifacts subfolder.",
+    "tags": [
+      "todo",
+      "automation",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

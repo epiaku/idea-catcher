@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T18:56:58+00:00",
+  "task": "youtube-gemini",
+  "profile": "youtube",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "youtube-gemini-7",
+  "content_key": "c06f04fd672e20ab1952b6e54a42ce628f6755d1b70833a2cd7e87b692a49c2a",
+  "prompt_sha256": "e7e7138cceb643c30508aa7cf2a21fb48a8a39c6c8b5a7ec43b67ec8d04ba246",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"10 Years of No BS Advice on Selling Online Courses in 43 Mins\",\n  \"creator\": \"Stockton Walbeck\",\n  \"description\": \"10 rules for validating, building, marketing, and scaling online courses and other digital products.\",\n  \"summary\": \"After selling or helping sell over $25 million in online courses, coaching, and digital products, along with nearly $8 million of his own software, Stockton Walbeck condenses 10 years of lessons into 10 fundamental rules. The video covers MVPs, AI analysis of customer data, pricing, content creation, and the psychological stages of entrepreneurship.\",\n  \"main_purpose\": \"Provide a roadmap for digital product creators and software entrepreneurs to validate, build, market, and scale offers by focusing on customer data, recurring consumable value, and volume over perfectionism.\",\n  \"key_examples\": [\n    \"Skateboard Model (MVP): Build a skateboard first, then iterate into a scooter, bike, motorcycle, and car based on direct user feedback.\",\n    \"Joe Simpson (Car Tuning): Launched a course that was only 20% complete, made $100,000 in 30 days, restructured it based on beginner feedback, and went on to generate over $2.5M.\",\n    \"Bridgetger Pennington: Pre-sold coaching and courses using ads and landing pages before creating any material, eventually surpassing $20M in sales.\",\n    \"Humane AI Pin & Juicero: High-budget failures that built in isolation without user validation before launch.\",\n    \"Costco Free Samples: Free chip samples boosted product sales 6x, illustrating reciprocity, risk reversal, micro-commitments, and the 5:1 value ratio.\"\n  ],\n  \"action_plan\": [\n    \"01:20 — Get paid to build: Launch an imperfect, complete stage product (MVP) immediately to gather real user feedback.\",\n    \"06:58 — Record every customer interaction: Archive calls, chat logs, and emails, then feed the transcriptions into AI for pattern recognition.\",\n    \"08:39 — Schedule user interviews: Conduct at least 10 customer calls to identify pain points, and scale up to 100 calls to let users shape your offer.\",\n    \"09:07 — Teach what you know: Help beginners (levels 1-4) reach your current proficiency level (level 5 or 6).\",\n    \"14:12 — Scale marketing volume: Aim for at least 15 touchpoints across multiple channels over a 6-month period per prospective buyer.\",\n    \"17:09 — Maintain a 5:1 value ratio: Give 5 units of high-value free content/tools for every 1 pitch or promotional ask.\",\n    \"22:29 — Optimize content for conversions: Prioritize leads and sales over view counts and followers.\",\n    \"27:04 — Start with high-ticket offers: Sell coaching or custom services first to gain market insights before building low-ticket automated products.\",\n    \"31:39 — Sell consumable ongoing value: Pair one-time durable products with recurring software, templates, community, or coaching.\",\n    \"35:24 — Outlast the Valley of Despair: Anticipate drops in motivation and keep executing consistently.\"\n  ],\n  \"tools\": [\n    \"CourseGrade 360 / CC360\",\n    \"ChatGPT\",\n    \"Claude\",\n    \"Gemini\",\n    \"Claude Code\",\n    \"Meta Ads\",\n    \"YouTube Ads\",\n    \"Zoom\"\n  ],\n  \"tips\": [\n    {\n      \"tip\": \"If you aren't embarrassed, you launched too late\",\n      \"explanation\": \"02:22 — Perfecting products in isolation risks building something nobody wants.\",\n      \"how_to_apply\": \"Release an MVP version to active users immediately and iterate based on their direct feedback.\"\n    },\n    {\n      \"tip\": \"Data beats instinct\",\n      \"explanation\": \"05:22 — Your assumptions as a founder are often wrong due to marketer bias.\",\n      \"how_to_apply\": \"Document all customer conversations and use AI data analysis to extract exact objection phrases for ad copy.\"\n    },\n    {\n      \"tip\": \"Volume negates luck\",\n      \"explanation\": \"14:36 — High view counts and sales require repeated attempts over an extended timeframe.\",\n      \"how_to_apply\": \"Commit to consistent posting schedules (e.g., 200+ uploads or 6 months of posting) to hit top-tier outcomes.\"\n    },\n    {\n      \"tip\": \"Sell the car once, sell gasoline forever\",\n      \"explanation\": \"31:39 — One-time durable value creates flatlining revenue without recurring consumable value.\",\n      \"how_to_apply\": \"Package high-ticket one-time education or software setup with monthly recurring templates, updates, or support.\"\n    }\n  ],\n  \"channel_application\": \"- For Epiaku & Phone Apps / SaaS: Adopt the Skateboard Model by deploying bare-bones app builds to test demand before spending months polishing UI/UX.\\n- Implement AI log analysis on support chats and onboarding drop-offs to uncover friction points.\\n- Shift from purely selling lifetime access to bundling recurring \\\"gasoline\\\" elements such as monthly API credits, workflow templates, or premium support tiers.\\n- For Vibe Coding Tech Stack Demos: Use your level 5/6 knowledge to teach level 1-4 developers how to leverage tools like Claude Code and lightweight SaaS stacks.\\n- Structure content using the 5:1 ratio by providing free, usable code repos and templates before pitching any paid community or high-ticket consulting.\\n- Align video content to capture leads (e.g., free boilerplate downloads) rather than relying on channel AdSense revenue.\",\n  \"links\": [\n    {\n      \"label\": \"YouTube Source\",\n      \"url\": \"https://www.youtube.com/watch?v=mX7zMtssx70\"\n    }\n  ],\n  \"metrics\": {\n    \"as_of\": \"September 28, 2026\",\n    \"views\": \"1,888\",\n    \"likes\": \"44\",\n    \"subscribers\": null\n  },\n  \"chapters\": [],\n  \"tags\": [\n    \"strategy\",\n    \"marketing\",\n    \"monetization\",\n    \"online-courses\",\n    \"content-creation\"\n  ]\n}",
+      "tokens_in": 4023,
+      "tokens_out": 1584,
+      "duration_ms": 13398,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "10 Years of No BS Advice on Selling Online Courses in 43 Mins",
+    "creator": "Stockton Walbeck",
+    "description": "10 rules for validating, building, marketing, and scaling online courses and other digital products.",
+    "summary": "After selling or helping sell over $25 million in online courses, coaching, and digital products, along with nearly $8 million of his own software, Stockton Walbeck condenses 10 years of lessons into 10 fundamental rules. The video covers MVPs, AI analysis of customer data, pricing, content creation, and the psychological stages of entrepreneurship.",
+    "main_purpose": "Provide a roadmap for digital product creators and software entrepreneurs to validate, build, market, and scale offers by focusing on customer data, recurring consumable value, and volume over perfectionism.",
+    "key_examples": [
+      "Skateboard Model (MVP): Build a skateboard first, then iterate into a scooter, bike, motorcycle, and car based on direct user feedback.",
+      "Joe Simpson (Car Tuning): Launched a course that was only 20% complete, made $100,000 in 30 days, restructured it based on beginner feedback, and went on to generate over $2.5M.",
+      "Bridgetger Pennington: Pre-sold coaching and courses using ads and landing pages before creating any material, eventually surpassing $20M in sales.",
+      "Humane AI Pin & Juicero: High-budget failures that built in isolation without user validation before launch.",
+      "Costco Free Samples: Free chip samples boosted product sales 6x, illustrating reciprocity, risk reversal, micro-commitments, and the 5:1 value ratio."
+    ],
+    "action_plan": [
+      "01:20 — Get paid to build: Launch an imperfect, complete stage product (MVP) immediately to gather real user feedback.",
+      "06:58 — Record every customer interaction: Archive calls, chat logs, and emails, then feed the transcriptions into AI for pattern recognition.",
+      "08:39 — Schedule user interviews: Conduct at least 10 customer calls to identify pain points, and scale up to 100 calls to let users shape your offer.",
+      "09:07 — Teach what you know: Help beginners (levels 1-4) reach your current proficiency level (level 5 or 6).",
+      "14:12 — Scale marketing volume: Aim for at least 15 touchpoints across multiple channels over a 6-month period per prospective buyer.",
+      "17:09 — Maintain a 5:1 value ratio: Give 5 units of high-value free content/tools for every 1 pitch or promotional ask.",
+      "22:29 — Optimize content for conversions: Prioritize leads and sales over view counts and followers.",
+      "27:04 — Start with high-ticket offers: Sell coaching or custom services first to gain market insights before building low-ticket automated products.",
+      "31:39 — Sell consumable ongoing value: Pair one-time durable products with recurring software, templates, community, or coaching.",
+      "35:24 — Outlast the Valley of Despair: Anticipate drops in motivation and keep executing consistently."
+    ],
+    "tools": [
+      "CourseGrade 360 / CC360",
+      "ChatGPT",
+      "Claude",
+      "Gemini",
+      "Claude Code",
+      "Meta Ads",
+      "YouTube Ads",
+      "Zoom"
+    ],
+    "tips": [
+      {
+        "tip": "If you aren't embarrassed, you launched too late",
+        "explanation": "02:22 — Perfecting products in isolation risks building something nobody wants.",
+        "how_to_apply": "Release an MVP version to active users immediately and iterate based on their direct feedback."
+      },
+      {
+        "tip": "Data beats instinct",
+        "explanation": "05:22 — Your assumptions as a founder are often wrong due to marketer bias.",
+        "how_to_apply": "Document all customer conversations and use AI data analysis to extract exact objection phrases for ad copy."
+      },
+      {
+        "tip": "Volume negates luck",
+        "explanation": "14:36 — High view counts and sales require repeated attempts over an extended timeframe.",
+        "how_to_apply": "Commit to consistent posting schedules (e.g., 200+ uploads or 6 months of posting) to hit top-tier outcomes."
+      },
+      {
+        "tip": "Sell the car once, sell gasoline forever",
+        "explanation": "31:39 — One-time durable value creates flatlining revenue without recurring consumable value.",
+        "how_to_apply": "Package high-ticket one-time education or software setup with monthly recurring templates, updates, or support."
+      }
+    ],
+    "channel_application": "- For Epiaku & Phone Apps / SaaS: Adopt the Skateboard Model by deploying bare-bones app builds to test demand before spending months polishing UI/UX.\n- Implement AI log analysis on support chats and onboarding drop-offs to uncover friction points.\n- Shift from purely selling lifetime access to bundling recurring \"gasoline\" elements such as monthly API credits, workflow templates, or premium support tiers.\n- For Vibe Coding Tech Stack Demos: Use your level 5/6 knowledge to teach level 1-4 developers how to leverage tools like Claude Code and lightweight SaaS stacks.\n- Structure content using the 5:1 ratio by providing free, usable code repos and templates before pitching any paid community or high-ticket consulting.\n- Align video content to capture leads (e.g., free boilerplate downloads) rather than relying on channel AdSense revenue.",
+    "links": [
+      {
+        "label": "YouTube Source",
+        "url": "https://www.youtube.com/watch?v=mX7zMtssx70"
+      }
+    ],
+    "metrics": {
+      "as_of": "September 28, 2026",
+      "views": "1,888",
+      "likes": "44",
+      "subscribers": null
+    },
+    "chapters": [],
+    "tags": [
+      "strategy",
+      "marketing",
+      "monetization",
+      "online-courses",
+      "content-creation"
+    ]
+  }
+}

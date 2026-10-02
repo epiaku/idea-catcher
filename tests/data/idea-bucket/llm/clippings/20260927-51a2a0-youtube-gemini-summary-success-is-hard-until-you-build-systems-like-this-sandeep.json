@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T18:56:35+00:00",
+  "task": "youtube-gemini",
+  "profile": "youtube",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "youtube-gemini-7",
+  "content_key": "396a72f74e3ffaeab98306f7dae368f1221a62cd6d69a3c70533c2e0233a184c",
+  "prompt_sha256": "811cf6c52a37df714764de4b121dda566a94e428e0a230feefd373e1d9c1713e",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"Success Is Hard Until You Build Systems Like This\",\n  \"creator\": \"Sandeep Swadia\",\n  \"description\": \"Success comes from systems that make hard actions easier to execute, rather than relying on willpower or longer hours.\",\n  \"summary\": \"Sandeep Swadia shares 5 system-level principles for doing hard things without relying on willpower. Forcing functions, consistent environments, If-Then rules, checklists, and repetition reduce friction and make execution more automatic.\",\n  \"main_purpose\": \"High-level success is not about working harder or depending on discipline. It comes from designing systems that guide behavior, reduce cognitive friction, and support consistent execution.\",\n  \"key_examples\": [\n    \"Hernán Cortés (1519): Sinking his own ships in Mexico so his soldiers had no option to retreat (Plan A or fail).\",\n    \"COO Acquisition Integration: The CEO handing total ownership of an acquired company to Sandeep (\\\"I'm not going, you own it\\\"), turning complex travel into an unavoidable forcing function.\",\n    \"Roy Baumeister’s Ego Depletion Study: Participants who resisted eating fresh-baked cookies gave up on difficult puzzles 50% faster.\",\n    \"Noah Lyles (Olympic Sprinter): Uses fixed daily tracks, warmups, and playlists to bypass ADHD and eliminate decision fatigue before running.\",\n    \"Peter Gollwitzer’s NYU Goal Experiment: Christmas break exercise study where \\\"Goal Setters\\\" failed 62% of the time, while \\\"If-Then Planner\\\" implementation intention groups failed only 9% of the time.\",\n    \"Atul Gawande & WHO Surgical Checklist: A 19-step elementary checklist reduced post-surgical complications by 36% and mortality by 47% across global hospitals.\",\n    \"Pilots & Master Musicians/Athletes (e.g., Roger Federer): Relying on structured checklists and endless repetition to execute high-stakes skills effortlessly under pressure.\",\n    \"Tibetan Monks Brainwave Synchronization: Brain scans showing synchronized brainwaves during meditation achieved through years of repetition, driving internal craving rather than external push.\"\n  ],\n  \"action_plan\": [\n    \"Establish forcing functions, such as public commitments, financial stakes, cutting access, and hard timeboxing, to eliminate Plan B options.\",\n    \"Remove dependency on willpower by treating it as a depletable biological fuel.\",\n    \"Lock down Time, Place, and Trigger for key habits.\",\n    \"Implement If-Then mental algorithms: If [Trigger/Condition], Then [Action].\",\n    \"Create three checklists: a To-Do List for daily operations, a To-Want List for strategic expansion and future targets, and a To-Be List for personal evolution and identity values.\",\n    \"Focus on daily repetition over motivation.\"\n  ],\n  \"tools\": [\n    \"Slack\",\n    \"Airplane Mode\"\n  ],\n  \"tips\": [\n    {\n      \"tip\": \"Trap Yourself (Forcing Functions)\",\n      \"explanation\": \"When retreat or alternative choices are removed, hard outcomes become inevitable.\",\n      \"how_to_apply\": \"Announce goals publicly, pay upfront for training, delete distracting apps, or set 90-minute hard limits.\"\n    },\n    {\n      \"tip\": \"Lock Time, Place, and Trigger\",\n      \"explanation\": \"Decision-making drains mental energy; environmental consistency builds biological autopilot.\",\n      \"how_to_apply\": \"Pick one avoided task and lock the context (e.g., Every Thursday at 9:00 AM at Desk X with Phone on Airplane Mode).\"\n    },\n    {\n      \"tip\": \"Run \\\"If-Then\\\" Code\",\n      \"explanation\": \"Converts emotional friction and doubt into pure data execution.\",\n      \"how_to_apply\": \"Write operational rules: \\\"If it is 3:00 PM on Thursday, Then deep work starts immediately.\\\"\"\n    },\n    {\n      \"tip\": \"Outsource Memory to Checklists\",\n      \"explanation\": \"High cognitive load causes simple errors even among elite performers.\",\n      \"how_to_apply\": \"Maintain distinct To-Do, To-Want, and To-Be checklists to clear mental bandwidth for complex focus.\"\n    },\n    {\n      \"tip\": \"Drive Repetition to Create Motivation\",\n      \"explanation\": \"Repetition creates neural cadence that makes habits feel effortless over time.\",\n      \"how_to_apply\": \"Commit to small daily reps so your brain begins craving the routine rather than waiting for initial motivation.\"\n    }\n  ],\n  \"channel_application\": \"- **YouTube Channel Strategy — Forcing Functions:** Commit to a strict public publishing schedule or live-stream release windows so content creation is non-negotiable.\\n- **YouTube Channel Strategy — Routine & Execution:** Standardize video production with fixed pre-production, recording, and editing checklists to prevent burnout.\\n- **YouTube Channel Strategy — Video Content Strategy:** Produce content explaining how to implement \\\"If-Then logic\\\" and automated workflows directly within modern AI and developer stacks.\\n- **Vibe Coding Tech Stack Demos — Checklists for Demos:** Maintain strict step-by-step checklists for setting up demo environments, API keys, and deployment pipelines so live or recorded sessions run smoothly without technical hitches.\\n- **Vibe Coding Tech Stack Demos — Automation Workflows:** Demonstrate how \\\"If-Then\\\" algorithms map directly to automated software workflows (e.g., Webhooks, Zapier/n8n triggers, GitHub Actions CI/CD pipelines).\\n- **Phone Apps & Small SaaS Applications — User Onboarding Systems:** Build \\\"forcing functions\\\" and \\\"If-Then\\\" triggers into your app UX (e.g., streak features, contextual notifications, guided checklists) to build user habits.\\n- **Phone Apps & Small SaaS Applications — Developer Systems:** Establish automated CI/CD checks, unit test suites, and deployment checklists before shipping app updates to reduce cognitive fatigue and avoid critical bugs.\",\n  \"links\": [\n    {\n      \"label\": \"YouTube Source\",\n      \"url\": \"https://www.youtube.com/watch?v=p3F-1QyvHnY\"\n    }\n  ],\n  \"metrics\": {\n    \"as_of\": \"September 27, 2026\",\n    \"views\": \"2,194,693\",\n    \"likes\": \"89,758\",\n    \"subscribers\": null\n  },\n  \"chapters\": [],\n  \"tags\": [\n    \"strategy\",\n    \"automation\"\n  ]\n}",
+      "tokens_in": 3374,
+      "tokens_out": 1726,
+      "duration_ms": 15523,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Success Is Hard Until You Build Systems Like This",
+    "creator": "Sandeep Swadia",
+    "description": "Success comes from systems that make hard actions easier to execute, rather than relying on willpower or longer hours.",
+    "summary": "Sandeep Swadia shares 5 system-level principles for doing hard things without relying on willpower. Forcing functions, consistent environments, If-Then rules, checklists, and repetition reduce friction and make execution more automatic.",
+    "main_purpose": "High-level success is not about working harder or depending on discipline. It comes from designing systems that guide behavior, reduce cognitive friction, and support consistent execution.",
+    "key_examples": [
+      "Hernán Cortés (1519): Sinking his own ships in Mexico so his soldiers had no option to retreat (Plan A or fail).",
+      "COO Acquisition Integration: The CEO handing total ownership of an acquired company to Sandeep (\"I'm not going, you own it\"), turning complex travel into an unavoidable forcing function.",
+      "Roy Baumeister’s Ego Depletion Study: Participants who resisted eating fresh-baked cookies gave up on difficult puzzles 50% faster.",
+      "Noah Lyles (Olympic Sprinter): Uses fixed daily tracks, warmups, and playlists to bypass ADHD and eliminate decision fatigue before running.",
+      "Peter Gollwitzer’s NYU Goal Experiment: Christmas break exercise study where \"Goal Setters\" failed 62% of the time, while \"If-Then Planner\" implementation intention groups failed only 9% of the time.",
+      "Atul Gawande & WHO Surgical Checklist: A 19-step elementary checklist reduced post-surgical complications by 36% and mortality by 47% across global hospitals.",
+      "Pilots & Master Musicians/Athletes (e.g., Roger Federer): Relying on structured checklists and endless repetition to execute high-stakes skills effortlessly under pressure.",
+      "Tibetan Monks Brainwave Synchronization: Brain scans showing synchronized brainwaves during meditation achieved through years of repetition, driving internal craving rather than external push."
+    ],
+    "action_plan": [
+      "Establish forcing functions, such as public commitments, financial stakes, cutting access, and hard timeboxing, to eliminate Plan B options.",
+      "Remove dependency on willpower by treating it as a depletable biological fuel.",
+      "Lock down Time, Place, and Trigger for key habits.",
+      "Implement If-Then mental algorithms: If [Trigger/Condition], Then [Action].",
+      "Create three checklists: a To-Do List for daily operations, a To-Want List for strategic expansion and future targets, and a To-Be List for personal evolution and identity values.",
+      "Focus on daily repetition over motivation."
+    ],
+    "tools": [
+      "Slack",
+      "Airplane Mode"
+    ],
+    "tips": [
+      {
+        "tip": "Trap Yourself (Forcing Functions)",
+        "explanation": "When retreat or alternative choices are removed, hard outcomes become inevitable.",
+        "how_to_apply": "Announce goals publicly, pay upfront for training, delete distracting apps, or set 90-minute hard limits."
+      },
+      {
+        "tip": "Lock Time, Place, and Trigger",
+        "explanation": "Decision-making drains mental energy; environmental consistency builds biological autopilot.",
+        "how_to_apply": "Pick one avoided task and lock the context (e.g., Every Thursday at 9:00 AM at Desk X with Phone on Airplane Mode)."
+      },
+      {
+        "tip": "Run \"If-Then\" Code",
+        "explanation": "Converts emotional friction and doubt into pure data execution.",
+        "how_to_apply": "Write operational rules: \"If it is 3:00 PM on Thursday, Then deep work starts immediately.\""
+      },
+      {
+        "tip": "Outsource Memory to Checklists",
+        "explanation": "High cognitive load causes simple errors even among elite performers.",
+        "how_to_apply": "Maintain distinct To-Do, To-Want, and To-Be checklists to clear mental bandwidth for complex focus."
+      },
+      {
+        "tip": "Drive Repetition to Create Motivation",
+        "explanation": "Repetition creates neural cadence that makes habits feel effortless over time.",
+        "how_to_apply": "Commit to small daily reps so your brain begins craving the routine rather than waiting for initial motivation."
+      }
+    ],
+    "channel_application": "- **YouTube Channel Strategy — Forcing Functions:** Commit to a strict public publishing schedule or live-stream release windows so content creation is non-negotiable.\n- **YouTube Channel Strategy — Routine & Execution:** Standardize video production with fixed pre-production, recording, and editing checklists to prevent burnout.\n- **YouTube Channel Strategy — Video Content Strategy:** Produce content explaining how to implement \"If-Then logic\" and automated workflows directly within modern AI and developer stacks.\n- **Vibe Coding Tech Stack Demos — Checklists for Demos:** Maintain strict step-by-step checklists for setting up demo environments, API keys, and deployment pipelines so live or recorded sessions run smoothly without technical hitches.\n- **Vibe Coding Tech Stack Demos — Automation Workflows:** Demonstrate how \"If-Then\" algorithms map directly to automated software workflows (e.g., Webhooks, Zapier/n8n triggers, GitHub Actions CI/CD pipelines).\n- **Phone Apps & Small SaaS Applications — User Onboarding Systems:** Build \"forcing functions\" and \"If-Then\" triggers into your app UX (e.g., streak features, contextual notifications, guided checklists) to build user habits.\n- **Phone Apps & Small SaaS Applications — Developer Systems:** Establish automated CI/CD checks, unit test suites, and deployment checklists before shipping app updates to reduce cognitive fatigue and avoid critical bugs.",
+    "links": [
+      {
+        "label": "YouTube Source",
+        "url": "https://www.youtube.com/watch?v=p3F-1QyvHnY"
+      }
+    ],
+    "metrics": {
+      "as_of": "September 27, 2026",
+      "views": "2,194,693",
+      "likes": "89,758",
+      "subscribers": null
+    },
+    "chapters": [],
+    "tags": [
+      "strategy",
+      "automation"
+    ]
+  }
+}

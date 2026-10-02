@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:02:41+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "prompt_version": "note-7",
+  "content_key": "90cb819265e6affc71e174292842e0693b3c2951edb3ee2387aef8ae4ecebac2",
+  "prompt_sha256": "3abe46a1b6bb9843a507641037b8be39a84520d1dcd67dcc230d1222ee4d21d9",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\"title\": \"YouTube Summaries Skill for Hugo Docs\", \"description\": \"Create a skill to find YouTube links in Hugo docs and generate missing summaries.\", \"body\": \"- Create new skill: `epi-hugo-youtube-summaries`.\\n- When invoked, find all YouTube links in Hugo docs and check for a summary. If none, generate the summary and store it in `idea-bucket/youtube`.\\n- Consider using an API for deterministic Python part or full generation, or an MCP server that calls the API server.\\n- Implement after the idea bucket flow for daily jobs is ready.\", \"tags\": [\"tech-note\", \"hugo\", \"skills\", \"automation\", \"idea-catcher\"], \"language\": \"en\"}",
+      "tokens_in": 1230,
+      "tokens_out": 2278,
+      "duration_ms": 8562,
+      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "YouTube Summaries Skill for Hugo Docs",
+    "description": "Create a skill to find YouTube links in Hugo docs and generate missing summaries.",
+    "body": "- Create new skill: `epi-hugo-youtube-summaries`.\n- When invoked, find all YouTube links in Hugo docs and check for a summary. If none, generate the summary and store it in `idea-bucket/youtube`.\n- Consider using an API for deterministic Python part or full generation, or an MCP server that calls the API server.\n- Implement after the idea bucket flow for daily jobs is ready.",
+    "tags": [
+      "tech-note",
+      "hugo",
+      "skills",
+      "automation",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

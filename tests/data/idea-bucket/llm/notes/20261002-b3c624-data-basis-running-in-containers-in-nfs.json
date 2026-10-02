@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:05:49+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "8ea16f7e1484d9f12f9a47a05468a0ba3157dfac520f921643c438c8331a6885",
+  "prompt_sha256": "a7b0fe8a6605cce0d72f0fe957557a36b564db17ec7bb39f4fe3ac14380a440a",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\": \"Running Databases in Azure Containers with NFS\", \"description\": \"Show how to run databases like Postgres and Neo4j in Azure containers using NFS file shares and VNet private endpoints.\", \"body\": \"- Create a YouTube demo showing how to run a database in a container on Azure.\\n- The setup requires NFS file shares and VNet private endpoints.\\n- Demonstrate how people can run their own database type, such as SQLite, Postgres, or Neo4j.\", \"tags\": [\"youtube-idea\", \"tech-channel\", \"content-creation\", \"video-production\"], \"language\": \"en\"}",
+      "tokens_in": 1177,
+      "tokens_out": 1269,
+      "duration_ms": 15187,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Running Databases in Azure Containers with NFS",
+    "description": "Show how to run databases like Postgres and Neo4j in Azure containers using NFS file shares and VNet private endpoints.",
+    "body": "- Create a YouTube demo showing how to run a database in a container on Azure.\n- The setup requires NFS file shares and VNet private endpoints.\n- Demonstrate how people can run their own database type, such as SQLite, Postgres, or Neo4j.",
+    "tags": [
+      "youtube-idea",
+      "tech-channel",
+      "content-creation",
+      "video-production"
+    ],
+    "language": "en"
+  }
+}

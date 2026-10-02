@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:03:06+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "prompt_version": "note-7",
+  "content_key": "cf00a30f5955156c36b445693f49a81bf9cda6b32095e5f5ed31aabd048057d4",
+  "prompt_sha256": "fce831eeddc190fd9a15ded8f6c4580b84164f6d88b5ea1b5a1120019001ef0d",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\"title\":\"How I Get My Best Ideas and Capture Them with Obsidian\",\"description\":\"A YouTube video idea on where I get my best ideas—dog walks, spinning, shower, yoga—and how I capture them with Obsidian.\",\"body\":\"I want to create a YouTube video showing how I get my best ideas. Some examples: walking with my dog, exercising (like spinning), relaxing under the shower, or doing yoga.\\n\\nMost importantly, I have a workflow to capture and dictate ideas with Obsidian. I then catch all the ideas in that workflow. For those two documents on my site, Park.\",\"tags\":[\"youtube-idea\",\"content-creation\",\"second-brain\",\"obsidian\"],\"language\":\"en\"}",
+      "tokens_in": 1179,
+      "tokens_out": 1950,
+      "duration_ms": 11424,
+      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "How I Get My Best Ideas and Capture Them with Obsidian",
+    "description": "A YouTube video idea on where I get my best ideas—dog walks, spinning, shower, yoga—and how I capture them with Obsidian.",
+    "body": "I want to create a YouTube video showing how I get my best ideas. Some examples: walking with my dog, exercising (like spinning), relaxing under the shower, or doing yoga.\n\nMost importantly, I have a workflow to capture and dictate ideas with Obsidian. I then catch all the ideas in that workflow. For those two documents on my site, Park.",
+    "tags": [
+      "youtube-idea",
+      "content-creation",
+      "second-brain",
+      "obsidian"
+    ],
+    "language": "en"
+  }
+}

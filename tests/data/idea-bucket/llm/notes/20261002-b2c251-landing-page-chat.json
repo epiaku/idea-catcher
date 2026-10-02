@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:05:33+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "b33410aec5a3cd298148278fffa68be222763756f74c0dc22a00e144b270d9c8",
+  "prompt_sha256": "819159305429bd243fc7b8a999526b5b1cdcfd1e20d300504bf0e24e2f1f9738",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\":\"AI Chat Landing Page\",\"description\":\"Turn the landing page into an AI chat connected to the second brain docs.\",\"body\":\"Turn the landing page into an AI chat interface connected to the second brain documentation.\",\"tags\":[\"app-idea\",\"second-brain\",\"ai-agents\",\"idea-catcher\"],\"language\":\"en\"}",
+      "tokens_in": 1133,
+      "tokens_out": 738,
+      "duration_ms": 10335,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "AI Chat Landing Page",
+    "description": "Turn the landing page into an AI chat connected to the second brain docs.",
+    "body": "Turn the landing page into an AI chat interface connected to the second brain documentation.",
+    "tags": [
+      "app-idea",
+      "second-brain",
+      "ai-agents",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

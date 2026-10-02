@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T18:56:44+00:00",
+  "task": "youtube-gemini",
+  "profile": "youtube",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "youtube-gemini-7",
+  "content_key": "7c06cc7e042031d4e5985a6b961f80e378c00c4de532b830c108c65d11018254",
+  "prompt_sha256": "d9a246bcfb19bfb32ba200afcc5c2d3ea0a8867c46db44618102392bb340b605",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"RAG + Langchain Python Project: Easy AI/Chat For Your Docs\",\n  \"creator\": \"pixegami\",\n  \"description\": \"Build a Python RAG app that answers questions about custom documents using LangChain, OpenAI embeddings, and Chroma.\",\n  \"summary\": \"The tutorial builds a Retrieval Augmented Generation app in Python for querying custom text files or documentation. It chunks documents, stores OpenAI embeddings in Chroma, retrieves relevant context, and generates cited answers with an LLM.\",\n  \"main_purpose\": \"Demonstrate how to build a custom document QA system using RAG in Python to prevent LLM hallucinations and cite exact source context.\",\n  \"key_examples\": [\n    \"AWS Lambda Documentation: Load, chunk, and query multi-file Markdown documentation about topics such as supported runtimes.\",\n    \"Alice in Wonderland Book: Query a single large Markdown file about character interactions, such as how Alice meets the Mad Hatter.\",\n    \"Word Similarity Comparisons: Compare OpenAI vector distances for `apple` vs `orange` (0.13), `apple` vs `beach` (0.20), and `apple` vs `iPhone` (0.09).\"\n  ],\n  \"action_plan\": [\n    \"Prepare custom Markdown or PDF documents in a project directory (`data/`).\",\n    \"Use LangChain's `DirectoryLoader` to read documents and extract metadata.\",\n    \"Split documents with `RecursiveCharacterTextSplitter` (e.g., chunk size 1,000, overlap 500).\",\n    \"Initialize `OpenAIEmbeddings` and persist processed chunks to disk using `Chroma`.\",\n    \"Write a CLI query handler with `argparse` to transform questions into vector queries.\",\n    \"Search Chroma DB for the top $k$ matching context blocks.\",\n    \"Build a prompt template containing retrieved chunks and the user's question.\",\n    \"Pass the prompt to OpenAI (`ChatOpenAI`) to generate grounded, cited answers.\"\n  ],\n  \"tools\": [\n    \"Python\",\n    \"LangChain\",\n    \"DirectoryLoader\",\n    \"RecursiveCharacterTextSplitter\",\n    \"OpenAI API\",\n    \"OpenAIEmbeddings\",\n    \"ChatOpenAI\",\n    \"Chroma DB\",\n    \"SQLite 3\",\n    \"Argparse\"\n  ],\n  \"tips\": [\n    {\n      \"tip\": \"Preserve Metadata\",\n      \"explanation\": \"Retaining source paths and character offsets enables precise references to original files.\",\n      \"how_to_apply\": \"Ensure `source` metadata fields are populated during chunking and included with LLM responses.\"\n    },\n    {\n      \"tip\": \"Manage Chunk Overlap\",\n      \"explanation\": \"Document splitting can cut context in half at awkward chunk boundaries.\",\n      \"how_to_apply\": \"Set `chunk_overlap` (e.g., 500 characters) in `RecursiveCharacterTextSplitter`.\"\n    },\n    {\n      \"tip\": \"Set Similarity Thresholds\",\n      \"explanation\": \"Low similarity scores can cause LLM hallucinations on irrelevant results.\",\n      \"how_to_apply\": \"Filter out search results below a minimum relevance threshold before constructing the prompt.\"\n    }\n  ],\n  \"channel_application\": \"- **Epiaku Company**: Implement local documentation QA agents so internal teams can instantly query proprietary technical or operational handbooks without privacy risks.\\n- **Vibe Coding Tech Stack Demos**: Record quick coding demos showcasing rapid setup of local Chroma DBs and LangChain chains in live editor sessions.\\n- **Phone Apps & Micro SaaS**: Expose this Python/Chroma RAG backend as a lightweight REST API wrapper (FastAPI) to power interactive custom-knowledge chat bots inside mobile app interfaces.\",\n  \"links\": [\n    {\n      \"label\": \"YouTube Source\",\n      \"url\": \"https://www.youtube.com/watch?v=tcqEUSNCn8I\"\n    }\n  ],\n  \"metrics\": {\n    \"as_of\": \"September 27, 2026\",\n    \"views\": \"485,606\",\n    \"likes\": \"13,046\",\n    \"subscribers\": null\n  },\n  \"chapters\": [],\n  \"tags\": [\n    \"tech-note\",\n    \"llm-models\"\n  ]\n}",
+      "tokens_in": 3552,
+      "tokens_out": 1031,
+      "duration_ms": 9288,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "RAG + Langchain Python Project: Easy AI/Chat For Your Docs",
+    "creator": "pixegami",
+    "description": "Build a Python RAG app that answers questions about custom documents using LangChain, OpenAI embeddings, and Chroma.",
+    "summary": "The tutorial builds a Retrieval Augmented Generation app in Python for querying custom text files or documentation. It chunks documents, stores OpenAI embeddings in Chroma, retrieves relevant context, and generates cited answers with an LLM.",
+    "main_purpose": "Demonstrate how to build a custom document QA system using RAG in Python to prevent LLM hallucinations and cite exact source context.",
+    "key_examples": [
+      "AWS Lambda Documentation: Load, chunk, and query multi-file Markdown documentation about topics such as supported runtimes.",
+      "Alice in Wonderland Book: Query a single large Markdown file about character interactions, such as how Alice meets the Mad Hatter.",
+      "Word Similarity Comparisons: Compare OpenAI vector distances for `apple` vs `orange` (0.13), `apple` vs `beach` (0.20), and `apple` vs `iPhone` (0.09)."
+    ],
+    "action_plan": [
+      "Prepare custom Markdown or PDF documents in a project directory (`data/`).",
+      "Use LangChain's `DirectoryLoader` to read documents and extract metadata.",
+      "Split documents with `RecursiveCharacterTextSplitter` (e.g., chunk size 1,000, overlap 500).",
+      "Initialize `OpenAIEmbeddings` and persist processed chunks to disk using `Chroma`.",
+      "Write a CLI query handler with `argparse` to transform questions into vector queries.",
+      "Search Chroma DB for the top $k$ matching context blocks.",
+      "Build a prompt template containing retrieved chunks and the user's question.",
+      "Pass the prompt to OpenAI (`ChatOpenAI`) to generate grounded, cited answers."
+    ],
+    "tools": [
+      "Python",
+      "LangChain",
+      "DirectoryLoader",
+      "RecursiveCharacterTextSplitter",
+      "OpenAI API",
+      "OpenAIEmbeddings",
+      "ChatOpenAI",
+      "Chroma DB",
+      "SQLite 3",
+      "Argparse"
+    ],
+    "tips": [
+      {
+        "tip": "Preserve Metadata",
+        "explanation": "Retaining source paths and character offsets enables precise references to original files.",
+        "how_to_apply": "Ensure `source` metadata fields are populated during chunking and included with LLM responses."
+      },
+      {
+        "tip": "Manage Chunk Overlap",
+        "explanation": "Document splitting can cut context in half at awkward chunk boundaries.",
+        "how_to_apply": "Set `chunk_overlap` (e.g., 500 characters) in `RecursiveCharacterTextSplitter`."
+      },
+      {
+        "tip": "Set Similarity Thresholds",
+        "explanation": "Low similarity scores can cause LLM hallucinations on irrelevant results.",
+        "how_to_apply": "Filter out search results below a minimum relevance threshold before constructing the prompt."
+      }
+    ],
+    "channel_application": "- **Epiaku Company**: Implement local documentation QA agents so internal teams can instantly query proprietary technical or operational handbooks without privacy risks.\n- **Vibe Coding Tech Stack Demos**: Record quick coding demos showcasing rapid setup of local Chroma DBs and LangChain chains in live editor sessions.\n- **Phone Apps & Micro SaaS**: Expose this Python/Chroma RAG backend as a lightweight REST API wrapper (FastAPI) to power interactive custom-knowledge chat bots inside mobile app interfaces.",
+    "links": [
+      {
+        "label": "YouTube Source",
+        "url": "https://www.youtube.com/watch?v=tcqEUSNCn8I"
+      }
+    ],
+    "metrics": {
+      "as_of": "September 27, 2026",
+      "views": "485,606",
+      "likes": "13,046",
+      "subscribers": null
+    },
+    "chapters": [],
+    "tags": [
+      "tech-note",
+      "llm-models"
+    ]
+  }
+}

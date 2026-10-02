@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:01:19+00:00",
+  "task": "youtube-gemini",
+  "profile": "youtube",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "youtube-gemini-7",
+  "content_key": "72b2f5a4fa7c375572d870c525b9a3631610f7fe3ed433614536fa3d07fab441",
+  "prompt_sha256": "4bf31ebafc36c5066d9fb36e2cca034d4ca2a17a3b5187a1cac1a8febdaea4ff",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"6 Proven Strategies That Turn Viewers In To Buyers\",\n  \"creator\": \"Ed Lawrence\",\n  \"description\": \"Choose a YouTube sales funnel that fits your offer’s price, the trust it requires, and your audience’s preferences.\",\n  \"summary\": \"YouTube can turn casual viewers into paying customers when sales funnels match price points, trust levels, and audience preferences. The video covers Buy Now links, calls, waitlists, DMs, webinars, and ascension funnels.\",\n  \"main_purpose\": \"Help entrepreneurs, creators, and business owners choose a sales funnel that builds enough trust to convert YouTube viewers into customers.\",\n  \"key_examples\": [\n    \"A $2,000 product sold directly through a YouTube description using a “Buy Now” funnel, though under $250 is recommended.\",\n    \"A $10 Million/Year founder automatically rejected by a rigid Typeform screening rule after rapidly skipping questions.\",\n    \"Fitness brands using automated Instagram/WhatsApp DM keywords to send pitch decks or resources and answer questions asynchronously.\",\n    \"A 15-Email Webinar Campaign sent over one week to support high-ticket sales, including $20,000 offer examples, without spam complaints.\",\n    \"A $40,000 Ascension Ladder that moves buyers from a $99 entry product to a $40,000 flagship service through automated post-purchase upsells.\"\n  ],\n  \"action_plan\": [\n    \"Match the price of an offer to the trust required to buy it; higher-priced offers need more touchpoints.\",\n    \"Use a Buy Now funnel for low-ticket offers under $250, such as digital products, apps, software, or communities.\",\n    \"Use a Call Funnel for high-ticket offers ($3,000–$10,000+) that require personalized trust and qualification.\",\n    \"Use a Waitlist Funnel for cohort programs, limited availability, or fixed-window launches.\",\n    \"Use a DM Funnel when the audience prefers low-pressure messaging through Instagram/WhatsApp over sales calls.\",\n    \"Use a Webinar Funnel once per quarter to educate viewers, address objections, and sell offers across price ranges.\",\n    \"Use an Ascension Funnel only after one offer is proven, to automate post-purchase upsells.\",\n    \"Keep sales-call qualification manageable: review applications manually or send simple follow-ups instead of relying on rigid auto-rejection.\",\n    \"Follow up consistently with automated email sequences after calls or webinars; 30% to 40% of sales occur during follow-up interactions.\"\n  ],\n  \"tools\": [\n    \"YouTube\",\n    \"Typeform\",\n    \"Instagram\",\n    \"WhatsApp\"\n  ],\n  \"tips\": [\n    {\n      \"tip\": \"Match Funnel to Price\",\n      \"explanation\": \"Higher prices require more trust and personal touchpoints before a viewer will convert.\",\n      \"how_to_apply\": \"Use simple buy links for offers under $250, and reserve calls or webinars for high-ticket offers.\"\n    },\n    {\n      \"tip\": \"Don't Over-Filter Leads\",\n      \"explanation\": \"Automated multi-step screening forms can accidentally disqualify high-value prospects.\",\n      \"how_to_apply\": \"Use minimal intake forms and manually review applications before canceling unfit calls.\"\n    },\n    {\n      \"tip\": \"Email Frequency Is Underutilized\",\n      \"explanation\": \"Audiences accept high email volume if the content is relevant during a focused launch or event.\",\n      \"how_to_apply\": \"Send sequence-based emails (up to 10+ per launch week) targeting registration, attendance, and post-event sales.\"\n    },\n    {\n      \"tip\": \"Build Symmetrical Ladders\",\n      \"explanation\": \"Fragmented low-ticket offers without clear post-purchase automation confuse prospects and kill sales.\",\n      \"how_to_apply\": \"Connect every low-ticket purchase directly to the next logical upsell before introducing more products.\"\n    }\n  ],\n  \"channel_application\": \"- **Deploy the \\\"Buy Now\\\" Funnel for Digital Lead Magnets:** Since you sell digital products and mobile/SaaS apps, add direct links to low-ticket or free digital resources (e.g., *\\\"Vibe Coding Starter Template & Prompt Library\\\"*) in every video description to capture email leads instantly without complex sales calls.\\n- **Launch YouTube Content with a Clear DM / Waitlist Strategy:** For new mobile apps or SaaS platforms under development, run a **Waitlist Funnel**. Drive viewers from your vibe-coding build videos to a simple landing page where they can join a waitlist for early beta access, validating demand before full launch.\\n- **Avoid the Ascension & Call Funnels Early On:** The video specifically warns beginners against ascension funnels (multi-tiered upsells) and high-ticket sales calls. As a solopreneur, avoid building complex 3-tiered product ladders or taking manual sales calls until your initial app or lead magnet has proven demand.\\n- **Run a Quarterly Live Vibe-Coding Webinar:** Host a live event (e.g., *\\\"Build an AI-Powered App Live in 60 Minutes using Vibe Coding\\\"*) paired with a dedicated 10-to-12 email follow-up sequence to convert viewers into subscribers, email leads, and paid buyers for your premium SaaS tools or templates.\",\n  \"links\": [\n    {\n      \"label\": \"YouTube Source\",\n      \"url\": \"https://www.youtube.com/watch?v=RlX-tt9XrFo\"\n    }\n  ],\n  \"metrics\": {\n    \"as_of\": \"October 1, 2026\",\n    \"views\": \"9,954\",\n    \"likes\": \"170\",\n    \"subscribers\": null\n  },\n  \"chapters\": [],\n  \"tags\": [\n    \"strategy\",\n    \"youtube-growth\",\n    \"marketing\",\n    \"monetization\"\n  ]\n}",
+      "tokens_in": 3568,
+      "tokens_out": 1487,
+      "duration_ms": 15143,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "6 Proven Strategies That Turn Viewers In To Buyers",
+    "creator": "Ed Lawrence",
+    "description": "Choose a YouTube sales funnel that fits your offer’s price, the trust it requires, and your audience’s preferences.",
+    "summary": "YouTube can turn casual viewers into paying customers when sales funnels match price points, trust levels, and audience preferences. The video covers Buy Now links, calls, waitlists, DMs, webinars, and ascension funnels.",
+    "main_purpose": "Help entrepreneurs, creators, and business owners choose a sales funnel that builds enough trust to convert YouTube viewers into customers.",
+    "key_examples": [
+      "A $2,000 product sold directly through a YouTube description using a “Buy Now” funnel, though under $250 is recommended.",
+      "A $10 Million/Year founder automatically rejected by a rigid Typeform screening rule after rapidly skipping questions.",
+      "Fitness brands using automated Instagram/WhatsApp DM keywords to send pitch decks or resources and answer questions asynchronously.",
+      "A 15-Email Webinar Campaign sent over one week to support high-ticket sales, including $20,000 offer examples, without spam complaints.",
+      "A $40,000 Ascension Ladder that moves buyers from a $99 entry product to a $40,000 flagship service through automated post-purchase upsells."
+    ],
+    "action_plan": [
+      "Match the price of an offer to the trust required to buy it; higher-priced offers need more touchpoints.",
+      "Use a Buy Now funnel for low-ticket offers under $250, such as digital products, apps, software, or communities.",
+      "Use a Call Funnel for high-ticket offers ($3,000–$10,000+) that require personalized trust and qualification.",
+      "Use a Waitlist Funnel for cohort programs, limited availability, or fixed-window launches.",
+      "Use a DM Funnel when the audience prefers low-pressure messaging through Instagram/WhatsApp over sales calls.",
+      "Use a Webinar Funnel once per quarter to educate viewers, address objections, and sell offers across price ranges.",
+      "Use an Ascension Funnel only after one offer is proven, to automate post-purchase upsells.",
+      "Keep sales-call qualification manageable: review applications manually or send simple follow-ups instead of relying on rigid auto-rejection.",
+      "Follow up consistently with automated email sequences after calls or webinars; 30% to 40% of sales occur during follow-up interactions."
+    ],
+    "tools": [
+      "YouTube",
+      "Typeform",
+      "Instagram",
+      "WhatsApp"
+    ],
+    "tips": [
+      {
+        "tip": "Match Funnel to Price",
+        "explanation": "Higher prices require more trust and personal touchpoints before a viewer will convert.",
+        "how_to_apply": "Use simple buy links for offers under $250, and reserve calls or webinars for high-ticket offers."
+      },
+      {
+        "tip": "Don't Over-Filter Leads",
+        "explanation": "Automated multi-step screening forms can accidentally disqualify high-value prospects.",
+        "how_to_apply": "Use minimal intake forms and manually review applications before canceling unfit calls."
+      },
+      {
+        "tip": "Email Frequency Is Underutilized",
+        "explanation": "Audiences accept high email volume if the content is relevant during a focused launch or event.",
+        "how_to_apply": "Send sequence-based emails (up to 10+ per launch week) targeting registration, attendance, and post-event sales."
+      },
+      {
+        "tip": "Build Symmetrical Ladders",
+        "explanation": "Fragmented low-ticket offers without clear post-purchase automation confuse prospects and kill sales.",
+        "how_to_apply": "Connect every low-ticket purchase directly to the next logical upsell before introducing more products."
+      }
+    ],
+    "channel_application": "- **Deploy the \"Buy Now\" Funnel for Digital Lead Magnets:** Since you sell digital products and mobile/SaaS apps, add direct links to low-ticket or free digital resources (e.g., *\"Vibe Coding Starter Template & Prompt Library\"*) in every video description to capture email leads instantly without complex sales calls.\n- **Launch YouTube Content with a Clear DM / Waitlist Strategy:** For new mobile apps or SaaS platforms under development, run a **Waitlist Funnel**. Drive viewers from your vibe-coding build videos to a simple landing page where they can join a waitlist for early beta access, validating demand before full launch.\n- **Avoid the Ascension & Call Funnels Early On:** The video specifically warns beginners against ascension funnels (multi-tiered upsells) and high-ticket sales calls. As a solopreneur, avoid building complex 3-tiered product ladders or taking manual sales calls until your initial app or lead magnet has proven demand.\n- **Run a Quarterly Live Vibe-Coding Webinar:** Host a live event (e.g., *\"Build an AI-Powered App Live in 60 Minutes using Vibe Coding\"*) paired with a dedicated 10-to-12 email follow-up sequence to convert viewers into subscribers, email leads, and paid buyers for your premium SaaS tools or templates.",
+    "links": [
+      {
+        "label": "YouTube Source",
+        "url": "https://www.youtube.com/watch?v=RlX-tt9XrFo"
+      }
+    ],
+    "metrics": {
+      "as_of": "October 1, 2026",
+      "views": "9,954",
+      "likes": "170",
+      "subscribers": null
+    },
+    "chapters": [],
+    "tags": [
+      "strategy",
+      "youtube-growth",
+      "marketing",
+      "monetization"
+    ]
+  }
+}

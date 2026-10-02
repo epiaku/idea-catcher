@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T18:56:07+00:00",
+  "task": "youtube-gemini",
+  "profile": "youtube",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "youtube-gemini-7",
+  "content_key": "6eab018b12e7eeb6464929858ebc7862e2cf380b12a942d3d2d02a777da4cb6a",
+  "prompt_sha256": "44466eb5714ecec1978d49c1c707de08ac3b5eb5e0847edbf15348f1ca9d365a",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"Success Is Hard Until You Build Systems Like This\",\n  \"creator\": \"Ali Abdaal\",\n  \"description\": \"Sustainable systems for goals, time, health, relationships, and finances make progress less dependent on willpower.\",\n  \"summary\": \"Building systems across key areas of life helps make progress consistent. The video covers five systems and frames failures as system errors to debug rather than personal flaws.\",\n  \"main_purpose\": \"Long-term success comes from sustainable systems rather than willpower or raw motivation.\",\n  \"key_examples\": [\n    \"Goal-Setting System: Cascade annual high-level objectives into quarterly milestones and actionable weekly targets.\",\n    \"Time Management System: Use time-blocking on digital calendars to protect daily deep work sessions.\",\n    \"Health OS: Schedule non-negotiable workouts, track sleep, and automate nutrition routines.\",\n    \"Relationship System: Set recurring calendar reminders to catch up with family and close friends.\",\n    \"Personal Finance System: Set up automated monthly transfers for savings and investments.\"\n  ],\n  \"action_plan\": [\n    \"Map out yearly high-level vision and break it into quarterly and weekly action steps.\",\n    \"Implement strict time-blocking on your daily calendar for deep, focused work.\",\n    \"Set up automated recurring investments and savings deposits.\",\n    \"Treat missteps as neutral \\\"system errors\\\" to debug rather than personal failures.\"\n  ],\n  \"tools\": [\n    \"Google Calendar\",\n    \"Notion\",\n    \"Readwise\",\n    \"Todoist\",\n    \"Apple Health\",\n    \"Oura Ring\"\n  ],\n  \"tips\": [\n    {\n      \"tip\": \"Treat Failures as System Bugs\",\n      \"explanation\": \"Frame missed tasks as flaws in your daily architecture, not personal character defects.\",\n      \"how_to_apply\": \"Analyze where a breakdown happened and adjust the environment or schedule trigger.\"\n    },\n    {\n      \"tip\": \"Schedule Your Relationships\",\n      \"explanation\": \"Spontaneous connection drops off as busy schedules scale up.\",\n      \"how_to_apply\": \"Add recurring calendar blocks or reminders for personal catch-ups and calls.\"\n    },\n    {\n      \"tip\": \"Automate Financial Discipline\",\n      \"explanation\": \"Manual decisions create friction and lead to skipped savings or investments.\",\n      \"how_to_apply\": \"Set up auto-debits on payday directly into investment and savings accounts.\"\n    }\n  ],\n  \"channel_application\": \"- **Vibe Coding & App Demos:** Establish a structured \\\"Demo Pipeline System.\\\" Dedicate fixed time blocks for prototyping, screen recording, and testing micro-SaaS apps so production isn't dependent on random creative sparks.\\n- **YouTube Workflow System:** Replace irregular upload schedules with an automated content calendar. Batch ideation, scripting, screen-recording, and editing into dedicated weekly slots.\\n- **Micro-SaaS & Product Development:** Apply \\\"system error debugging\\\" to development bottlenecks. When app development slows down, refine the Vibe Coding stack (e.g., standardized starter templates, automated CI/CD deployments) rather than relying on late-night coding sessions.\",\n  \"links\": [\n    {\n      \"label\": \"YouTube video\",\n      \"url\": \"https://www.youtube.com/watch?v=MBPHU7aaklM\"\n    }\n  ],\n  \"metrics\": {\n    \"as_of\": \"September 2026\",\n    \"views\": \"1,600,000+\",\n    \"likes\": \"49,000+\",\n    \"subscribers\": \"6.69M\"\n  },\n  \"chapters\": [],\n  \"tags\": [\n    \"strategy\",\n    \"automation\"\n  ]\n}",
+      "tokens_in": 3453,
+      "tokens_out": 859,
+      "duration_ms": 8479,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Success Is Hard Until You Build Systems Like This",
+    "creator": "Ali Abdaal",
+    "description": "Sustainable systems for goals, time, health, relationships, and finances make progress less dependent on willpower.",
+    "summary": "Building systems across key areas of life helps make progress consistent. The video covers five systems and frames failures as system errors to debug rather than personal flaws.",
+    "main_purpose": "Long-term success comes from sustainable systems rather than willpower or raw motivation.",
+    "key_examples": [
+      "Goal-Setting System: Cascade annual high-level objectives into quarterly milestones and actionable weekly targets.",
+      "Time Management System: Use time-blocking on digital calendars to protect daily deep work sessions.",
+      "Health OS: Schedule non-negotiable workouts, track sleep, and automate nutrition routines.",
+      "Relationship System: Set recurring calendar reminders to catch up with family and close friends.",
+      "Personal Finance System: Set up automated monthly transfers for savings and investments."
+    ],
+    "action_plan": [
+      "Map out yearly high-level vision and break it into quarterly and weekly action steps.",
+      "Implement strict time-blocking on your daily calendar for deep, focused work.",
+      "Set up automated recurring investments and savings deposits.",
+      "Treat missteps as neutral \"system errors\" to debug rather than personal failures."
+    ],
+    "tools": [
+      "Google Calendar",
+      "Notion",
+      "Readwise",
+      "Todoist",
+      "Apple Health",
+      "Oura Ring"
+    ],
+    "tips": [
+      {
+        "tip": "Treat Failures as System Bugs",
+        "explanation": "Frame missed tasks as flaws in your daily architecture, not personal character defects.",
+        "how_to_apply": "Analyze where a breakdown happened and adjust the environment or schedule trigger."
+      },
+      {
+        "tip": "Schedule Your Relationships",
+        "explanation": "Spontaneous connection drops off as busy schedules scale up.",
+        "how_to_apply": "Add recurring calendar blocks or reminders for personal catch-ups and calls."
+      },
+      {
+        "tip": "Automate Financial Discipline",
+        "explanation": "Manual decisions create friction and lead to skipped savings or investments.",
+        "how_to_apply": "Set up auto-debits on payday directly into investment and savings accounts."
+      }
+    ],
+    "channel_application": "- **Vibe Coding & App Demos:** Establish a structured \"Demo Pipeline System.\" Dedicate fixed time blocks for prototyping, screen recording, and testing micro-SaaS apps so production isn't dependent on random creative sparks.\n- **YouTube Workflow System:** Replace irregular upload schedules with an automated content calendar. Batch ideation, scripting, screen-recording, and editing into dedicated weekly slots.\n- **Micro-SaaS & Product Development:** Apply \"system error debugging\" to development bottlenecks. When app development slows down, refine the Vibe Coding stack (e.g., standardized starter templates, automated CI/CD deployments) rather than relying on late-night coding sessions.",
+    "links": [
+      {
+        "label": "YouTube video",
+        "url": "https://www.youtube.com/watch?v=MBPHU7aaklM"
+      }
+    ],
+    "metrics": {
+      "as_of": "September 2026",
+      "views": "1,600,000+",
+      "likes": "49,000+",
+      "subscribers": "6.69M"
+    },
+    "chapters": [],
+    "tags": [
+      "strategy",
+      "automation"
+    ]
+  }
+}

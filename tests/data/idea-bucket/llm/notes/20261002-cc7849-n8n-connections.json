@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:02:09+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "prompt_version": "note-7",
+  "content_key": "a537e60fc4057e3733af6d1b68856eb9e556044e57bc4817413e1ca4a583652b",
+  "prompt_sha256": "8903cca582b8b2452f7626dde1930a609484a9b7e582a43358d1f300e12f9331",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"Connecting n8n to epiaku-docs GitHub repo\",\n  \"description\": \"Idea to connect n8n to the epiaku-docs GitHub repo to enable many integrations like financial and email dashboards.\",\n  \"body\": \"Can we connect n8n to our epiaku-docs GitHub repo? If that is possible, we can create a lot of integrations, for example:\\n\\n- Financial dashboard\\n- Email dashboard\",\n  \"tags\": [\"tech-note\", \"automation\"],\n  \"language\": \"en\"\n}",
+      "tokens_in": 1146,
+      "tokens_out": 1113,
+      "duration_ms": 5279,
+      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Connecting n8n to epiaku-docs GitHub repo",
+    "description": "Idea to connect n8n to the epiaku-docs GitHub repo to enable many integrations like financial and email dashboards.",
+    "body": "Can we connect n8n to our epiaku-docs GitHub repo? If that is possible, we can create a lot of integrations, for example:\n\n- Financial dashboard\n- Email dashboard",
+    "tags": [
+      "tech-note",
+      "automation"
+    ],
+    "language": "en"
+  }
+}

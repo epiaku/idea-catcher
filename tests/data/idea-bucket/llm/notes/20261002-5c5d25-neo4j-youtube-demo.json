@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:04:15+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "06d04e799e43ab5fb1f6277c9cbd2bc5bd9a2b6d68ea773933b0470ae9e87f16",
+  "prompt_sha256": "9a8e21766b5e73cc0d6272b1be16de9cc45f6eb57ac5e9806329f9390e478b60",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\":\"Neo4j Movie Database YouTube Demo\",\"description\":\"Create a YouTube demo showcasing Neo4j using the movie database example.\",\"body\":\"Create a YouTube demo that showcases the Neo4j database using the movie database as an example.\",\"tags\":[\"youtube-idea\",\"tech-channel\",\"content-creation\",\"video-production\"],\"language\":\"en\"}",
+      "tokens_in": 1141,
+      "tokens_out": 601,
+      "duration_ms": 7030,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Neo4j Movie Database YouTube Demo",
+    "description": "Create a YouTube demo showcasing Neo4j using the movie database example.",
+    "body": "Create a YouTube demo that showcases the Neo4j database using the movie database as an example.",
+    "tags": [
+      "youtube-idea",
+      "tech-channel",
+      "content-creation",
+      "video-production"
+    ],
+    "language": "en"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:08:31+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "qwen/qwen3.8-27b",
+  "prompt_version": "note-7",
+  "content_key": "166b0802c840eea307b85e96338c171b4997709a7458ef041e84899bf65d24c9",
+  "prompt_sha256": "2b5df226dece9ceccb22259616365f8bdb440b6098537a831d4430058d0d3a01",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"YouTube Video: Why You Must Start Writing in Markdown\",\n  \"description\": \"A YouTube video explaining the benefits of Markdown, with examples, website demos, and comparisons to other formats.\",\n  \"body\": \"Create a YouTube video explaining why you must start writing in Markdown and provide clear examples.\\n\\n- Show our website and demonstrate how we can use Markdown to create an aesthetic documentation website.\\n- Find ordered use cases for Markdown.\\n- Compare Markdown to other types of documentation formats.\",\n  \"tags\": [\n    \"youtube-idea\",\n    \"content-creation\",\n    \"tech-channel\"\n  ],\n  \"language\": \"en\"\n}",
+      "tokens_in": 1196,
+      "tokens_out": 148,
+      "duration_ms": 611,
+      "model": "qwen/qwen3.8-27b",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "YouTube Video: Why You Must Start Writing in Markdown",
+    "description": "A YouTube video explaining the benefits of Markdown, with examples, website demos, and comparisons to other formats.",
+    "body": "Create a YouTube video explaining why you must start writing in Markdown and provide clear examples.\n\n- Show our website and demonstrate how we can use Markdown to create an aesthetic documentation website.\n- Find ordered use cases for Markdown.\n- Compare Markdown to other types of documentation formats.",
+    "tags": [
+      "youtube-idea",
+      "content-creation",
+      "tech-channel"
+    ],
+    "language": "en"
+  }
+}

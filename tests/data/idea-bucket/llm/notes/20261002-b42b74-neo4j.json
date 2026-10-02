@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:04:41+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "b3a16de33a548130ac0e123d56795855b2d25aaf03d367db39c7be599b42a2a7",
+  "prompt_sha256": "b6ab415bf5360a2dd2d3104116198c3607d2eaa07a72870f18f4ac7cf06dc1a2",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\": \"Neo4j Graph Database from a Second Brain\", \"description\": \"Idea to build a Neo4j graph database from a second brain for fast search, graph views, and other domain use cases.\", \"body\": \"Can we create a Neo4j graph database from a second brain, so we can do a fast search and a graph view on the topics?\\n\\nWhat other use cases could we use Neo4j for in our domain?\", \"tags\": [\"tech-note\", \"second-brain\", \"idea-catcher\"], \"language\": \"en\"}",
+      "tokens_in": 1162,
+      "tokens_out": 783,
+      "duration_ms": 9712,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Neo4j Graph Database from a Second Brain",
+    "description": "Idea to build a Neo4j graph database from a second brain for fast search, graph views, and other domain use cases.",
+    "body": "Can we create a Neo4j graph database from a second brain, so we can do a fast search and a graph view on the topics?\n\nWhat other use cases could we use Neo4j for in our domain?",
+    "tags": [
+      "tech-note",
+      "second-brain",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

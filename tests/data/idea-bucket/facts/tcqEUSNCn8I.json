@@ -1,0 +1,1435 @@
+{
+  "video_id": "tcqEUSNCn8I",
+  "url": "https://www.youtube.com/watch?v=tcqEUSNCn8I",
+  "title": "RAG + Langchain Python Project: Easy AI/Chat For Your Docs",
+  "channel": "pixegami",
+  "subscribers": 85100,
+  "views": 486937,
+  "likes": 13054,
+  "upload_date": "2023-11-20",
+  "duration_s": 1001,
+  "description": "Learn how to build a \"retrieval augmented generation\" (RAG) app with Langchain and OpenAI in Python.\n\nYou can use this to create chat-bots for your documents, books or files. You can also use it to build rich, interactive AI applications that use your data as a source.\n\n👉 Links\n🔗 Code: https://github.com/pixegami/langchain-rag-tutorial\n📄 (Sample Data) AWS Docs: https://github.com/awsdocs/aws-lambda-developer-guide\n📄 (Sample Data) Alice in Wonderland: https://www.gutenberg.org/ebooks/11\n\n📚 Chapters\n00:00 What is RAG?\n01:36 Preparing the Data\n05:05 Creating Chroma Database\n06:36 What are Vector Embeddings?\n09:38 Querying for Relevant Data\n12:47 Crafting a Great Response\n16:18 Wrapping Up\n\n#pixegami #python",
+  "chapters": [
+    {
+      "start_s": 0.0,
+      "title": "What is RAG?"
+    },
+    {
+      "start_s": 96.0,
+      "title": "Preparing the Data"
+    },
+    {
+      "start_s": 305.0,
+      "title": "Creating Chroma Database"
+    },
+    {
+      "start_s": 396.0,
+      "title": "What are Vector Embeddings?"
+    },
+    {
+      "start_s": 578.0,
+      "title": "Querying for Relevant Data"
+    },
+    {
+      "start_s": 767.0,
+      "title": "Crafting a Great Response"
+    },
+    {
+      "start_s": 978.0,
+      "title": "Wrapping Up"
+    }
+  ],
+  "transcript": [
+    {
+      "start_s": 0.0,
+      "text": "Hey everyone, welcome to this video where I'm going"
+    },
+    {
+      "start_s": 2.839,
+      "text": "to show you how to build a retrieval augmented"
+    },
+    {
+      "start_s": 5.406,
+      "text": "generation app using Langchain and OpenAI."
+    },
+    {
+      "start_s": 7.7,
+      "text": "You can then use this app to interact with your"
+    },
+    {
+      "start_s": 10.211,
+      "text": "own documents or your own data source."
+    },
+    {
+      "start_s": 12.2,
+      "text": "This type of application is great for when"
+    },
+    {
+      "start_s": 14.503,
+      "text": "you have a lot of text data to work with."
+    },
+    {
+      "start_s": 16.7,
+      "text": "For example, a collection of books, documents or lectures. And"
+    },
+    {
+      "start_s": 20.511,
+      "text": "you want to be able to interact with that data using AI."
+    },
+    {
+      "start_s": 23.9,
+      "text": "For example, you might want to be able to ask"
+    },
+    {
+      "start_s": 26.42,
+      "text": "questions about that data or perhaps build"
+    },
+    {
+      "start_s": 28.777,
+      "text": "something like a customer support chatbot that"
+    },
+    {
+      "start_s": 31.353,
+      "text": "you want to follow a set of instructions."
+    },
+    {
+      "start_s": 33.6,
+      "text": "Today, we're going to learn how to build this using"
+    },
+    {
+      "start_s": 36.336,
+      "text": "OpenAI and the Langchain library in Python."
+    },
+    {
+      "start_s": 38.6,
+      "text": "We're going to be using a technique called RAG, which"
+    },
+    {
+      "start_s": 41.581,
+      "text": "stands for retrieval augmented generation."
+    },
+    {
+      "start_s": 43.9,
+      "text": "In this example, the data source I've given it is the AWS documentation for Lambda."
+    },
+    {
+      "start_s": 49.5,
+      "text": "And here I'm asking it a question based on that documentation."
+    },
+    {
+      "start_s": 53.2,
+      "text": "The agent will be able to use that documentation"
+    },
+    {
+      "start_s": 56.072,
+      "text": "to give me a response as well as quote the source"
+    },
+    {
+      "start_s": 59.003,
+      "text": "where it got that information from originally."
+    },
+    {
+      "start_s": 61.7,
+      "text": "This way, you always know that it's using data from the sources"
+    },
+    {
+      "start_s": 65.416,
+      "text": "you provided it with rather than hallucinating the response."
+    },
+    {
+      "start_s": 68.9,
+      "text": "If this project sounds complex or difficult to you, then"
+    },
+    {
+      "start_s": 71.646,
+      "text": "don't worry because it's a lot easier than you think."
+    },
+    {
+      "start_s": 74.2,
+      "text": "I'll walk you through every step of the project, starting"
+    },
+    {
+      "start_s": 77.229,
+      "text": "with how to prepare the data that you want to use"
+    },
+    {
+      "start_s": 79.84,
+      "text": "and then how to turn that into a vector database."
+    },
+    {
+      "start_s": 82.4,
+      "text": "Then we'll also look at how to query that database for relevant pieces of data."
+    },
+    {
+      "start_s": 86.9,
+      "text": "Finally, you can then put all those pieces together to form a coherent response."
+    },
+    {
+      "start_s": 91.4,
+      "text": "If that sounds good, then let's get started."
+    },
+    {
+      "start_s": 93.7,
+      "text": "To begin, we'll first need a data source like a"
+    },
+    {
+      "start_s": 98.295,
+      "text": "PDF or a collection of text or markdown files."
+    },
+    {
+      "start_s": 102.7,
+      "text": "This can be anything."
+    },
+    {
+      "start_s": 103.7,
+      "text": "For example, it could be documentation files for your software."
+    },
+    {
+      "start_s": 106.9,
+      "text": "It could be a customer support handbook, or it"
+    },
+    {
+      "start_s": 109.356,
+      "text": "could even be transcripts from a podcast."
+    },
+    {
+      "start_s": 111.5,
+      "text": "First, find some markdown files you want to use as data for this project."
+    },
+    {
+      "start_s": 115.9,
+      "text": "But if you want some ideas, then here I've got the Alice"
+    },
+    {
+      "start_s": 119.735,
+      "text": "in Wonderland book as a markdown file, or I also have"
+    },
+    {
+      "start_s": 123.368,
+      "text": "the AWS documentation as a bunch of markdown files."
+    },
+    {
+      "start_s": 126.8,
+      "text": "And I have each of them in their own separate"
+    },
+    {
+      "start_s": 129.253,
+      "text": "folder under this data folder in my project."
+    },
+    {
+      "start_s": 131.6,
+      "text": "So make sure you have a setup like this first before you start."
+    },
+    {
+      "start_s": 134.5,
+      "text": "Once you have that source material, we're going to need to load"
+    },
+    {
+      "start_s": 137.266,
+      "text": "it up and then split it into different chunks of text."
+    },
+    {
+      "start_s": 139.6,
+      "text": "To load some markdown data from your folder into Python,"
+    },
+    {
+      "start_s": 143.181,
+      "text": "you can use this directory loader module from Langchain."
+    },
+    {
+      "start_s": 146.7,
+      "text": "Just update this data path variable with wherever you've decided to put your data."
+    },
+    {
+      "start_s": 151.6,
+      "text": "Here I'm using data/books."
+    },
+    {
+      "start_s": 153.5,
+      "text": "If you only have one markdown file in that folder, it's okay."
+    },
+    {
+      "start_s": 156.9,
+      "text": "Or if you have multiple markdown files, then"
+    },
+    {
+      "start_s": 159.166,
+      "text": "this will load everything and turn each of those"
+    },
+    {
+      "start_s": 161.635,
+      "text": "files into something called a document."
+    },
+    {
+      "start_s": 163.6,
+      "text": "If I use this piece of code on my AWS Lambda"
+    },
+    {
+      "start_s": 166.236,
+      "text": "documents folder instead, then each of these"
+    },
+    {
+      "start_s": 168.873,
+      "text": "markdown files will become a document."
+    },
+    {
+      "start_s": 171.1,
+      "text": "And a document is going to contain all of the content on this page."
+    },
+    {
+      "start_s": 174.7,
+      "text": "So basically all of the text you see here."
+    },
+    {
+      "start_s": 177.6,
+      "text": "And it's also going to contain a bunch of metadata."
+    },
+    {
+      "start_s": 180.0,
+      "text": "For example, the name of the source file where the text originally came from."
+    },
+    {
+      "start_s": 184.8,
+      "text": "And after you've created your document, you can also choose"
+    },
+    {
+      "start_s": 187.96,
+      "text": "to add any other metadata you want to that document."
+    },
+    {
+      "start_s": 190.7,
+      "text": "Now the next problem we encounter is that a"
+    },
+    {
+      "start_s": 193.38,
+      "text": "single document can be really, really long."
+    },
+    {
+      "start_s": 196.0,
+      "text": "So it's not enough that we load each markdown file into one document."
+    },
+    {
+      "start_s": 200.7,
+      "text": "We have to also split each document if they're too long on their own."
+    },
+    {
+      "start_s": 204.7,
+      "text": "With something as long as this, we're going to want"
+    },
+    {
+      "start_s": 207.693,
+      "text": "to split this big document into smaller chunks."
+    },
+    {
+      "start_s": 210.4,
+      "text": "And a chunk could be a paragraph, it could be a"
+    },
+    {
+      "start_s": 212.956,
+      "text": "sentence, or it could be even several pages."
+    },
+    {
+      "start_s": 215.3,
+      "text": "It depends on what we want."
+    },
+    {
+      "start_s": 216.7,
+      "text": "By doing this, the outcome that we're looking"
+    },
+    {
+      "start_s": 219.176,
+      "text": "for is that when we search through all of this"
+    },
+    {
+      "start_s": 221.707,
+      "text": "data, each chunk is going to be more focused"
+    },
+    {
+      "start_s": 224.13,
+      "text": "and more relevant to what we're looking for."
+    },
+    {
+      "start_s": 226.5,
+      "text": "To achieve this, we can use a recursive character text splitter."
+    },
+    {
+      "start_s": 230.5,
+      "text": "And here we can set the chunk size in number of characters"
+    },
+    {
+      "start_s": 233.837,
+      "text": "and then the overlap between each chunk."
+    },
+    {
+      "start_s": 236.1,
+      "text": "So in this example, we're going to make the chunk"
+    },
+    {
+      "start_s": 238.618,
+      "text": "size about 1000 characters, and each chunk"
+    },
+    {
+      "start_s": 240.783,
+      "text": "is going to have an overlap of 500 characters."
+    },
+    {
+      "start_s": 243.1,
+      "text": "So I've just ran the script to split up my text into several chunks."
+    },
+    {
+      "start_s": 247.3,
+      "text": "And here I've printed out the number of original documents"
+    },
+    {
+      "start_s": 251.175,
+      "text": "and the number of chunks it was split into."
+    },
+    {
+      "start_s": 254.0,
+      "text": "Since I used this on the Alice in Wonderland"
+    },
+    {
+      "start_s": 257.033,
+      "text": "text, it split one document into 282 chunks."
+    },
+    {
+      "start_s": 260.0,
+      "text": "And down here, I've just picked a random chunk as"
+    },
+    {
+      "start_s": 262.483,
+      "text": "a document and I printed out the page content and"
+    },
+    {
+      "start_s": 264.966,
+      "text": "the metadata so you could see what it looks like."
+    },
+    {
+      "start_s": 267.4,
+      "text": "So the page content is just literally a part of the text taken out of that chunk."
+    },
+    {
+      "start_s": 272.9,
+      "text": "So here you can see that it's about one or two paragraphs of the story."
+    },
+    {
+      "start_s": 277.0,
+      "text": "And the metadata right now, it only has the source, which is"
+    },
+    {
+      "start_s": 280.71,
+      "text": "the path of the file it got this from, and the start index."
+    },
+    {
+      "start_s": 284.3,
+      "text": "So where in that source does this particular chunk begin?"
+    },
+    {
+      "start_s": 288.3,
+      "text": "And if you try the same code with the AWS Lambda docs"
+    },
+    {
+      "start_s": 291.842,
+      "text": "instead, you'll see that the source also points to"
+    },
+    {
+      "start_s": 295.188,
+      "text": "the file that the information of each chunk is from."
+    },
+    {
+      "start_s": 298.6,
+      "text": "So this is also useful if you have a lot of different files,"
+    },
+    {
+      "start_s": 301.876,
+      "text": "rather than just one big file splitting into smaller chunks."
+    },
+    {
+      "start_s": 305.1,
+      "text": "To be able to query each chunk, we're going to need to turn this into a database."
+    },
+    {
+      "start_s": 309.2,
+      "text": "We'll be using ChromaDB for this, which is a special kind"
+    },
+    {
+      "start_s": 312.445,
+      "text": "of database that uses vector embeddings as the key."
+    },
+    {
+      "start_s": 315.3,
+      "text": "This is the code that you can use to create a Chroma database from our chunks."
+    },
+    {
+      "start_s": 319.3,
+      "text": "For this, you're going to need an OpenAI account because"
+    },
+    {
+      "start_s": 322.369,
+      "text": "we're going to use the OpenAI embeddings function"
+    },
+    {
+      "start_s": 325.061,
+      "text": "to generate the vector embeddings for each chunk."
+    },
+    {
+      "start_s": 327.7,
+      "text": "I'm also going to create a Chroma path and set that"
+    },
+    {
+      "start_s": 330.857,
+      "text": "as the persistent directory so that when we create"
+    },
+    {
+      "start_s": 333.953,
+      "text": "this database, I have a bunch of folders on my"
+    },
+    {
+      "start_s": 336.807,
+      "text": "disk that I can use to load the data later on."
+    },
+    {
+      "start_s": 339.6,
+      "text": "This is useful because normally I might want to"
+    },
+    {
+      "start_s": 342.243,
+      "text": "put this database into a Lambda function or I"
+    },
+    {
+      "start_s": 344.776,
+      "text": "might want to put it in the cloud somewhere."
+    },
+    {
+      "start_s": 347.2,
+      "text": "So I want to be able to save it to disk so"
+    },
+    {
+      "start_s": 349.172,
+      "text": "that I can copy it or deploy it as a file."
+    },
+    {
+      "start_s": 351.1,
+      "text": "Now before I create the database or before I save"
+    },
+    {
+      "start_s": 353.766,
+      "text": "it to disk, I can also use this code snippet"
+    },
+    {
+      "start_s": 356.166,
+      "text": "to remove it first if it already exists."
+    },
+    {
+      "start_s": 358.3,
+      "text": "This is useful if I want to clear all of my previous versions"
+    },
+    {
+      "start_s": 361.145,
+      "text": "of the database before I run the script to create a new one."
+    },
+    {
+      "start_s": 363.9,
+      "text": "Now the database should save automatically after we create it,"
+    },
+    {
+      "start_s": 367.378,
+      "text": "but you can also force it to save using this persist method."
+    },
+    {
+      "start_s": 370.8,
+      "text": "So once you've put all of that together and then"
+    },
+    {
+      "start_s": 373.557,
+      "text": "you've run your script to generate your database,"
+    },
+    {
+      "start_s": 376.315,
+      "text": "you should see this line where it's saved"
+    },
+    {
+      "start_s": 378.736,
+      "text": "all of your chunks to the Chroma database."
+    },
+    {
+      "start_s": 381.1,
+      "text": "And you can see here on your disk that the data should be there as well."
+    },
+    {
+      "start_s": 384.5,
+      "text": "And here it's going to be saved as a SQLite3 file."
+    },
+    {
+      "start_s": 387.8,
+      "text": "So now at this point we have our vector database"
+    },
+    {
+      "start_s": 390.33,
+      "text": "created and we're ready to start using it."
+    },
+    {
+      "start_s": 392.5,
+      "text": "But first you're probably going to want to know what a vector embedding is."
+    },
+    {
+      "start_s": 396.3,
+      "text": "If you already know what embedding vectors are,"
+    },
+    {
+      "start_s": 398.854,
+      "text": "then feel free to skip the section entirely."
+    },
+    {
+      "start_s": 401.3,
+      "text": "Otherwise, I'll give you a really quick explanation just to bring you up to speed."
+    },
+    {
+      "start_s": 405.0,
+      "text": "Embeddings are vector representations of text that capture their meaning."
+    },
+    {
+      "start_s": 409.3,
+      "text": "In Python, this is literally a list of numbers."
+    },
+    {
+      "start_s": 412.7,
+      "text": "You can think of them as sort of coordinates in multi-dimensional"
+    },
+    {
+      "start_s": 416.287,
+      "text": "space and if two pieces of text"
+    },
+    {
+      "start_s": 418.027,
+      "text": "are closely related to each other in meaning, then"
+    },
+    {
+      "start_s": 420.799,
+      "text": "those coordinates will also be close together."
+    },
+    {
+      "start_s": 423.3,
+      "text": "The distance between these vectors can then be calculated pretty"
+    },
+    {
+      "start_s": 427.376,
+      "text": "easily using cosine similarity or Euclidean distance."
+    },
+    {
+      "start_s": 430.7,
+      "text": "We don't need to do that ourselves though, because there's a"
+    },
+    {
+      "start_s": 433.16,
+      "text": "lot of existing functions that can do that for us already."
+    },
+    {
+      "start_s": 435.5,
+      "text": "And this will give us a single number that tells"
+    },
+    {
+      "start_s": 438.117,
+      "text": "us how far these two vectors are apart."
+    },
+    {
+      "start_s": 440.2,
+      "text": "To actually generate a vector from a word, we'll need an LLM, like OpenAI."
+    },
+    {
+      "start_s": 445.1,
+      "text": "And this is usually just an API or a function we can call."
+    },
+    {
+      "start_s": 447.9,
+      "text": "For example, you can use this code to turn"
+    },
+    {
+      "start_s": 450.357,
+      "text": "the word \"apple\" into a vector embedding."
+    },
+    {
+      "start_s": 452.7,
+      "text": "And this is the result I get from using that function."
+    },
+    {
+      "start_s": 455.9,
+      "text": "So you could see that the vector here is literally a really long list of numbers."
+    },
+    {
+      "start_s": 461.6,
+      "text": "And the first number is 0.007 something-something, but"
+    },
+    {
+      "start_s": 465.198,
+      "text": "I truncated the rest because the list is quite long."
+    },
+    {
+      "start_s": 468.6,
+      "text": "In fact, if you print the length of the vector, you"
+    },
+    {
+      "start_s": 471.85,
+      "text": "could see that the list has 1536 characters."
+    },
+    {
+      "start_s": 474.6,
+      "text": "So this is basically a list of one and a half thousand numbers."
+    },
+    {
+      "start_s": 478.6,
+      "text": "The numbers themselves aren't interesting though."
+    },
+    {
+      "start_s": 480.9,
+      "text": "What's really interesting is the distance between two vectors themselves."
+    },
+    {
+      "start_s": 485.8,
+      "text": "And this is quite hard to calculate from scratch, but"
+    },
+    {
+      "start_s": 488.723,
+      "text": "Langchain actually gives us a utility function to compare"
+    },
+    {
+      "start_s": 491.863,
+      "text": "the embedding distance directly using OpenAI."
+    },
+    {
+      "start_s": 494.3,
+      "text": "So it's called an evaluator and this is how you can create one."
+    },
+    {
+      "start_s": 497.9,
+      "text": "And here's the code to run an evaluation."
+    },
+    {
+      "start_s": 500.5,
+      "text": "So here I'm comparing the distance of the word \"apple\" to the word \"orange\"."
+    },
+    {
+      "start_s": 506.3,
+      "text": "And running this, the result is a score of 0.13."
+    },
+    {
+      "start_s": 510.7,
+      "text": "So we don't actually know whether that's good or not"
+    },
+    {
+      "start_s": 513.503,
+      "text": "by comparing an apple to an orange, because we don't"
+    },
+    {
+      "start_s": 516.307,
+      "text": "know where 0.13 sits on the scale of other words."
+    },
+    {
+      "start_s": 518.9,
+      "text": "So let's try a couple of other words just to see what's a better"
+    },
+    {
+      "start_s": 522.258,
+      "text": "match with apple than orange, and what's a worse match."
+    },
+    {
+      "start_s": 525.1,
+      "text": "Here, if I compare \"apple\" to the word \"beach\", it's actually 0.2."
+    },
+    {
+      "start_s": 529.1,
+      "text": "So \"beach\" is further away from \"apple\" than \"orange\""
+    },
+    {
+      "start_s": 532.126,
+      "text": "is, I suppose because one is a fruit."
+    },
+    {
+      "start_s": 534.2,
+      "text": "So that naturally makes it more similar."
+    },
+    {
+      "start_s": 536.0,
+      "text": "Now if I compare the word \"apple\" to itself, this should"
+    },
+    {
+      "start_s": 538.618,
+      "text": "technically be 0 because it's literally the same word."
+    },
+    {
+      "start_s": 541.1,
+      "text": "But in this case, it's close enough."
+    },
+    {
+      "start_s": 542.7,
+      "text": "It's 2.5 x 10^-6."
+    },
+    {
+      "start_s": 545.9,
+      "text": "Now what about if we compare the word \"apple\" to \"iPhone\"?"
+    },
+    {
+      "start_s": 548.4,
+      "text": "In this case, the score is even better than when we compared it with \"orange\"."
+    },
+    {
+      "start_s": 551.6,
+      "text": "The score is 0.09."
+    },
+    {
+      "start_s": 553.4,
+      "text": "And this is really interesting as well, because in our"
+    },
+    {
+      "start_s": 556.257,
+      "text": "first example with apples and oranges, they were"
+    },
+    {
+      "start_s": 558.802,
+      "text": "both fruits, so they were similar in that respect."
+    },
+    {
+      "start_s": 561.4,
+      "text": "But here, we're sort of interpreting the word \"apple\" from a different perspective."
+    },
+    {
+      "start_s": 565.6,
+      "text": "We're seeing it as the name of the company \"apple\" instead."
+    },
+    {
+      "start_s": 568.9,
+      "text": "So when you compare it with the word \"iPhone\","
+    },
+    {
+      "start_s": 571.38,
+      "text": "the association is actually much stronger."
+    },
+    {
+      "start_s": 573.7,
+      "text": "So now that you understand what embeddings are,"
+    },
+    {
+      "start_s": 575.945,
+      "text": "let's see how we can use it to fetch data."
+    },
+    {
+      "start_s": 578.0,
+      "text": "To query for relevant data, our objective is to find"
+    },
+    {
+      "start_s": 581.173,
+      "text": "the chunks in our database that will most likely contain"
+    },
+    {
+      "start_s": 584.586,
+      "text": "the answer to the question that we want to ask."
+    },
+    {
+      "start_s": 587.4,
+      "text": "So to do that, we'll need the database that we created"
+    },
+    {
+      "start_s": 590.15,
+      "text": "earlier, and we'll need the same embedding"
+    },
+    {
+      "start_s": 592.3,
+      "text": "function that we used to create that database."
+    },
+    {
+      "start_s": 594.6,
+      "text": "Our goal now is to take a query, like the one"
+    },
+    {
+      "start_s": 597.553,
+      "text": "on the left here, and then turn that into"
+    },
+    {
+      "start_s": 600.249,
+      "text": "an embedding using the same function, and"
+    },
+    {
+      "start_s": 602.946,
+      "text": "then scan through our database and find"
+    },
+    {
+      "start_s": 605.514,
+      "text": "maybe five chunks of information that are"
+    },
+    {
+      "start_s": 608.21,
+      "text": "closest in embedding distance from our query."
+    },
+    {
+      "start_s": 611.1,
+      "text": "So here, in this example, I might ask the question"
+    },
+    {
+      "start_s": 613.99,
+      "text": "like, \"How does Alice meet the Mad Hatter in Alice"
+    },
+    {
+      "start_s": 616.88,
+      "text": "in Wonderland?\" And when we scan our database,"
+    },
+    {
+      "start_s": 619.486,
+      "text": "we might get maybe four or five snippets of"
+    },
+    {
+      "start_s": 622.036,
+      "text": "text that we think is similar to this question."
+    },
+    {
+      "start_s": 624.7,
+      "text": "And from that, we can put that together, have"
+    },
+    {
+      "start_s": 627.494,
+      "text": "the AI read all of that information, and decide"
+    },
+    {
+      "start_s": 630.409,
+      "text": "what is the response to give to the user."
+    },
+    {
+      "start_s": 632.9,
+      "text": "So although we're not just simply returning the"
+    },
+    {
+      "start_s": 635.511,
+      "text": "chunks of information verbatim, we're actually"
+    },
+    {
+      "start_s": 638.067,
+      "text": "using it to craft a more custom response"
+    },
+    {
+      "start_s": 640.297,
+      "text": "that is still based on our source information."
+    },
+    {
+      "start_s": 642.8,
+      "text": "To load the Chroma database that we created, we're"
+    },
+    {
+      "start_s": 645.073,
+      "text": "first going to need the path, which we have from"
+    },
+    {
+      "start_s": 647.258,
+      "text": "earlier, and we're going to need an embedding"
+    },
+    {
+      "start_s": 649.309,
+      "text": "function, which should be the same one we used"
+    },
+    {
+      "start_s": 651.404,
+      "text": "to create the database with in the first place."
+    },
+    {
+      "start_s": 653.5,
+      "text": "So here, I'm just going to use the OpenAI embeddings function again."
+    },
+    {
+      "start_s": 656.5,
+      "text": "This should load your database from that path."
+    },
+    {
+      "start_s": 658.6,
+      "text": "If it doesn't, then just check that the path exists,"
+    },
+    {
+      "start_s": 660.96,
+      "text": "or just go back to the previous chapter and"
+    },
+    {
+      "start_s": 663.002,
+      "text": "run the script to create the database again."
+    },
+    {
+      "start_s": 665.0,
+      "text": "Once the database is loaded, we can then search for the"
+    },
+    {
+      "start_s": 668.178,
+      "text": "chunk that best matches our query by using this method."
+    },
+    {
+      "start_s": 671.3,
+      "text": "We need to pass in our query text as an argument and"
+    },
+    {
+      "start_s": 674.284,
+      "text": "specify the number of results we want to retrieve."
+    },
+    {
+      "start_s": 677.1,
+      "text": "So in this example, we want to retrieve three best matches for our query."
+    },
+    {
+      "start_s": 681.0,
+      "text": "The results of the search will be a list of tuples where"
+    },
+    {
+      "start_s": 684.155,
+      "text": "each tuple contains a document and its relevance score."
+    },
+    {
+      "start_s": 687.2,
+      "text": "Before actually processing the results though, we can also add some checks."
+    },
+    {
+      "start_s": 691.4,
+      "text": "For example, if there are no matches or if the"
+    },
+    {
+      "start_s": 694.248,
+      "text": "relevant score of the first result is below"
+    },
+    {
+      "start_s": 696.915,
+      "text": "a certain threshold, we can return early."
+    },
+    {
+      "start_s": 699.4,
+      "text": "This will help us to make sure that we actually"
+    },
+    {
+      "start_s": 701.872,
+      "text": "find good, relevant information first before"
+    },
+    {
+      "start_s": 704.19,
+      "text": "moving to the next step of the process."
+    },
+    {
+      "start_s": 706.2,
+      "text": "So now let's go to our code editor and put all that together and see what we get."
+    },
+    {
+      "start_s": 710.4,
+      "text": "So here I've got the main function."
+    },
+    {
+      "start_s": 712.3,
+      "text": "I just made a quick argument parser so I can"
+    },
+    {
+      "start_s": 714.602,
+      "text": "input the query text in the command line."
+    },
+    {
+      "start_s": 716.7,
+      "text": "I've got my embeddings function and I'm going to"
+    },
+    {
+      "start_s": 719.395,
+      "text": "search the database that I've loaded and I'm"
+    },
+    {
+      "start_s": 721.87,
+      "text": "just going to print the content for each page."
+    },
+    {
+      "start_s": 724.4,
+      "text": "So I'm going to find the top three results for my query."
+    },
+    {
+      "start_s": 727.4,
+      "text": "So that's my script. Let's give it a go."
+    },
+    {
+      "start_s": 729.2,
+      "text": "So here I'm running my script with the query,"
+    },
+    {
+      "start_s": 731.5,
+      "text": "which is how does Alice meet the mad hatter?"
+    },
+    {
+      "start_s": 733.7,
+      "text": "Here it's returned the three most relevant chunks"
+    },
+    {
+      "start_s": 736.629,
+      "text": "in the text that it thought best match our query."
+    },
+    {
+      "start_s": 739.5,
+      "text": "So we have this piece of information, this piece"
+    },
+    {
+      "start_s": 742.228,
+      "text": "of information, and then this one here."
+    },
+    {
+      "start_s": 744.4,
+      "text": "Now here the chunk size is quite small, so it doesn't"
+    },
+    {
+      "start_s": 747.714,
+      "text": "have the full context of each part of the text."
+    },
+    {
+      "start_s": 750.6,
+      "text": "So if you want to edit that you can play with"
+    },
+    {
+      "start_s": 752.845,
+      "text": "that chunk size variable and make it either"
+    },
+    {
+      "start_s": 754.992,
+      "text": "bigger or smaller, depending on what"
+    },
+    {
+      "start_s": 756.798,
+      "text": "you think will give you the best results."
+    },
+    {
+      "start_s": 758.8,
+      "text": "But for now, let's move on to the next step"
+    },
+    {
+      "start_s": 761.744,
+      "text": "and see if we can get the AI to use this"
+    },
+    {
+      "start_s": 764.488,
+      "text": "information and give us a direct response."
+    },
+    {
+      "start_s": 767.3,
+      "text": "Now that we have found relevant data chunks for our"
+    },
+    {
+      "start_s": 770.207,
+      "text": "query, we can feed this into OpenAI to create a high"
+    },
+    {
+      "start_s": 773.171,
+      "text": "quality response using that data as our source."
+    },
+    {
+      "start_s": 775.8,
+      "text": "First, we'll need a prompt template to create a prompt with."
+    },
+    {
+      "start_s": 778.6,
+      "text": "You can use something like this."
+    },
+    {
+      "start_s": 780.1,
+      "text": "Notice that there's placeholders for this template."
+    },
+    {
+      "start_s": 782.8,
+      "text": "The first is the context that we're going to pass in."
+    },
+    {
+      "start_s": 785.7,
+      "text": "So that's going to be the pieces of information that we got from the database."
+    },
+    {
+      "start_s": 789.4,
+      "text": "And then the second is the actual query itself."
+    },
+    {
+      "start_s": 791.9,
+      "text": "Next, here's the code to actually use that data to create the"
+    },
+    {
+      "start_s": 795.768,
+      "text": "actual prompt by formatting the template with our keys."
+    },
+    {
+      "start_s": 799.2,
+      "text": "So after running this, you should have a single piece of string."
+    },
+    {
+      "start_s": 802.9,
+      "text": "It's going to be quite a long string, but it's going"
+    },
+    {
+      "start_s": 805.516,
+      "text": "to be the entire prompt with all the chunks of information"
+    },
+    {
+      "start_s": 808.429,
+      "text": "and the query that you asked at the beginning."
+    },
+    {
+      "start_s": 810.7,
+      "text": "After running that piece of code, you should"
+    },
+    {
+      "start_s": 812.722,
+      "text": "get a prompt that looks something like this."
+    },
+    {
+      "start_s": 814.7,
+      "text": "So you're going to have this initial prompt, which is to"
+    },
+    {
+      "start_s": 817.708,
+      "text": "answer the question based on the following context."
+    },
+    {
+      "start_s": 820.4,
+      "text": "And then we're going to have our three pieces of information."
+    },
+    {
+      "start_s": 823.0,
+      "text": "And this can be as big or as little as we want"
+    },
+    {
+      "start_s": 825.35,
+      "text": "it to be, but here this is what we've chosen."
+    },
+    {
+      "start_s": 827.6,
+      "text": "And then the question that we originally asked."
+    },
+    {
+      "start_s": 830.4,
+      "text": "So here's our query."
+    },
+    {
+      "start_s": 831.5,
+      "text": "How does Alice meet the Mad Hatter?"
+    },
+    {
+      "start_s": 833.6,
+      "text": "So this is the overall prompt that we're about to send to OpenAI."
+    },
+    {
+      "start_s": 838.0,
+      "text": "This is actually the easy part."
+    },
+    {
+      "start_s": 840.0,
+      "text": "So simply just call the LLM model of your choice with that prompt."
+    },
+    {
+      "start_s": 843.9,
+      "text": "So here I'm using chatOpenAI, and then you'll have your response."
+    },
+    {
+      "start_s": 847.8,
+      "text": "Finally, if you want to provide references back to"
+    },
+    {
+      "start_s": 850.719,
+      "text": "your source material, you can also find that in"
+    },
+    {
+      "start_s": 853.466,
+      "text": "the metadata of each of those document chunks."
+    },
+    {
+      "start_s": 856.1,
+      "text": "So here's the code on how you can extract that out and print it out as well."
+    },
+    {
+      "start_s": 859.9,
+      "text": "And going back to our code editor, this is what my script"
+    },
+    {
+      "start_s": 862.989,
+      "text": "looks like with all of those pieces put together."
+    },
+    {
+      "start_s": 865.6,
+      "text": "So I've got my prompt template here."
+    },
+    {
+      "start_s": 867.4,
+      "text": "I've got my main argument here, which takes the query, searches"
+    },
+    {
+      "start_s": 871.807,
+      "text": "the database for the relevant chunks, creates the"
+    },
+    {
+      "start_s": 875.25,
+      "text": "prompt, and then uses the LLM to answer the question."
+    },
+    {
+      "start_s": 878.9,
+      "text": "And then here I'm collecting all the sources that were used"
+    },
+    {
+      "start_s": 881.926,
+      "text": "to answer the prompt and print out the entire response."
+    },
+    {
+      "start_s": 884.7,
+      "text": "Let's go ahead and run that."
+    },
+    {
+      "start_s": 885.8,
+      "text": "And here's the result of running that script."
+    },
+    {
+      "start_s": 888.0,
+      "text": "So again, we see the entire prompt here, and this is the final response."
+    },
+    {
+      "start_s": 892.8,
+      "text": "The response is Alice meets the Mad Hatter by walking in"
+    },
+    {
+      "start_s": 896.019,
+      "text": "the direction where the March Hare was set to live."
+    },
+    {
+      "start_s": 898.9,
+      "text": "And obviously it took this from the first piece of the context."
+    },
+    {
+      "start_s": 902.7,
+      "text": "And here we also have a list of the source references that it got it from."
+    },
+    {
+      "start_s": 907.4,
+      "text": "This is pretty much pointing to the same file because I only"
+    },
+    {
+      "start_s": 910.297,
+      "text": "made it print out the actual file itself and not the index."
+    },
+    {
+      "start_s": 913.1,
+      "text": "But this is pretty good already because you can"
+    },
+    {
+      "start_s": 915.846,
+      "text": "see how it's using our query to search for"
+    },
+    {
+      "start_s": 918.307,
+      "text": "pieces of information from our source material"
+    },
+    {
+      "start_s": 920.996,
+      "text": "and then answer based on that information."
+    },
+    {
+      "start_s": 923.4,
+      "text": "Now let me switch up my data source and show you"
+    },
+    {
+      "start_s": 925.686,
+      "text": "a different example just so you can see what"
+    },
+    {
+      "start_s": 927.786,
+      "text": "else you can do with something like this."
+    },
+    {
+      "start_s": 929.7,
+      "text": "I switched my database to one I prepared earlier, which"
+    },
+    {
+      "start_s": 932.829,
+      "text": "uses the AWS Lambda documentation as a source."
+    },
+    {
+      "start_s": 935.4,
+      "text": "And here the query I'm going to ask it is what"
+    },
+    {
+      "start_s": 938.331,
+      "text": "languages or runtimes does AWS Lambda support?"
+    },
+    {
+      "start_s": 941.2,
+      "text": "So after I ran this, you can see that the chunks"
+    },
+    {
+      "start_s": 943.773,
+      "text": "I use here are much bigger than in the previous"
+    },
+    {
+      "start_s": 946.294,
+      "text": "example, but it still managed to find three relevant"
+    },
+    {
+      "start_s": 949.078,
+      "text": "chunks of my information and it's published"
+    },
+    {
+      "start_s": 951.389,
+      "text": "a response that summarizes that information."
+    },
+    {
+      "start_s": 953.7,
+      "text": "So here it says AWS Lambda supports Java, C#, Python, and etc."
+    },
+    {
+      "start_s": 958.9,
+      "text": "You can read the rest here."
+    },
+    {
+      "start_s": 960.3,
+      "text": "But this is more interesting because unlike in the first"
+    },
+    {
+      "start_s": 963.276,
+      "text": "example, the sources were actually from different files."
+    },
+    {
+      "start_s": 966.2,
+      "text": "So you can see here that each of the source is its own file."
+    },
+    {
+      "start_s": 969.9,
+      "text": "So this is useful as well."
+    },
+    {
+      "start_s": 971.1,
+      "text": "If you have data source that spread out across a lot of different"
+    },
+    {
+      "start_s": 974.675,
+      "text": "files and you want to see how to reference the source."
+    },
+    {
+      "start_s": 977.6,
+      "text": "So we just covered how you can use the line chain and OpenAI"
+    },
+    {
+      "start_s": 980.988,
+      "text": "to create a retrieval augmented generation app."
+    },
+    {
+      "start_s": 983.6,
+      "text": "I'll post a link to the GitHub code in the video"
+    },
+    {
+      "start_s": 986.032,
+      "text": "description and I encourage you to try this"
+    },
+    {
+      "start_s": 988.216,
+      "text": "out for yourself and with your own data set."
+    },
+    {
+      "start_s": 990.4,
+      "text": "If you want to see more tutorials like this, then please let"
+    },
+    {
+      "start_s": 992.971,
+      "text": "me know what type of topics you'd be interested to see next."
+    },
+    {
+      "start_s": 995.5,
+      "text": "Otherwise, I hope you found this useful and thank you for watching."
+    }
+  ],
+  "fetched_at": "2026-10-02",
+  "fetched_utc": "2026-10-02T18:55:10+00:00",
+  "unavailable_reason": null
+}

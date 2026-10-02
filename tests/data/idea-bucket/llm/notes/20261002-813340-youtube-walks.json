@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:06:16+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "ba243b2b736fc8bffc541ec70f7769f3640e29fbc22fedc67d9225a76019c8a2",
+  "prompt_sha256": "eebbb3c6ad371981d192fe80b9f2473d10e0ecf718d01cbe6048e2a70e4cc26d",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\":\"YouTube Career Walks\",\"description\":\"Create YouTube videos where you walk around and discuss your career journey.\",\"body\":\"Create YouTube content by walking around and talking about your career.\",\"tags\":[\"youtube-idea\",\"content-creation\",\"video-production\"],\"language\":\"en\"}",
+      "tokens_in": 1130,
+      "tokens_out": 1296,
+      "duration_ms": 14520,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "YouTube Career Walks",
+    "description": "Create YouTube videos where you walk around and discuss your career journey.",
+    "body": "Create YouTube content by walking around and talking about your career.",
+    "tags": [
+      "youtube-idea",
+      "content-creation",
+      "video-production"
+    ],
+    "language": "en"
+  }
+}

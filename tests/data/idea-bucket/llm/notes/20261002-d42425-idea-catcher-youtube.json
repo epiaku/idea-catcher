@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:08:30+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "gemini-3.6-flash",
+  "prompt_version": "note-7",
+  "content_key": "d4079b3d8bd2d696ae4db27b0bebefffaa7736d6aac9385cfcd790ddbbf96606",
+  "prompt_sha256": "723de78881199b1edff51fc306ec356e56e8493e5c8c90a2515443b1ce78eee7",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\"title\": \"Idea Catcher: Auto-Create Obsidian Cards from YouTube Links\", \"description\": \"Automatically create formatted Obsidian cards from YouTube links in Idea Catcher by fetching the video descriptions.\", \"body\": \"When Idea Catcher for Obsidian receives files:\\n\\n- Check if the file is a YouTube link.\\n- If it is a YouTube link, fetch its description.\\n- Automatically create a card in the required format.\", \"tags\": [\"todo\", \"obsidian\", \"automation\", \"idea-catcher\"], \"language\": \"en\"}",
+      "tokens_in": 1180,
+      "tokens_out": 113,
+      "duration_ms": 72062,
+      "model": "gemini-3.6-flash",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Idea Catcher: Auto-Create Obsidian Cards from YouTube Links",
+    "description": "Automatically create formatted Obsidian cards from YouTube links in Idea Catcher by fetching the video descriptions.",
+    "body": "When Idea Catcher for Obsidian receives files:\n\n- Check if the file is a YouTube link.\n- If it is a YouTube link, fetch its description.\n- Automatically create a card in the required format.",
+    "tags": [
+      "todo",
+      "obsidian",
+      "automation",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

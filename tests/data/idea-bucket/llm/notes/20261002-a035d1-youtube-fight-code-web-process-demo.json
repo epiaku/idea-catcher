@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:05:23+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "39755e3c0d9c6cd77c0cc90549207b2718c9d569e596f730aaba88a1b21c6375",
+  "prompt_sha256": "faebd604c90bbef025c1e8a92d32b4ef1955b4a07530f72852feb881dc3e7f2f",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\":\"Three-Step Web Process Demo with API and Dashboard\",\"description\":\"A three-step demo—design, code, test—backed by an API, queue worker process, and React dashboard.\",\"body\":\"Create a demo that explains a three-step workflow:\\n\\n1. Create the design and implement the documents.\\n2. Implement the features and write the code.\\n3. Test the complete set with automated testing, including heavy-flow testing.\\n\\nFor the demo, build a system with an API, a queue worker process, and a React dashboard.\",\"tags\":[\"tech-note\",\"automation\"],\"language\":\"en\"}",
+      "tokens_in": 1184,
+      "tokens_out": 3922,
+      "duration_ms": 42451,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Three-Step Web Process Demo with API and Dashboard",
+    "description": "A three-step demo—design, code, test—backed by an API, queue worker process, and React dashboard.",
+    "body": "Create a demo that explains a three-step workflow:\n\n1. Create the design and implement the documents.\n2. Implement the features and write the code.\n3. Test the complete set with automated testing, including heavy-flow testing.\n\nFor the demo, build a system with an API, a queue worker process, and a React dashboard.",
+    "tags": [
+      "tech-note",
+      "automation"
+    ],
+    "language": "en"
+  }
+}

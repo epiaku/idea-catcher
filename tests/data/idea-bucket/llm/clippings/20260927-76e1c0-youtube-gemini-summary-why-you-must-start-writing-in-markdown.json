@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T18:56:19+00:00",
+  "task": "youtube-gemini",
+  "profile": "youtube",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "youtube-gemini-7",
+  "content_key": "3b729cd8508ee7512b6496d2627dc1d3f43417fff8c5dd8f14c0f1090c5af126",
+  "prompt_sha256": "95c47164769edf4184743e95d49890b9546df998b52c357893af2386ff1478e8",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"Why You Must Start Writing in Markdown\",\n  \"creator\": \"Eason Blackwood\",\n  \"description\": \"Markdown and Obsidian give writers a plain-text foundation for managing, automating, and publishing their work across formats.\",\n  \"summary\": \"Markdown offers more flexibility than Microsoft Word and Scrivener. Paired with Obsidian, it separates raw content from presentation and supports publishing across multiple formats (00:06).\",\n  \"main_purpose\": \"Encourage writers, especially self-published authors and indie creators, to switch from proprietary software to plain-text Markdown to maintain ownership of their intellectual property and streamline publishing automation (00:36).\",\n  \"key_examples\": [\n    \"Microsoft Word workflow: writing and formatting become tangled, while separate ebook, print, and submission files create duplicate work (02:05).\",\n    \"Scrivener workflow: an all-in-one environment with compiling tools illustrates the risk of lock-in and losing access to structured data (05:03).\",\n    \"Obsidian short story export: a live workspace exports plain-text files into standard Shunn manuscript format using custom scripting (09:36).\",\n    \"Novel and ebook exporting: desktop scripts transform Markdown files into styled print layouts and ebook formats (10:16).\"\n  ],\n  \"action_plan\": [\n    \"Audit your writing tools to check whether manuscript files depend on proprietary formats.\",\n    \"Download a plain-text editor such as Obsidian or VS Code.\",\n    \"Store manuscripts, chapters, and drafts as plain `.md` files in standard local folders (08:05).\",\n    \"Separate drafting from design and layout using frontmatter and metadata (08:18).\",\n    \"Use lightweight exporters or open-source community plugins to compile PDF, EPUB, or DOCX on demand (12:18).\"\n  ],\n  \"tools\": [\n    \"Markdown\",\n    \"Microsoft Word\",\n    \"Scrivener\",\n    \"Obsidian\",\n    \"VS Code\",\n    \"HTML\",\n    \"Calibre\",\n    \"EB Writer\"\n  ],\n  \"tips\": [\n    {\n      \"tip\": \"Decouple Content from Presentation\",\n      \"explanation\": \"Ideas should exist independently of how they appear on screen or in print (11:12).\",\n      \"how_to_apply\": \"Write in plain text with lightweight Markdown structural tags instead of styled Rich Text (08:12).\"\n    },\n    {\n      \"tip\": \"Maintain a Single Source of Truth\",\n      \"explanation\": \"Separate manuscript, print, and ebook documents can cause sync errors (03:16).\",\n      \"how_to_apply\": \"Keep one master Markdown folder and compile target formats with exporters (09:11).\"\n    },\n    {\n      \"tip\": \"Future-Proof Intellectual Property\",\n      \"explanation\": \"Proprietary formats risk lock-in or lost access if software licensing changes or the software is discontinued (07:03).\",\n      \"how_to_apply\": \"Store core text locally in open `.md` or `.txt` formats (10:48).\"\n    }\n  ],\n  \"channel_application\": \"- **Epiaku Content Architecture**: Structure your documentation, video scripts, and product requirements in plain-text Markdown repositories to keep documentation decoupled from presentation tools.\\n- **Vibe Coding Tech Stack Demos**: Showcase workflows demonstrating how lightweight plain-text feeds into custom automation layers, AI coding tools, and document compilers.\\n- **App & SaaS Development**: Use Markdown frontmatter (`YAML` / `JSON`) to drive micro-SaaS application content management, enabling instant conversions between mobile app views, web views, and PDF exports.\",\n  \"links\": [\n    {\n      \"label\": \"YouTube Source\",\n      \"url\": \"https://www.youtube.com/watch?v=P9kOBpOY32c\"\n    }\n  ],\n  \"metrics\": {\n    \"as_of\": \"September 27, 2026\",\n    \"views\": \"28,657\",\n    \"likes\": \"444\",\n    \"subscribers\": null\n  },\n  \"chapters\": [],\n  \"tags\": [\n    \"strategy\",\n    \"obsidian\",\n    \"content-creation\",\n    \"automation\"\n  ]\n}",
+      "tokens_in": 3532,
+      "tokens_out": 1055,
+      "duration_ms": 12469,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Why You Must Start Writing in Markdown",
+    "creator": "Eason Blackwood",
+    "description": "Markdown and Obsidian give writers a plain-text foundation for managing, automating, and publishing their work across formats.",
+    "summary": "Markdown offers more flexibility than Microsoft Word and Scrivener. Paired with Obsidian, it separates raw content from presentation and supports publishing across multiple formats (00:06).",
+    "main_purpose": "Encourage writers, especially self-published authors and indie creators, to switch from proprietary software to plain-text Markdown to maintain ownership of their intellectual property and streamline publishing automation (00:36).",
+    "key_examples": [
+      "Microsoft Word workflow: writing and formatting become tangled, while separate ebook, print, and submission files create duplicate work (02:05).",
+      "Scrivener workflow: an all-in-one environment with compiling tools illustrates the risk of lock-in and losing access to structured data (05:03).",
+      "Obsidian short story export: a live workspace exports plain-text files into standard Shunn manuscript format using custom scripting (09:36).",
+      "Novel and ebook exporting: desktop scripts transform Markdown files into styled print layouts and ebook formats (10:16)."
+    ],
+    "action_plan": [
+      "Audit your writing tools to check whether manuscript files depend on proprietary formats.",
+      "Download a plain-text editor such as Obsidian or VS Code.",
+      "Store manuscripts, chapters, and drafts as plain `.md` files in standard local folders (08:05).",
+      "Separate drafting from design and layout using frontmatter and metadata (08:18).",
+      "Use lightweight exporters or open-source community plugins to compile PDF, EPUB, or DOCX on demand (12:18)."
+    ],
+    "tools": [
+      "Markdown",
+      "Microsoft Word",
+      "Scrivener",
+      "Obsidian",
+      "VS Code",
+      "HTML",
+      "Calibre",
+      "EB Writer"
+    ],
+    "tips": [
+      {
+        "tip": "Decouple Content from Presentation",
+        "explanation": "Ideas should exist independently of how they appear on screen or in print (11:12).",
+        "how_to_apply": "Write in plain text with lightweight Markdown structural tags instead of styled Rich Text (08:12)."
+      },
+      {
+        "tip": "Maintain a Single Source of Truth",
+        "explanation": "Separate manuscript, print, and ebook documents can cause sync errors (03:16).",
+        "how_to_apply": "Keep one master Markdown folder and compile target formats with exporters (09:11)."
+      },
+      {
+        "tip": "Future-Proof Intellectual Property",
+        "explanation": "Proprietary formats risk lock-in or lost access if software licensing changes or the software is discontinued (07:03).",
+        "how_to_apply": "Store core text locally in open `.md` or `.txt` formats (10:48)."
+      }
+    ],
+    "channel_application": "- **Epiaku Content Architecture**: Structure your documentation, video scripts, and product requirements in plain-text Markdown repositories to keep documentation decoupled from presentation tools.\n- **Vibe Coding Tech Stack Demos**: Showcase workflows demonstrating how lightweight plain-text feeds into custom automation layers, AI coding tools, and document compilers.\n- **App & SaaS Development**: Use Markdown frontmatter (`YAML` / `JSON`) to drive micro-SaaS application content management, enabling instant conversions between mobile app views, web views, and PDF exports.",
+    "links": [
+      {
+        "label": "YouTube Source",
+        "url": "https://www.youtube.com/watch?v=P9kOBpOY32c"
+      }
+    ],
+    "metrics": {
+      "as_of": "September 27, 2026",
+      "views": "28,657",
+      "likes": "444",
+      "subscribers": null
+    },
+    "chapters": [],
+    "tags": [
+      "strategy",
+      "obsidian",
+      "content-creation",
+      "automation"
+    ]
+  }
+}

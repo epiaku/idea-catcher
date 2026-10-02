@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T18:54:53+00:00",
+  "task": "web-clip",
+  "profile": "clippings",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "web-clip-2",
+  "content_key": "ab01318318f2b4369901df0e445a9e71bfeddc29d77113c64d09243503a2ada6",
+  "prompt_sha256": "3af12092c626ffec81867f761d0422b5d6b3205ce5135f2eed4b18e0016d5e84",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"Hugo shortcodes: usage and custom templates\",\n  \"description\": \"Use Hugo shortcodes to add reusable elements to content files, pass parameters, and create custom templates.\",\n  \"summary\": [\n    \"Shortcodes add richer elements to content without repeating raw HTML.\",\n    \"Calls can pass positional or named parameters; some shortcodes wrap content.\",\n    \"Custom shortcodes are templates that can read parameters and wrapped content.\",\n    \"The shortcode delimiter determines whether its output is processed as Markdown.\"\n  ],\n  \"key_points\": [\n    \"Place a custom shortcode template at `layouts/shortcodes/name.html`.\",\n    \"Use `.Get 0` for a positional parameter and `.Get \\\"title\\\"` for a named parameter.\",\n    \"Use `.Inner` to access content between opening and closing tags.\",\n    \"Percent-sign shortcode delimiters process output as Markdown; angle-bracket delimiters leave it as is.\",\n    \"Shortcodes cannot be used in front matter.\",\n    \"A shortcode requiring substantial logic is better implemented as a partial template.\"\n  ],\n  \"ideas_to_use\": [\n    \"Make a reusable card for links to documentation pages.\",\n    \"Use a wrapping shortcode for notes or cautions in content.\",\n    \"Move complex presentation logic into a partial template.\"\n  ],\n  \"body\": \"## 🧩 What shortcodes are\\n\\nA shortcode is a call in a content file to a built-in or custom template. It can provide elements that Markdown alone does not cover, such as a YouTube player or a card, without repeating raw HTML on each page.\\n\\n## ✍️ Calling a shortcode\\n\\nA call names the shortcode and can supply values by position or by name. For example, a video call might pass an ID followed by a title, while a card call might use named `title` and `link` values. A shortcode that contains content, such as a note around the word “Careful,” needs both opening and closing tags.\\n\\n| Delimiter style | How Hugo handles the output |\\n| --- | --- |\\n| Angle brackets | Uses the output as is |\\n| Percent signs | Processes the output as Markdown |\\n\\n## 🛠️ Creating a custom shortcode\\n\\nCreate an HTML template at:\\n\\n```text\\nlayouts/shortcodes/name.html\\n```\\n\\nWithin that template, `.Get 0` reads the first positional parameter, `.Get \\\"title\\\"` reads a named parameter, and `.Inner` reads the wrapped content.\\n\\n## ⚠️ Limits and scope\\n\\nShortcodes belong in content, not front matter. Keep them small; if one needs substantial logic, use a partial template instead.\",\n  \"tags\": [\n    \"tech-note\",\n    \"hugo\"\n  ]\n}",
+      "tokens_in": 1041,
+      "tokens_out": 861,
+      "duration_ms": 11129,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Hugo shortcodes: usage and custom templates",
+    "description": "Use Hugo shortcodes to add reusable elements to content files, pass parameters, and create custom templates.",
+    "summary": [
+      "Shortcodes add richer elements to content without repeating raw HTML.",
+      "Calls can pass positional or named parameters; some shortcodes wrap content.",
+      "Custom shortcodes are templates that can read parameters and wrapped content.",
+      "The shortcode delimiter determines whether its output is processed as Markdown."
+    ],
+    "key_points": [
+      "Place a custom shortcode template at `layouts/shortcodes/name.html`.",
+      "Use `.Get 0` for a positional parameter and `.Get \"title\"` for a named parameter.",
+      "Use `.Inner` to access content between opening and closing tags.",
+      "Percent-sign shortcode delimiters process output as Markdown; angle-bracket delimiters leave it as is.",
+      "Shortcodes cannot be used in front matter.",
+      "A shortcode requiring substantial logic is better implemented as a partial template."
+    ],
+    "ideas_to_use": [
+      "Make a reusable card for links to documentation pages.",
+      "Use a wrapping shortcode for notes or cautions in content.",
+      "Move complex presentation logic into a partial template."
+    ],
+    "body": "## 🧩 What shortcodes are\n\nA shortcode is a call in a content file to a built-in or custom template. It can provide elements that Markdown alone does not cover, such as a YouTube player or a card, without repeating raw HTML on each page.\n\n## ✍️ Calling a shortcode\n\nA call names the shortcode and can supply values by position or by name. For example, a video call might pass an ID followed by a title, while a card call might use named `title` and `link` values. A shortcode that contains content, such as a note around the word “Careful,” needs both opening and closing tags.\n\n| Delimiter style | How Hugo handles the output |\n| --- | --- |\n| Angle brackets | Uses the output as is |\n| Percent signs | Processes the output as Markdown |\n\n## 🛠️ Creating a custom shortcode\n\nCreate an HTML template at:\n\n```text\nlayouts/shortcodes/name.html\n```\n\nWithin that template, `.Get 0` reads the first positional parameter, `.Get \"title\"` reads a named parameter, and `.Inner` reads the wrapped content.\n\n## ⚠️ Limits and scope\n\nShortcodes belong in content, not front matter. Keep them small; if one needs substantial logic, use a partial template instead.",
+    "tags": [
+      "tech-note",
+      "hugo"
+    ]
+  }
+}

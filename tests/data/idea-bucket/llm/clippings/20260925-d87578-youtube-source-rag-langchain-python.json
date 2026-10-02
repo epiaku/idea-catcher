@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T18:55:58+00:00",
+  "task": "youtube",
+  "profile": "youtube",
+  "backend": "openai",
+  "model": "gpt-6-sol",
+  "prompt_version": "youtube-6",
+  "content_key": "5d12141364b001290d705d49430b2def97406c8bdb5c09bfbf409f1f24e49f80",
+  "prompt_sha256": "dd337d87138ed6794b374e57e40d942171f92dddae7138a6c84b769a93893912",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"RAG + Langchain Python Project: Easy AI/Chat For Your Docs\",\n  \"creator\": \"pixegami\",\n  \"description\": \"Build a Python RAG app that retrieves relevant document passages and uses OpenAI to answer questions with source references.\",\n  \"summary\": \"The tutorial builds a document-question-answering app with LangChain, OpenAI and ChromaDB. It covers loading and splitting files, creating embeddings, retrieving relevant chunks, and using those chunks to generate answers with source references.\",\n  \"main_purpose\": \"Show how to build a retrieval-augmented generation app that answers questions using supplied documents rather than relying solely on a model's general knowledge. The workflow turns text into searchable chunks, retrieves the best matches for a question, and includes them in the prompt used to generate a response.\",\n  \"key_examples\": [\n    \"An Alice in Wonderland markdown file is split from one document into 282 chunks (4:14), then queried about how Alice meets the Mad Hatter (12:09).\",\n    \"AWS Lambda documentation spread across multiple markdown files is used to answer which languages or runtimes Lambda supports, with references to different source files (15:29).\",\n    \"The presenter compares embedding distances between “apple” and “orange,” “beach,” and “iPhone” to illustrate semantic similarity (8:20).\"\n  ],\n  \"action_plan\": [\n    \"Put the markdown files you want to query in a data folder (1:51).\",\n    \"Load the files as LangChain documents, retaining their source metadata (2:19).\",\n    \"Split long documents into overlapping chunks (3:10).\",\n    \"Generate OpenAI embeddings for the chunks and save them in a persistent Chroma database (5:05).\",\n    \"Load the database with the same embedding function and retrieve the chunks most relevant to a question (9:38).\",\n    \"Place the retrieved chunks and question in a prompt, generate an answer, and display source references from the chunk metadata (12:47).\"\n  ],\n  \"tools\": [\n    \"Python\",\n    \"LangChain\",\n    \"OpenAI\",\n    \"ChromaDB\",\n    \"AWS Lambda\",\n    \"SQLite\"\n  ],\n  \"tips\": [\n    {\n      \"tip\": \"Keep source metadata\",\n      \"explanation\": \"Loaded documents and chunks retain the file path, which can be shown alongside an answer (2:57, 14:07).\",\n      \"how_to_apply\": \"Preserve source fields while loading and splitting files, then extract them from retrieved chunks when displaying results.\"\n    },\n    {\n      \"tip\": \"Tune chunk size and overlap\",\n      \"explanation\": \"Smaller chunks may be focused but lack context; the demonstration uses 1,000-character chunks with 500-character overlap (3:46, 12:24).\",\n      \"how_to_apply\": \"Test different chunk sizes against real questions and inspect whether retrieved passages contain enough context to answer.\"\n    },\n    {\n      \"tip\": \"Check retrieval quality before answering\",\n      \"explanation\": \"The tutorial suggests returning early when there are no suitable matches rather than proceeding to response generation (11:27).\",\n      \"how_to_apply\": \"Inspect retrieval results and scores, and establish an appropriate cutoff for the scoring method in use.\"\n    },\n    {\n      \"tip\": \"Persist the database\",\n      \"explanation\": \"Saving Chroma to disk lets the app load an existing index instead of rebuilding it for every query (5:27).\",\n      \"how_to_apply\": \"Set a persistent directory when creating the database and load that directory in the query script.\"\n    }\n  ],\n  \"channel_application\": \"- Build a question-answering prototype for Idea Catcher documentation pages: chunk the saved text, index it in Chroma, and show source references with answers.\\n- Use an Epiaku app's markdown documentation as the data source for a small support-chat prototype, following the video's retrieval-and-prompt workflow.\\n- Make a Vibe Coding Tech Stack demo that walks through loading files, creating the vector database, and querying it with source references.\",\n  \"links\": [\n    {\n      \"label\": \"Tutorial code\",\n      \"url\": \"https://github.com/pixegami/langchain-rag-tutorial\"\n    },\n    {\n      \"label\": \"Sample AWS Lambda documentation\",\n      \"url\": \"https://github.com/awsdocs/aws-lambda-developer-guide\"\n    },\n    {\n      \"label\": \"Sample Alice in Wonderland text\",\n      \"url\": \"https://www.gutenberg.org/ebooks/11\"\n    }\n  ],\n  \"chapters\": [\n    {\n      \"time\": \"00:00\",\n      \"title\": \"What is RAG?\"\n    },\n    {\n      \"time\": \"01:36\",\n      \"title\": \"Preparing the Data\"\n    },\n    {\n      \"time\": \"05:05\",\n      \"title\": \"Creating Chroma Database\"\n    },\n    {\n      \"time\": \"06:36\",\n      \"title\": \"What are Vector Embeddings?\"\n    },\n    {\n      \"time\": \"09:38\",\n      \"title\": \"Querying for Relevant Data\"\n    },\n    {\n      \"time\": \"12:47\",\n      \"title\": \"Crafting a Great Response\"\n    },\n    {\n      \"time\": \"16:18\",\n      \"title\": \"Wrapping Up\"\n    }\n  ],\n  \"tags\": [\n    \"tech-note\",\n    \"llm-models\",\n    \"second-brain\",\n    \"idea-catcher\"\n  ]\n}",
+      "tokens_in": 7680,
+      "tokens_out": 1371,
+      "duration_ms": 16366,
+      "model": "gpt-6-sol",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "RAG + Langchain Python Project: Easy AI/Chat For Your Docs",
+    "creator": "pixegami",
+    "description": "Build a Python RAG app that retrieves relevant document passages and uses OpenAI to answer questions with source references.",
+    "summary": "The tutorial builds a document-question-answering app with LangChain, OpenAI and ChromaDB. It covers loading and splitting files, creating embeddings, retrieving relevant chunks, and using those chunks to generate answers with source references.",
+    "main_purpose": "Show how to build a retrieval-augmented generation app that answers questions using supplied documents rather than relying solely on a model's general knowledge. The workflow turns text into searchable chunks, retrieves the best matches for a question, and includes them in the prompt used to generate a response.",
+    "key_examples": [
+      "An Alice in Wonderland markdown file is split from one document into 282 chunks (4:14), then queried about how Alice meets the Mad Hatter (12:09).",
+      "AWS Lambda documentation spread across multiple markdown files is used to answer which languages or runtimes Lambda supports, with references to different source files (15:29).",
+      "The presenter compares embedding distances between “apple” and “orange,” “beach,” and “iPhone” to illustrate semantic similarity (8:20)."
+    ],
+    "action_plan": [
+      "Put the markdown files you want to query in a data folder (1:51).",
+      "Load the files as LangChain documents, retaining their source metadata (2:19).",
+      "Split long documents into overlapping chunks (3:10).",
+      "Generate OpenAI embeddings for the chunks and save them in a persistent Chroma database (5:05).",
+      "Load the database with the same embedding function and retrieve the chunks most relevant to a question (9:38).",
+      "Place the retrieved chunks and question in a prompt, generate an answer, and display source references from the chunk metadata (12:47)."
+    ],
+    "tools": [
+      "Python",
+      "LangChain",
+      "OpenAI",
+      "ChromaDB",
+      "AWS Lambda",
+      "SQLite"
+    ],
+    "tips": [
+      {
+        "tip": "Keep source metadata",
+        "explanation": "Loaded documents and chunks retain the file path, which can be shown alongside an answer (2:57, 14:07).",
+        "how_to_apply": "Preserve source fields while loading and splitting files, then extract them from retrieved chunks when displaying results."
+      },
+      {
+        "tip": "Tune chunk size and overlap",
+        "explanation": "Smaller chunks may be focused but lack context; the demonstration uses 1,000-character chunks with 500-character overlap (3:46, 12:24).",
+        "how_to_apply": "Test different chunk sizes against real questions and inspect whether retrieved passages contain enough context to answer."
+      },
+      {
+        "tip": "Check retrieval quality before answering",
+        "explanation": "The tutorial suggests returning early when there are no suitable matches rather than proceeding to response generation (11:27).",
+        "how_to_apply": "Inspect retrieval results and scores, and establish an appropriate cutoff for the scoring method in use."
+      },
+      {
+        "tip": "Persist the database",
+        "explanation": "Saving Chroma to disk lets the app load an existing index instead of rebuilding it for every query (5:27).",
+        "how_to_apply": "Set a persistent directory when creating the database and load that directory in the query script."
+      }
+    ],
+    "channel_application": "- Build a question-answering prototype for Idea Catcher documentation pages: chunk the saved text, index it in Chroma, and show source references with answers.\n- Use an Epiaku app's markdown documentation as the data source for a small support-chat prototype, following the video's retrieval-and-prompt workflow.\n- Make a Vibe Coding Tech Stack demo that walks through loading files, creating the vector database, and querying it with source references.",
+    "links": [
+      {
+        "label": "Tutorial code",
+        "url": "https://github.com/pixegami/langchain-rag-tutorial"
+      },
+      {
+        "label": "Sample AWS Lambda documentation",
+        "url": "https://github.com/awsdocs/aws-lambda-developer-guide"
+      },
+      {
+        "label": "Sample Alice in Wonderland text",
+        "url": "https://www.gutenberg.org/ebooks/11"
+      }
+    ],
+    "metrics": null,
+    "chapters": [
+      {
+        "time": "00:00",
+        "title": "What is RAG?"
+      },
+      {
+        "time": "01:36",
+        "title": "Preparing the Data"
+      },
+      {
+        "time": "05:05",
+        "title": "Creating Chroma Database"
+      },
+      {
+        "time": "06:36",
+        "title": "What are Vector Embeddings?"
+      },
+      {
+        "time": "09:38",
+        "title": "Querying for Relevant Data"
+      },
+      {
+        "time": "12:47",
+        "title": "Crafting a Great Response"
+      },
+      {
+        "time": "16:18",
+        "title": "Wrapping Up"
+      }
+    ],
+    "tags": [
+      "tech-note",
+      "llm-models",
+      "second-brain",
+      "idea-catcher"
+    ]
+  }
+}

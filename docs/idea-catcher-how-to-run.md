@@ -332,7 +332,7 @@ Nothing else from the real repos is needed: no Hugo theme or site config, no `RE
 
 **Refreshing it.** Add, remove or replace captures in `tests/data/idea-bucket/inbox/` and commit. The test `test_testdata.py` does not hardcode what is in there: it scans `tests/data/` when it runs and checks that `testdata reset` copies exactly that, so changing the captures or folders does not break it. Keep the `.gitkeep` files, or the empty folders are lost. To keep a set of real data for later, copy the folders you need into `tests/data/` this way.
 
-**The test suite uses the same data.** `test_testdata_run.py` runs the whole pipeline on it with the fake LLM, so a change that breaks the flow on real-looking captures is caught.
+**The test suite uses the same data.** `test_testdata_run.py` runs the whole pipeline on it from the saved replies and facts (see [Recipes on test data](#recipes-on-test-data)), with no model and no YouTube call, and checks every page against `tests/data/expected/`, so a change that breaks the flow on real-looking captures is caught.
 
 ### Fill `tmp/ic` from your real repos instead (more or newer data)
 
@@ -369,6 +369,8 @@ Good to know:
 - **To keep a set of real data for later:** copy what you need into `tests/data/` as described under "Refreshing it" in "What the test data is", and commit it.
 
 ### Recipes on test data
+
+**A frozen real run.** Besides `inbox/`, `tests/data/idea-bucket` holds what one real run recorded: `facts/` (the YouTube facts, one file per video) and `llm/` (the LLM replies, one trace per document). A run reads a saved good reply before it calls a model and saved facts before it calls YouTube, so a fresh `testdata reset` repo runs the whole inbox with **no model and no YouTube call** (with the profiles the real run used, the defaults; a saved reply only matches its own profile and prompt version, so `--profile fake` still gets the fake LLM). Use `--refresh-llm` or `--refresh-facts` when you do want real calls. The pages that run made, as approved, are in `tests/data/expected/` (the test compares against them; `testdata reset` does not copy that folder). **To refresh it** (after a prompt change, or new captures): `testdata reset`, delete `tmp/ic/idea-bucket/llm/` (and `facts/` to fetch the videos again), run for real on `tmp/ic`, review the pages, then replace `tests/data/idea-bucket/facts/` and `llm/` with the ones in `tmp/ic/idea-bucket/`, and the pages below `tmp/ic/epiaku-docs/hugo/content/en/docs/idea-bucket/` (not `_index.md` or `.gitkeep`) into `tests/data/expected/`, and commit.
 
 #### Set up the test repos
 

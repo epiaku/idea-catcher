@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:08:31+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "qwen/qwen3.8-27b",
+  "prompt_version": "note-7",
+  "content_key": "24ef0d2d39d48d98587905d243219b2e277fd8fa7e8a4edda41049bb69c50130",
+  "prompt_sha256": "64e71f4d014661fe7b16b6c724e3ba1fb4f03eeb9fb27aa26c440ef21aba5646",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\n  \"title\": \"Second Brain on a Separate MCP Server\",\n  \"description\": \"Idea to move the Second Brain functionality to a dedicated, running MCP server.\",\n  \"body\": \"When we have our Second Brain, can we also move it to a separate running MCP server?\",\n  \"tags\": [\n    \"tech-note\",\n    \"ai-agents\",\n    \"second-brain\"\n  ],\n  \"language\": \"en\"\n}",
+      "tokens_in": 1159,
+      "tokens_out": 102,
+      "duration_ms": 575,
+      "model": "qwen/qwen3.8-27b",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Second Brain on a Separate MCP Server",
+    "description": "Idea to move the Second Brain functionality to a dedicated, running MCP server.",
+    "body": "When we have our Second Brain, can we also move it to a separate running MCP server?",
+    "tags": [
+      "tech-note",
+      "ai-agents",
+      "second-brain"
+    ],
+    "language": "en"
+  }
+}

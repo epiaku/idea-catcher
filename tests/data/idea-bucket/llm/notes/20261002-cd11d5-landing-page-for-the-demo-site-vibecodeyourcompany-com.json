@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:04:31+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "c7814d2759b52567dfeeee09e9bc8f45762e3e327ae36a42fdd475a40be6f4bc",
+  "prompt_sha256": "8f328501ee2a8bf2f606e6fb242849be7e4f07721409fa2758de4b4cb6bb5c9d",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\": \"Landing page for vibecodeyourcompany.com\", \"description\": \"Landing page for vibecodeyourcompany.com with email signup, YouTube link, video cards, and a link to epiaku.com.\", \"body\": \"The landing page for the demo site vibecodeyourcompany.com should include:\\n\\n- A link to sign up for the email list\\n- A link to the YouTube channel\\n- Cards of available videos\\n- A link to epiaku.com\", \"tags\": [\"marketing\", \"content-creation\", \"youtube-growth\", \"idea-catcher\"], \"language\": \"en\"}",
+      "tokens_in": 1177,
+      "tokens_out": 1481,
+      "duration_ms": 15965,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Landing page for vibecodeyourcompany.com",
+    "description": "Landing page for vibecodeyourcompany.com with email signup, YouTube link, video cards, and a link to epiaku.com.",
+    "body": "The landing page for the demo site vibecodeyourcompany.com should include:\n\n- A link to sign up for the email list\n- A link to the YouTube channel\n- Cards of available videos\n- A link to epiaku.com",
+    "tags": [
+      "marketing",
+      "content-creation",
+      "youtube-growth",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}

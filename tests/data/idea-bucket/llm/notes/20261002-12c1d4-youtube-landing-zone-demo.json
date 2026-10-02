@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:06:01+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "dots-studio/dots-3-note-preview:free",
+  "prompt_version": "note-7",
+  "content_key": "e4ec372687c99b23e8c411fdd9a8311a1cdb138b148f89936dcc449318b66c84",
+  "prompt_sha256": "06ae14b727c9cc734c8ca2b88137b8c3b67415822dfcfd767eacb24a90307601",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "\n\n{\"title\":\"YouTube Landing Zone Demo in Azure\",\"description\":\"A YouTube demo showing how to deploy a landing zone in Azure with front-end and back-end, exposing the front end as a web app.\",\"body\":\"Create a YouTube demo that shows the deployment of a landing zone in Azure. The demo covers both the front end and the back end, and demonstrates how to make the front end available as a Web app.\",\"tags\":[\"youtube-idea\",\"content-creation\",\"video-production\"],\"language\":\"en\"}",
+      "tokens_in": 1154,
+      "tokens_out": 1005,
+      "duration_ms": 12456,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "YouTube Landing Zone Demo in Azure",
+    "description": "A YouTube demo showing how to deploy a landing zone in Azure with front-end and back-end, exposing the front end as a web app.",
+    "body": "Create a YouTube demo that shows the deployment of a landing zone in Azure. The demo covers both the front end and the back end, and demonstrates how to make the front end available as a Web app.",
+    "tags": [
+      "youtube-idea",
+      "content-creation",
+      "video-production"
+    ],
+    "language": "en"
+  }
+}

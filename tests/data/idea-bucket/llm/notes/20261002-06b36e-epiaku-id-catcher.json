@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:02:54+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "prompt_version": "note-7",
+  "content_key": "86739f3189d0f10faaa7b1e4046890bd210b8b0c279da8fec6bb07d87ac03b10",
+  "prompt_sha256": "7dbb2b7a693ea26dd6e2971c7cedce7cb4864c1b47e023b64f510d43e0449ad3",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\"title\":\"Add summary and grammar checker to Obsidian docs\",\"description\":\"Add a summary and structured checker to Obsidian docs to automate grammar checking and improve document quality.\",\"body\":\"When creating a doc from Obsidian, add a summary and a structured checker. That way we automatically do a grammar check, and we end up with better documents.\",\"tags\":[\"app-idea\",\"obsidian\",\"automation\"],\"language\":\"en\"}",
+      "tokens_in": 1146,
+      "tokens_out": 2331,
+      "duration_ms": 13291,
+      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Add summary and grammar checker to Obsidian docs",
+    "description": "Add a summary and structured checker to Obsidian docs to automate grammar checking and improve document quality.",
+    "body": "When creating a doc from Obsidian, add a summary and a structured checker. That way we automatically do a grammar check, and we end up with better documents.",
+    "tags": [
+      "app-idea",
+      "obsidian",
+      "automation"
+    ],
+    "language": "en"
+  }
+}

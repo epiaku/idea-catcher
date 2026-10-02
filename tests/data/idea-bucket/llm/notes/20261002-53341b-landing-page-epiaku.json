@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:01:38+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "prompt_version": "note-7",
+  "content_key": "777f9adbe414317d2b7d8be3cf1deaa705757272506337c58d582d6ab9b8bc13",
+  "prompt_sha256": "df5320a85c4f69248fa31fa4a52e685d7bf7cb106c4a99368e8bc7fe32e6dad4",
+  "prompt": null,
+  "attempts": [
+    {
+      "reply": "{\"title\":\"Landing Page for epiaku\",\"description\":\"Landing page idea for the new company epiaku: email signup, YouTube link, and a grid of video cards.\",\"body\":\"- Announce the new company epiaku with a landing page.\\n- Let people sign up for the email list to get notified.\\n- Link to the YouTube channel.\\n- Optionally show a grid of cards with all available videos from the channel.\",\"tags\":[\"marketing\",\"youtube-growth\",\"content-creation\",\"idea-catcher\"],\"language\":\"en\"}",
+      "tokens_in": 1165,
+      "tokens_out": 3715,
+      "duration_ms": 19530,
+      "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "error": null
+    }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": {
+    "title": "Landing Page for epiaku",
+    "description": "Landing page idea for the new company epiaku: email signup, YouTube link, and a grid of video cards.",
+    "body": "- Announce the new company epiaku with a landing page.\n- Let people sign up for the email list to get notified.\n- Link to the YouTube channel.\n- Optionally show a grid of cards with all available videos from the channel.",
+    "tags": [
+      "marketing",
+      "youtube-growth",
+      "content-creation",
+      "idea-catcher"
+    ],
+    "language": "en"
+  }
+}
