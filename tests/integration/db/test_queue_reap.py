@@ -11,13 +11,6 @@ from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import claim, complete, defer, enqueue, fail, heartbeat, reap
 
 
-@pytest.fixture(autouse=True)
-def _empty_queue(pg_engine: Engine) -> None:
-    """Other test files leave committed jobs behind; `reap` acts on every expired job, so start clean."""
-    with session_scope(pg_engine) as cleanup:
-        cleanup.execute(text("truncate jobs restart identity cascade"))
-
-
 def _row(engine: Engine, job_id) -> Job:
     """The job as the database has it now, read in a session of its own."""
     with session_scope(engine) as fresh:
@@ -203,3 +196,17 @@ def test_a_heartbeat_that_extends_the_lease_wins_over_a_reaper_that_is_waiting_f
     row = _row(pg_engine, job_id)
     assert (row.status, row.locked_by, row.attempts) == ("running", "w1", 1)
     assert row.lease_until == clock.now + timedelta(seconds=30)
+
+
+def test_leak_probe_leaves_an_expired_running_job_committed(pg_engine: Engine, clock) -> None:
+    with session_scope(pg_engine) as setup:
+        enqueue(setup, type="note", now=clock.now)
+    with session_scope(pg_engine) as worker:
+        _claimed(worker, clock, lease_s=30)  # committed, never finished, never reaped
+
+
+def test_the_next_test_does_not_see_the_probe_s_job(session: Session, clock) -> None:
+    clock.advance(3600)
+
+    assert reap(session, now=clock.now) == []
+    assert claim(session, worker="w1", now=clock.now, lease_s=30) is None

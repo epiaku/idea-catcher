@@ -64,15 +64,27 @@ def fresh_database_url(pg_url: str) -> Iterator[str]:
         admin.dispose()
 
 
+def _truncate_all(engine: Engine) -> None:
+    tables = [t for t in inspect(engine).get_table_names(schema="public") if t != "alembic_version"]
+    if tables:
+        names = ", ".join(f'"{name}"' for name in tables)
+        with session_scope(engine) as cleanup:
+            cleanup.execute(text(f"truncate {names} restart identity cascade"))
+
+
+@pytest.fixture(autouse=True)
+def _empty_tables(pg_engine: Engine) -> None:
+    """Start every test on empty tables, also those that only use `pg_engine` and commit rows of their own.
+
+    Skips with `pg_engine` when Docker is not available."""
+    _truncate_all(pg_engine)
+
+
 @pytest.fixture
 def session(pg_engine: Engine):
     with session_scope(pg_engine) as db_session:
         yield db_session
-    tables = [t for t in inspect(pg_engine).get_table_names(schema="public") if t != "alembic_version"]
-    if tables:
-        names = ", ".join(f'"{name}"' for name in tables)
-        with session_scope(pg_engine) as cleanup:
-            cleanup.execute(text(f"truncate {names} restart identity cascade"))
+    _truncate_all(pg_engine)
 
 
 class Clock:
