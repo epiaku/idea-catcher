@@ -142,7 +142,7 @@ flowchart LR
     checks["checks.py<br/>free checks, link check"]
   end
 
-  core["core<br/>config, git, frontmatter, log, test data"]
+  core["core<br/>config, git, files (atomic writes, lock), frontmatter, log, test data"]
 
   cli --> run
   cli --> process

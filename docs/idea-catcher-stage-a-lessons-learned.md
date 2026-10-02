@@ -9,7 +9,7 @@ type: docs
 Stage A is the local Python pipeline: it turns captures in the `idea-bucket` repo into pages in `epiaku-docs`, run by hand from the Mac. This page records what was built, where the real result differs from the [plan](../idea-catcher-service-architecture/#mvp-stage-a), and what we learned, so stage B starts from facts and not from memory.
 
 **Period:** 2026-09-27 to 2026-10-01 (five days, about 50 commits)
-**Size at the end:** about 3,500 lines of Python, about 4,400 lines of tests (391 tests), five document classes
+**Size at the end:** about 3,500 lines of Python, about 4,400 lines of tests (435 tests after the review fixes of 2026-10-02), five document classes
 **Written:** 2026-10-01, from the git history, the test repos and the reruns of the real pages
 
 ## What Stage A delivered
@@ -68,7 +68,7 @@ The plan was good enough to start with, and it changed a lot. Most changes came 
 ### YouTube
 
 16. **Two methods, two jobs.** The direct page has real metrics, timestamps, chapters and free checks, but needs YouTube to answer. The Gemini page needs no YouTube call and often has more concrete numbers, but nothing can be verified. The direct page is the default, the Gemini page the fallback and a second opinion. See [the comparison](../idea-catcher-youtube-methods-comparison/), done on two videos and checked against the transcripts.
-17. **Do not hit YouTube while developing.** Heavy live testing on 2026-09-28 got this machine rate-limited (429) on both the transcript API and yt-dlp. It worked again days later. The protections that came out of it are built: the facts are saved once per video, one paced extraction, a 10 minute gap between fetches, and a breaker that stops all calls for 6 to 24 hours after a block. See [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/). The tests now use saved data (a caption file and a trimmed `info.json` of the same video) and never call YouTube. See [the research](../idea-catcher-youtube-transcript-research/) and [the command-line tests](../idea-catcher-youtube-transcript-cli-tests/).
+17. **Do not hit YouTube while developing.** Heavy live testing on 2026-09-28 got this machine rate-limited (429) on both the transcript API and yt-dlp. It worked again days later. The protections that came out of it are built: the facts are saved once per video, one paced extraction, a gap between fetches (first 10 minutes, now 2 minutes plus jitter), and a breaker that stops all calls for 6 to 24 hours after a block. See [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/). The tests now use saved data (a caption file and a trimmed `info.json` of the same video) and never call YouTube. See [the research](../idea-catcher-youtube-transcript-research/) and [the command-line tests](../idea-catcher-youtube-transcript-cli-tests/).
 18. **Facts change.** Views move, and chapters can appear on a video days after it was published (the same video had no chapters at 11:27 and nine at 12:58, with the description unchanged). The fetch date is stored on every page, and a rerun gives newer facts.
 19. **Descriptions are mostly promotion.** Do not summarize them, and do not trust a link in them without checking. A description is useful mainly for the code and sample-data links, and only when code verifies each URL.
 

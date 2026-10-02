@@ -90,7 +90,7 @@ flowchart TB
 | `inbox/notes/` | Typed or dictated notes | You, through Obsidian | When work starts on it |
 | `inbox/clippings/` | Web pages, AI chats, YouTube pages (the Web Clipper) | You, through Obsidian | When work starts on it |
 | `inbox/` (loose files) | PDFs and images | You | Renamed and copied as an artifact |
-| `archive/` | The original, under its calculated name, plus two frontmatter lines (`original_filename`, `calculated_filename`) | The run, when work starts | `--requeue` moves it back to `inbox/` |
+| `archive/` | The original, under its calculated name, plus two frontmatter lines (`original_filename`, `calculated_filename`) | The run, when work starts | `--requeue` moves it back to `inbox/`. A document that goes back (interrupted, or a clip that must wait) is moved back by the run itself |
 | `output/` | The working copy (`stage: analyzed` or `deferred`), later the final page | The run | `--requeue` clears it |
 | `failed/` | A document that could not be processed, with `<name>.error.txt` | The run | `--requeue` clears it |
 | `duplicates/` | An earlier snapshot of a longer clip of the same conversation | The run | Moved back by hand |
@@ -107,17 +107,20 @@ stateDiagram-v2
   InInbox --> Failed: cannot be read
   InInbox --> Working: start work
   Working --> Published: valid page written
+  Working --> Waiting: YouTube closed after the check
+  Working --> InInbox: interrupted by Ctrl-C or kill
   Working --> Deferred: temporary problem
   Working --> Failed: permanent problem
   Published --> InInbox: requeue to redo
-  Deferred --> InInbox: requeue to retry
+  Deferred --> InInbox: requeue or retry-deferred
   Failed --> InInbox: requeue after fixing
   Duplicate --> [*]
   Published --> [*]
 ```
 
-- **Waiting** is the only state where a document is **not touched**: a YouTube clip that must wait for the gap between YouTube calls (or for a block to end) stays in `inbox/`, and the next run takes it.
-- **Deferred** means not done but not lost: the LLM or the budget was unavailable, or YouTube had no facts. The working copy says why.
+- **Waiting**: a YouTube clip that must wait for the gap between YouTube calls (or for a block to end) stays in `inbox/` untouched, and the next run takes it. If the gap closes after the clip was started (another run used it), or YouTube answers with a block, the run puts the clip **back** in `inbox/` under the same name, so it is waiting too.
+- **Interrupted** (Ctrl-C or `kill`): the document being worked on goes back to `inbox/` under the same name, what was done is committed, and the run reports a problem. Nothing is lost and nothing is archived twice.
+- **Deferred** means not done but not lost: the LLM or the budget was unavailable, or YouTube had no facts. The working copy says why. `--retry-deferred` puts all of them back in `inbox/` at once.
 - A **requeue** moves the archived original back to `inbox/` and clears the stale copy in `output/` (and in `failed/`), then runs the document again.
 
 ## What changes in the file along the way

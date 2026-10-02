@@ -17,6 +17,7 @@ The protections of Step 1 are in the code and tested (no network). How they diff
 | A minimum time between calls | `YOUTUBE_MIN_GAP_S` (**2 minutes**, changed from the 10 minutes of the design on 2026-10-02 to start low and watch for a block) plus up to `YOUTUBE_GAP_JITTER_S` (5 minutes), in a state file on this machine, shared by every run, with a file lock. **No daily cap** |
 | A breaker | A 429, a bot check, `IpBlocked` or `RequestBlocked` opens it for `YOUTUBE_BLOCK_HOURS` (6), then 12, then 24 hours. A working fetch closes it. A block on the caption file is not hidden as "no captions" |
 | A document that must wait is deferred | Better: it is **not touched and stays in `inbox/`** with the status `waiting` (before any work starts), so the next run takes it and there is nothing to requeue. `--wait-youtube` sleeps through a short gap (up to `YOUTUBE_WAIT_MAX_S`) so one run can do a batch. `--refresh-facts` fetches again |
+| Hardening added on 2026-10-02 (review fixes) | **A damaged gate file fails closed:** it is kept as `youtube-gate.corrupt` and the gate closes for the block hours. A value from the far future is capped at 24 hours. A fetch that started before a newer block cannot close the breaker (`blocked_at`, `started_at`). Two fetches that both get a 429 count as one block. **A dry run never calls YouTube** and does not use the gap (`would_fetch`). A clip whose gap closed after its check, or that got a 429, goes **back to `inbox/`** as `waiting`. A private or removed video is remembered for a day. The Stage B gate has to do all of this too |
 | A guard against live calls in development | `YOUTUBE_OFFLINE=1` (saved facts still work). `catcher youtube facts` goes through the same gap and breaker |
 
 **Not built yet (Stage B):** the Postgres queue, the `resource_state` table (the gate state moves from a file into it), the pull and publish schedules, and the backfill import. The text below is the analysis and the design that led here.
@@ -24,7 +25,7 @@ The protections of Step 1 are in the code and tested (no network). How they diff
 ## Short answer
 
 1. **A queue does not stop a ban. Making fewer calls does.** The ban came from our own development traffic on 2026-09-28, not from production volume (a few clips a day). The protections that matter are: never fetch the same video twice, never fetch in bursts, and stop completely when YouTube says no. A queue is the place to _enforce_ those rules, not the cause of the fix.
-2. **Our code today would hit YouTube again on every retry.** Facts are fetched fresh on every attempt, the saved facts file is never read back, and a requeue deletes it. In Stage B, a note deferred for an LLM reason would refetch YouTube every `retry_delay` (60 minutes).
+2. **Before Step 1, our code would hit YouTube again on every retry** (fixed: the facts are saved and read back). Facts are fetched fresh on every attempt, the saved facts file is never read back, and a requeue deletes it. In Stage B, a note deferred for an LLM reason would refetch YouTube every `retry_delay` (60 minutes).
 3. **Do the protections first, without any queue**, in the existing code: a facts cache, one extraction per video, a **minimum time between YouTube calls** (this is how the calls are dosed), a persistent "blocked until" breaker, and a guard against live calls in development. A call that is not allowed yet is not an error: the document is **deferred** and picked up later. They are small, and they remove most of the risk now.
 4. **For the queue: build our own on Postgres**, with the semantics of Azure Storage Queues (invisible delay, a dequeue count, a poison state) plus a small per-resource limiter table. **Celery is overkill and does not give a global rate limit.** Azure Functions cannot be used for the YouTube fetch at all, because YouTube blocks cloud IP ranges. If our own queue grows too big, **Procrastinate** (Postgres-native) is the best fallback.
 
@@ -39,7 +40,7 @@ From yt-dlp's own guidance and the transcript library's docs:
 - **A new IP or a VPN is not a fix.** Commercial VPN exit ranges are among the most scrutinised addresses and can lead to permanent bot checks.
 - **Our own incident:** heavy live YouTube traffic during development and testing on 2026-09-28 got this machine blocked ([the timeline](idea-catcher-youtube-transcript-cli-tests.md)). It worked again by 2026-10-01.
 
-## How our code hits YouTube today
+## How our code hit YouTube before Step 1 (history)
 
 | Finding | Where | Effect |
 | --- | --- | --- |
@@ -68,7 +69,7 @@ Not all of them. Reading yt-dlp's log and its source, and the transcript library
 | 5 to 7 | The transcript library: its own watch page, player data and caption track | the same transcript again | **No.** It repeats 1, 2 and 4 |
 | 8+ | The fallback: a second full extraction | only when the first path failed | Only on failure. It disappears when yt-dlp is the only path |
 
-**Needed: 3 requests per video** (the watch page, the player data, the caption file). Today we make about 6 to 7, and 10 or more when the fallback runs. At 10 seconds between requests, a fetch of 3 requests takes about 30 seconds. Dropping the transcript library and skipping the manifest are therefore the two cheapest ways to halve the hits.
+**Needed: 3 requests per video** (the watch page, the player data, the caption file). Before Step 1 we made about 6 to 7, and 10 or more when the fallback ran. At 10 seconds between requests, a fetch of 3 requests takes about 30 seconds. Dropping the transcript library and skipping the manifest are therefore the two cheapest ways to halve the hits.
 
 ## Options to protect against bans
 
@@ -145,7 +146,7 @@ Azure's model is a good template for a resilient queue, and it maps one-to-one o
 ```text
 jobs(id, type, payload, status[queued|running|succeeded|dead], attempts, max_attempts=5,
      run_after, locked_until, resource, last_error, ...)
-resource_state(resource PK, next_allowed_at, blocked_until, streak, day, count_today)
+resource_state(resource PK, next_allowed_at, blocked_until, blocked_at, streak)   -- no daily counter: there is no daily cap
 ```
 
 - **Claim:** pick the oldest job with `run_after <= now`, whose resource is allowed (`next_allowed_at <= now` and `blocked_until <= now`), `FOR UPDATE SKIP LOCKED`. In the **same transaction** set the resource's `next_allowed_at = now + min_gap + jitter`. Two workers can then never break the gap.
@@ -183,7 +184,7 @@ You will rarely get near the limit: with the cache, each video is fetched **once
 
 **What happens when a call is not allowed yet** (the gap has not passed, or the breaker is open)? It is **not an error**:
 
-1. The document is **deferred**, the same way it is today when the LLM is down: it stays in `output/` with `stage: deferred` and a reason such as `YouTube: next call allowed at 14:35` or `YouTube blocked until 20:10`.
+1. *(The plan.)* The document is **deferred**, the same way it is when the LLM is down. *As built in Stage A it is better:* the clip stays in (or goes back to) `inbox/` with the status `waiting` and a message such as `YouTube: next call allowed at 14:35` or `YouTube blocked until 20:10`. Where a waiting clip lives in Stage B is still to be decided.
 2. The rest of the run goes on (notes, chats and Gemini clips do not need YouTube).
 3. A later run picks it up. In **Stage A** that is a run you start by hand (or a cron job you add). In **Stage B** the worker does it automatically: the job simply waits with `run_after` set to the allowed time. That automatic spreading over the day is the real benefit of the queue.
 4. For a short wait (under about 2 minutes) the run can simply **wait** instead of deferring.

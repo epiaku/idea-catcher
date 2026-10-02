@@ -67,7 +67,7 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | Trigger model       | The API and the scheduler both **enqueue jobs**. The worker does the work.                                                                                                                |
 | LLM step            | Its own job type (`llm.reason`). **Provider and model come from the message**, as a named **profile**, with a default per document class (`note` → `notes`, `ai-chat` and `web-clip` → `clippings`, `youtube` and `youtube-gemini` → `youtube`). We start with these three and test them. |
 | MVP LLM backends    | **FreeLLMApi** (`notes`) and the **OpenAI API** (`clippings`, `youtube`). Every call is an API call with a key: no CLI, no subscription. Anthropic and Gemini APIs can be added later as another profile. |
-| Folders             | **Five top-level folders, one rule:** a run **only looks at `inbox/`** for work. When work on a document starts, it leaves `inbox/`: it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`, at most 128 characters), the original goes to `archive/` (unchanged except for two added frontmatter lines, `original_filename` and `calculated_filename`) and a working copy to `output/` (with a `stage` in its frontmatter), so a document is never started twice. `output/` then holds the final page. `failed/` holds permanent failures (with an `.error.txt`) and `duplicates/` earlier snapshots of a longer clip. A temporary error stalls the working copy in `output/` (`stage: deferred`, with the reason). **To retry, move the file from `archive/` back into `inbox/`**: it keeps its calculated name, so the next run overwrites the stalled copy. The same name is used in `archive/`, `output/` and `epiaku-docs`, so two documents called `New chat.md` never overwrite each other. A run never reads `output/`. Each folder has `notes/` and `clippings/`, and a file keeps its inbox name. See [the layout](../idea-catcher-pipeline/#repo-layout). |
+| Folders             | **Five top-level folders, one rule:** a run **only looks at `inbox/`** for work. When work on a document starts, it leaves `inbox/`: it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`, at most 128 characters), the original goes to `archive/` (unchanged except for two added frontmatter lines, `original_filename` and `calculated_filename`) and a working copy to `output/` (with a `stage` in its frontmatter), so a document is never started twice. `output/` then holds the final page. `failed/` holds permanent failures (with an `.error.txt`) and `duplicates/` earlier snapshots of a longer clip. A temporary error stalls the working copy in `output/` (`stage: deferred`, with the reason). **To retry, use `--retry-deferred` (all stalled documents) or `--requeue NAME` (one), or move the file from `archive/` back into `inbox/` by hand**: it keeps its calculated name, so the next run overwrites the stalled copy. The same name is used in `archive/`, `output/` and `epiaku-docs`, so two documents called `New chat.md` never overwrite each other. A run never reads `output/`. Each folder has `notes/` and `clippings/`, and a file keeps its inbox name. See [the layout](../idea-catcher-pipeline/#repo-layout). |
 | Failures            | **No fallback between providers.** A failed LLM job is logged and **retried on the next run** (after `retry_delay`). After **3 failed days** the note is flagged **stuck** in the log and metrics, and keeps retrying. |
 | Same video twice    | A video clipped directly **and** summarized in Gemini keeps **both** pages (IDs `<video-id>` and `<video-id>-gemini`), so they can be compared. The two pages do **not** link to each other: the cross-link was built and then removed because nobody needed it. The direct page is the default, the Gemini page the fallback and a second opinion ([comparison](../idea-catcher-youtube-methods-comparison/)).                                           |
 | One call per class  | Every class (including both YouTube classes) makes exactly **one** LLM call, on its own prompt file. No separate review step and no second call for any class. |
@@ -192,9 +192,9 @@ The `llm` block is optional. It is passed down to the `llm.reason` job the run c
 ```
 
 - **Enqueue:** insert a row with `status='queued'` and `run_after` (now, or later for a deferred job). The API returns `202 Accepted` + `{ "job_id": … }`.
-- **Claim:** the worker runs `SELECT … WHERE status='queued' AND run_after <= now() ORDER BY priority, run_after FOR UPDATE SKIP LOCKED LIMIT 1`. `SKIP LOCKED` keeps this correct when more workers are added later.
+- **Claim:** the worker runs `SELECT … WHERE status='queued' AND run_after <= now() ORDER BY priority DESC, run_after, created_at FOR UPDATE SKIP LOCKED LIMIT 1`. `SKIP LOCKED` keeps this correct when more workers are added later.
 - **Wake-up:** the API sends `NOTIFY jobs` after inserting, and the worker `LISTEN`s, so an API-triggered run starts within a second. A 30-second poll picks up delayed jobs whose time has come.
-- **One pipeline run at a time.** A second trigger while a `pipeline.run` is queued or running returns the **existing** `job_id`. This is enforced with a partial unique index on `(type) WHERE status IN ('queued','running')`.
+- **One pipeline run at a time.** A second trigger while a `pipeline.run` is queued or running returns the **existing** `job_id`. This is enforced with a partial unique index on `(type) WHERE type = 'pipeline.run' AND status IN ('queued','running')` (only for the run, not for every job type), and an insert uses `ON CONFLICT DO NOTHING` followed by a select, so two simultaneous triggers cannot both win. The Stage A file lock (`pipeline.lock`) stays for the plain CLI. Note that a second request is answered with the existing run, whatever its options: a real run asked for while a dry run is queued must not be silently satisfied by it, so the dedupe key has to include the run's parameters (decide in B2).
 - **Heartbeat:** a running job updates `heartbeat_at` every ~15 s. On start, the worker resets jobs with an old heartbeat (it crashed mid-job) to `queued`. Every step is idempotent (overwrite by ID), so re-running is safe.
 - **Progress:** handlers write `job_events` (level, message) and update `progress_done/total`. Clients **poll** `GET /jobs/{id}`. A live stream is a [future feature](#f-frontend).
 
@@ -203,28 +203,24 @@ The `llm` block is optional. It is passed down to the `llm.reason` job the run c
 All reasoning goes through **one function** and **one job type**. A module never calls an LLM client directly.
 
 ```python
-# catcher/modules/llm/service.py
-class LlmOptions(BaseModel):
-    profile: str | None = None  # a named profile from profiles.yaml: "notes", "clippings", "youtube"
-    backend: Literal["freellmapi", "openai", "fake"] | None = None
-    model: str | None = None  # e.g. an OpenAI model id, or a FreeLLMApi model id
-
-
+# catcher/modules/llm/service.py (Stage A, as built: synchronous)
 class LlmRequest(BaseModel):
     task: str  # prompt template: "note", "ai-chat", "youtube-summary"
-    prompt_version: str  # stored with the result, so replays are traceable
     input: dict  # template variables (note body, transcript, facts, …)
     schema_name: str  # Pydantic output model, e.g. "NoteSummary"
-    llm: LlmOptions
+    profile: str  # a named profile from profiles.yaml: "notes", "clippings", "youtube"
 
 
-async def reason(req: LlmRequest) -> LlmResult:
-    """Build the prompt, call the backend, validate the JSON, return the result + usage."""
+def reason(req: LlmRequest, *, profiles: ProfilesConfig, backends: BackendFactory) -> LlmResult:
+    """Build the prompt, call the backend, validate the JSON, return the result + usage.
+    LlmResult carries the prompt version, backend, model, usage and attempts."""
 ```
+
+`reason()` is **synchronous** (the backend, `yt-dlp` and Git are blocking too), so the Stage B worker is synchronous as well, with a thread for the heartbeat and one for the scheduler. A per-request `backend` or `model` override does not exist: the profile decides both.
 
 The same function handles notes, AI chats and YouTube clips now, and the YouTube endpoint, web clips or anything else later. A new task means a new prompt template and a new output schema, not new LLM code.
 
-**Where the options come from** (the first one that sets a field wins):
+**Where the profile comes from** (the first one that sets it wins):
 
 1. The `llm` block in the **job message** (for example `POST /pipeline/runs {"llm": {"profile": "notes"}}`).
 2. The **default profile of the document class** (`doctypes.py`).
@@ -259,12 +255,13 @@ profiles:
 | What happens                                            | What the worker does                                                                                                                         |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Invalid JSON or schema error                            | Retry **once, immediately**, on the **same** profile, with the validation error added to the prompt. If it fails again, treat it as a failure (below). |
-| Timeout, connection error, server error, context too long | Log a **warning** event with the reason. The job becomes `deferred` with `run_after = now + retry_delay`.                                   |
+| Timeout, connection error, server error (after the in-call retries) | Log a **warning** event with the reason. The job becomes `deferred` with `run_after = now + retry_delay`.                                   |
+| **The document itself is the problem:** empty, longer than `LLM_MAX_INPUT_CHARS`, or a model that answers "context length exceeded" | **Failed for good** without a retry (`InputRejected`): it moves to `failed/` with an `.error.txt`. A retry would fail the same way and cost the same. |
 | Rate limit (`429`, `rate_limit_exceeded`)               | Temporary. `deferred` with `run_after = now + retry_delay`. The worker **stops claiming other jobs of the same backend** until then (they would hit the limit too); other backends carry on. |
 | **Budget reached** (`insufficient_quota`, billing or spend limit) | The API key's budget is used up, so the backend cannot answer **until the budget is raised or renewed**. The job is `deferred` with `run_after = now + budget_retry_delay` (default 6 hours, so we notice a raised budget the same day without hammering the API). The backend is **blocked for the rest of the run**, and the log gets **one `ERROR` per backend** with the number of waiting notes: `openai budget reached: 4 note(s) waiting; raise the key's budget or point the profile at another provider`. Nothing is lost: the notes stay in `output/` and go through as soon as calls work again. |
 | Failing on **3 days** (`stuck_after_days`)              | The note's item is flagged **`stuck`**, with a warning event. It **keeps retrying**. `GET /items?status=stuck` lists these notes, so you can pick another profile with `catcher items requeue <doc_id> --profile …`. |
 
-The working copy stays in `output/` (`stage: deferred`, with the reason) and the untouched original is in `archive/`, so nothing is lost. In Stage A you retry with `catcher run pipeline --requeue NAME`, which moves the original from `archive/` back into `inbox/` (clearing the stale `output/` copy) and runs it again (or by moving the file back by hand).
+The working copy stays in `output/` (`stage: deferred`, with the reason) and the untouched original is in `archive/`, so nothing is lost. In Stage A you retry everything a temporary error stalled with `catcher run pipeline --retry-deferred`, or one document with `--requeue NAME`, which moves the original from `archive/` back into `inbox/` (clearing the stale `output/` copy) and runs it again (or by moving the file back by hand).
 
 **MVP backends:**
 
@@ -299,9 +296,11 @@ This replaces an earlier design where `youtube` got a second, separate "reviewer
 | `youtube`        | A YouTube link clipped in Obsidian                                                                      | Ingest fetches the facts + transcript → `llm.reason` (`youtube.md`) writes the summary → publish                                                                                                  |
 | `youtube-gemini` | A **Gemini web chat** that ran the YouTube summary prompt, clipped in Obsidian (`source` is gemini.google.com and the **first user message contains a YouTube URL**, or an explicit `type: youtube-gemini`) | Ingest parses the video ID straight out of the YouTube URL in Gemini's own chat text (no network call) → `llm.reason` (`youtube-gemini.md`) reformats Gemini's final answer into the page format → publish. No YouTube API call anywhere in this path. |
 
-Both classes write to `idea-bucket/youtube/`, and **both pages are kept** when the same video arrives both ways. The page ID is the video ID for `youtube` and `<video-id>-gemini` for `youtube-gemini`. This rarely happens, and when it does the two summaries can be compared side by side. Each page links to the other when both exist.
+Both classes write to `idea-bucket/youtube/`, and **both pages are kept** when the same video arrives both ways. The page ID is the video ID for `youtube` and `<video-id>-gemini` for `youtube-gemini`. This rarely happens, and when it does the two summaries can be compared side by side.
 
 ### 🔄 Processing Flow {#mvp-flow}
+
+**This is the Stage B target design.** Stage A does the same work in one process, one note after the other: the scan is read-only; the YouTube facts are fetched **inside** the note's processing, after its work has started (the only check before is a read-only look at the gate, so a clip that must wait stays in `inbox/`); and the page is rendered, validated and written as soon as the LLM answers. `pipeline.publish` in Stage A is the commit and push at the end of the run. In Stage B the parts below become separate jobs.
 
 A run is up to three kinds of jobs: one `pipeline.run`, one `llm.reason` per note (exactly one LLM call per document, whatever its class), and a `pipeline.publish` that collects all notes whose result is ready.
 
@@ -351,7 +350,7 @@ A run is up to three kinds of jobs: one `pipeline.run`, one `llm.reason` per not
 ```
 
 - **Overwrite by ID:** delete any existing page in the target folder whose frontmatter `id` matches, then write the page under its **calculated file name** `YYYYMMDD-<short guid>-<title>.md`, the same name as in `archive/` and `output/`.
-- **One Git writer:** only the worker touches the repos, and it runs one job at a time. The phone may still push to idea-bucket during a run, so use `pull --rebase` before pushing and retry once.
+- **One Git writer:** only the worker touches the repos, and it runs one job at a time. In Stage A a machine-wide lock file (`pipeline.lock` in `CATCHER_STATE_DIR`) keeps a second `catcher run pipeline` from starting; a dry run does not need it. The phone may still push to idea-bucket during a run, so use `pull --rebase` before pushing and retry once.
 - **Per-note errors don't fail the run.** A bad note is marked `failed` (moved to `failed/`) or `deferred` (stalls in `output/` with `stage: deferred`), and the other notes go on.
 - **Python validation instead of a Hugo build:** the rendered page must parse as YAML frontmatter + markdown, contain `title`, `description`, `weight` and `type: docs`, only use tags from the allowed list, and only use known shortcodes (`youtube-lite`).
 - **Unknown tags** from the LLM are dropped from the page and logged as a `tag_suggestion` event.
@@ -526,7 +525,7 @@ docker compose --env-file .env.local up --build
 
 Swagger UI is at `http://localhost:8000/docs`.
 
-**Quick iteration without Docker or a database** (the [stage A](#mvp-stage-a) way of working, which keeps working later): `--no-db` calls the pipeline functions directly instead of going through the queue.
+**Quick iteration without Docker or a database** (the [stage A](#mvp-stage-a) way of working, which keeps working later): `--no-db` (**planned for Stage B**, today the CLI is the only mode) calls the pipeline functions directly instead of going through the queue.
 
 ```bash
 uv run catcher run pipeline --dry-run --no-db --llm-profile fake --ideas ../idea-bucket --docs ../epiaku-docs
@@ -667,7 +666,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 **Done when:** a real run turns every doc class in the inbox into correct pages on GitHub, and we are happy with the prompts, templates and code structure. Nothing is stored about a document's state in this stage (no Postgres): the folder a file is in, its `stage` and the Python log show what happened, and a deferred document stalls in `output/`. Retry, deferral and metrics come in stage B.
 
-**Status: done (2026-10-01).** Stage A ran for five days (2026-09-27 to 2026-10-01): about 50 commits, about 3,500 lines of Python, 391 tests, five document classes. The full story, with what changed from this plan and the lessons, is in [Stage A: what we built and what we learned](../idea-catcher-stage-a-lessons-learned/). In short, compared with the steps above:
+**Status: done (2026-10-01).** Stage A ran for five days (2026-09-27 to 2026-10-01): about 50 commits, about 3,500 lines of Python, 435 tests (after the review fixes of 2026-10-02), five document classes. The full story, with what changed from this plan and the lessons, is in [Stage A: what we built and what we learned](../idea-catcher-stage-a-lessons-learned/). In short, compared with the steps above:
 
 - **Changed:** the `staging/` folder became the inbox-only flow with calculated names; the `claude -p` subscription backend became API-key profiles; the separate YouTube reviewer became free Python checks; `youtube-gemini` stopped checking against YouTube.
 - **Added (not in the plan):** the `web-clip` class, artifacts (PDFs and images), `--requeue`, in-call retries, a glossary and Dutch translation, the original language, chapters, links, the upload date, a business context, clear errors for wrong paths, a version string, YouTube protections against an IP ban (saved facts per video, one paced extraction, a gap between fetches, a breaker), and a committed test data set with `testdata reset`.
@@ -678,6 +677,23 @@ To make that possible, the core logic lives in **plain functions with no knowled
 **Goal:** the same work, now driven by jobs in a Postgres queue, with deferral, retries, schedules and the state of every document in the database. Still local, without an API.
 
 *Updated 2026-10-01 after Stage A.* The steps below include what we decided since the first plan: our **own** Postgres queue (see [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/)), the YouTube gate moving into the database, separate schedules for pulling and publishing, and a low-priority backfill. Steps **B0, B4, B6 and B8 are new**.
+
+**Stage B decisions (2026-10-02, after a design review against the Stage A code).** These change what the steps below mean; where a step text disagrees, this list wins.
+
+1. **A YouTube clip that has to wait is staged, not left in `inbox/`.** It gets a database row when it is first seen (state `waiting_youtube`, working copy in `output/` with the same `stage`), so it shows up in dashboards and survives a crash. The queue picks the oldest first (`created_at`); a clip pushed to a later `run_after` does not block the others.
+2. **The worker and the queue code are synchronous** (`reason()`, `yt-dlp` and Git block anyway), with one thread for the heartbeat and one for the scheduler.
+3. **Retries start simple.** The in-call retries stay as they are (`LLM_MAX_ATTEMPTS`). After them an item is `deferred` or `failed` (as in Stage A). There is **no job-level `max_attempts`/`dead`/`retry_delay` layer for LLM errors** at first; we add one only if this proves too little. A closed YouTube gate, a block or a used-up budget wait through `run_after` and do not count as a failure. A **scheduled** run re-queues the deferred items itself (what `--retry-deferred` does by hand). The only attempt counter is for **crashes**: a job whose lease expires counts one attempt and becomes `failed` after 3.
+4. **An item is identified by its calculated name** (`<subfolder>/<name>.md`), which is unique. Two captures with one `id` are two items. If both finish, two nearly identical pages may come out (rare, accepted); the page in `epiaku-docs` is still replaced by `id`.
+5. **Order of writes: the database row first, then the file move.** The item row (with its calculated name) and its job are committed **before** `start_work` moves anything. After a crash the worker adopts items that have a row but no job result, and `catcher reconcile` rebuilds from the folders and the Git history.
+6. **Git:** the commit set is "everything in the managed folders" (`archive/ output/ failed/ duplicates/ facts/`, plus inbox deletions), not a list of touched paths. Push right after each commit; abort a failed rebase and report it. A `git` resource with concurrency 1. A requeue goes through the tool, not by hand. Once a worker exists, the CLI refuses to run against the live remote.
+7. **Schedules:** cron strings in `.env`, an explicit timezone, one scheduler, and a small table with `last_fired_at` so a missed slot runs once.
+8. **Time:** every queue and gate query takes `now` from Python (never SQL `now()`), so tests can freeze it.
+9. **One generic `resource` table** (YouTube, `openai`, `freellmapi`, `git`): `name`, `next_allowed_at`, `blocked_until`, `blocked_at`, `streak`, `concurrency`. A used-up budget is remembered between runs. A missing or damaged row means **closed**, like the Stage A gate file.
+10. **Reconcile and the mirror:** Postgres is the truth for processing state. `catcher reconcile` rebuilds item state, name and class from the folders and the frontmatter; it cannot rebuild attempts, tokens, events or the gate (which restarts closed). The frontmatter mirror uses **`stage`, `stage_reason`, `stage_since`**; reconcile also reads the Stage A names (`analyzed_at`, `deferred_at`, `deferred_reason`).
+11. **Our own queue first.** Procrastinate only if the queue core passes about 300 lines or shows concurrency bugs; switching later changes the tables, and that is accepted.
+12. **Dry runs never go through the queue**; the CLI runs them inline. So the "one run at a time" dedupe only ever sees real runs. The dedupe key is part of the job row (`dedupe_key`), not tied to a job type.
+13. **Job status** is `queued`, `running`, `succeeded`, `failed`, `cancelled` (text with check constraints). Deferral is `queued` with a future `run_after` and a reason; the word *deferred* belongs to the item. A higher `priority` number goes first.
+14. **Database stack:** sync SQLAlchemy 2 with psycopg 3, and Alembic. Tests run against a real Postgres 17 in Docker (never a mock of the queue).
 
 | Step | What we build | How we test it |
 | ---- | ------------- | -------------- |
@@ -927,8 +943,8 @@ The database is used for the **job queue** and **logging/metrics** now, and prob
 1. **Pages go live only when you deploy.** The service pushes to `epiaku-docs` `main`, but the site changes only when you run `deploy.sh`. Your local checkout also has to `git pull` first, or the next manual deploy overwrites the new pages with an older checkout.
 2. **No Hugo build check in the MVP.** A page that passes the Python validation could still break the Hugo build (for example a bad shortcode inside the LLM's body text). You would see it in your manual build. Fix it by re-running the note, or with a revert.
 3. **Git races.** Obsidian pushes to `idea-bucket` at any time, and you push to `epiaku-docs` from the Mac. Mitigated by one Git writer, `pull --rebase` + one retry, and pages that only the pipeline writes.
-4. **Waiting jobs vs. edited notes.** A document can wait in `output/` for hours. If you edit or re-clip it in Obsidian meanwhile, a new copy lands in `inbox/`. With the same file name, the next run overwrites the `archive/` copy and the working copy in `output/`, and **updates** the queued LLM job's input instead of adding a second one. With a different file name but the same `id`, a clip that is an earlier snapshot of a longer one (same messages, cut off at the end) is archived and moved to `duplicates/` (with `duplicate_of` in the frontmatter) and gets **no LLM job**; a clip whose content differs is processed on its own, and the later page overwrites the earlier one by `id`.
-5. **Free models on long inputs.** Without map-reduce (F7), FreeLLMApi will fail on long texts. The MVP routes AI chats and YouTube to the `openai` profiles (1M context) for that reason. A note that is unexpectedly long will simply defer, and then become stuck.
+4. **Waiting jobs vs. edited notes.** A document can wait in `output/` for hours. If you edit or re-clip it in Obsidian meanwhile, a new copy lands in `inbox/`. Every inbox file gets its **own** calculated name (the short guid makes it unique), so a re-clip is a **new document**: it does not overwrite the `archive/` or `output/` copy of the old one. Only the page in `epiaku-docs` is replaced, by `id`. A clip that is an earlier snapshot of a longer one (same messages, cut off at the end) is archived and moved to `duplicates/` (with `duplicate_of` in the frontmatter) and gets **no LLM call**; a clip whose content differs is processed on its own, the later page overwrites the earlier one by `id`, and the run warns "same id as an earlier document". In Stage B two almost identical documents can come out when this happens. That is accepted, because it is rare. It is worth a rule (the newer capture supersedes the older open item) only if it shows up often.
+5. **Free models on long inputs.** Without map-reduce (F7), FreeLLMApi will fail on long texts. The MVP routes AI chats and YouTube to the `openai` profiles (1M context) for that reason. A note that is unexpectedly long fails without an LLM call (`LLM_MAX_INPUT_CHARS`, default 400,000 characters) and lands in `failed/` with the reason, instead of deferring forever.
 6. **API budget.** The keys for the `clippings` and `youtube` profiles have a **budget cap**, so the service can reach it and then cannot call the LLM at all. It is treated as its own condition (not a rate limit): the backend is blocked for the run, one `ERROR` says how many notes are waiting, the documents stall in `output/` (`stage: deferred`), and they are retried every `budget_retry_delay` from Stage B (until then you move them back into `inbox/`). Because there is **no automatic fallback** to another provider, only two things fix it: raise or renew the key's budget, or point the profile at another provider in `profiles.yaml` (or run with `--profile`). Notes on the other providers are unaffected. In the MVP you notice it through the log and `GET /items?status=deferred`; **F: a budget guard** (see [F3](#f-llm)) adds a soft limit that warns at 80% and a notification, so it does not come as a surprise. Watch `tokens_in` and `tokens_out` in the metrics meanwhile.
 7. **Stuck is only visible if you look.** In the MVP, stuck notes show up in the log and in `GET /items?status=stuck`. The dashboard (F1/F4) and notifications (F7) make this visible.
 8. **Docker in an LXC** can break on Proxmox upgrades. Snapshot before upgrading.

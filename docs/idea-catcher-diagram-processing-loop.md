@@ -16,8 +16,10 @@ This is `catcher run pipeline`, from start to the summary line.
 flowchart TB
   start(["catcher run pipeline"]) --> pre{"idea-bucket inbox and<br/>epiaku-docs exist?"}
   pre -->|"no"| stopcfg["log an error, exit code 2<br/>nothing is touched"]
-  pre -->|"yes"| pull["with --push only:<br/>git pull both repos"]
-  pull --> req{"--requeue?"}
+  pre -->|"yes"| lock{"another run in progress?<br/>(a dry run needs no lock)"}
+  lock -->|"yes"| stoplock["report a problem, exit code 2<br/>nothing is touched"]
+  lock -->|"no"| pull["with --push only:<br/>git pull both repos<br/>a failed pull is reported, nothing changed"]
+  pull --> req{"--requeue or<br/>--retry-deferred?"}
   req -->|"yes"| rq["move the archived original back to inbox/<br/>clear the stale copy in output/ and failed/"]
   req -->|"no"| scan
   rq --> scan["scan inbox/<br/>parse every file: class, id, source"]
@@ -37,11 +39,15 @@ flowchart TB
   startwork --> proc["process the document<br/>see diagrams 2 to 5"]
   proc --> outcome{"outcome"}
   outcome -->|"a valid page"| publ["write the page to epiaku-docs<br/>write the final page to output/"]
+  outcome -->|"YouTube closed after the<br/>check (gap or breaker)"| back["waiting: back in inbox/<br/>under the same name"]
+  outcome -->|"Ctrl-C or kill"| intr["interrupted: back in inbox/,<br/>commit what is done, stop"]
   outcome -->|"a temporary problem"| def["deferred: the working copy<br/>says why and stays in output/"]
-  outcome -->|"a permanent problem"| fail["failed/ with an .error.txt"]
+  outcome -->|"a permanent problem:<br/>invalid output, empty or too long"| fail["failed/ with an .error.txt"]
   publ --> next
+  back --> next
   def --> next
   fail --> next
+  intr --> arts
   arts --> commit["commit only the files the run touched:<br/>epiaku-docs, then idea-bucket"]
   commit --> pushq{"--push?"}
   pushq -->|"yes"| push["git push both repos"]
@@ -50,7 +56,7 @@ flowchart TB
 ```
 
 - **One broken document never stops the run.** Every document is handled on its own, and an unexpected error becomes `failed` for that document only.
-- **`--dry-run`** goes through the same steps, but writes no file and makes no commit. It still calls the LLM (and YouTube) if the profile is a real one, so use `--profile fake` for a free check.
+- **`--dry-run`** goes through the same steps, but writes no file and makes no commit. It still calls the LLM if the profile is a real one, so use `--profile fake` for a free check. It **never calls YouTube** and does not use up the gap: a clip without saved facts shows `would_fetch`. A dry run takes no run lock.
 - The commit is **one commit per repo at the end of the run**, with only the files the run touched.
 
 ## 2. One document: parse, analyse, summarize, check, write
@@ -103,7 +109,9 @@ flowchart TB
   f1 -->|"yes: it has a transcript,<br/>or is less than a day old"| fok["use the saved facts<br/>no call to YouTube"]
   f1 -->|"no"| f2{"YOUTUBE_OFFLINE is on?"}
   f2 -->|"yes"| foff["not available: deferred"]
-  f2 -->|"no"| f3{"is the breaker open?"}
+  f2 -->|"no"| fdry{"a dry run?"}
+  fdry -->|"yes"| fwf["would_fetch: no call,<br/>the gap is not used"]
+  fdry -->|"no"| f3{"is the breaker open?"}
   f3 -->|"yes"| fblk["wait until it ends<br/>no call is made"]
   f3 -->|"no"| f4{"has the gap passed<br/>since the last fetch?"}
   f4 -->|"no"| fgap["wait, or sleep through it<br/>with --wait-youtube"]
@@ -111,8 +119,8 @@ flowchart TB
   f5 --> f6["one yt-dlp extraction:<br/>watch page, player data, caption file<br/>10 seconds between the requests"]
   f6 --> f7{"what did YouTube answer?"}
   f7 -->|"the facts"| f8["close the breaker<br/>save facts/video id.json"]
-  f7 -->|"429 or a bot check"| f9["open the breaker: 6 hours,<br/>then 12, then 24<br/>defer the document"]
-  f7 -->|"another error"| f10["deferred: facts not available<br/>the breaker stays closed"]
+  f7 -->|"429 or a bot check"| f9["open the breaker: 6 hours,<br/>then 12, then 24<br/>the clip goes back to inbox/ as waiting"]
+  f7 -->|"another error"| f10["deferred: facts not available<br/>the breaker stays closed<br/>a private or removed video is<br/>remembered for a day"]
 ```
 
 ## 4. The LLM call: retries and limits
@@ -196,8 +204,11 @@ sequenceDiagram
 | --- | --- | --- | --- |
 | A valid page was written | `published` | A page in `epiaku-docs`, the final page in `output/`, the original in `archive/` | Nothing |
 | A YouTube clip must wait for the gap or the breaker | `waiting` | Still in `inbox/`, untouched | Run again later |
-| The LLM or its budget is unavailable, or YouTube gave no facts | `deferred` | `output/`, `stage: deferred` and the reason | `--requeue` it later |
-| The LLM output was invalid twice, the page is invalid, or an unexpected error | `failed` | `failed/` with an `.error.txt` | Read the error, fix the cause, `--requeue` |
+| The gap closed after the check (another run used it), or YouTube answered with a block | `waiting` | Back in `inbox/` under the same name | Run again later |
+| Ctrl-C or `kill` during a document | `interrupted` | Back in `inbox/` under the same name. What was done is committed. The run exits with code 2 | Run again |
+| The LLM or its budget is unavailable, or YouTube gave no facts | `deferred` | `output/`, `stage: deferred` and the reason | `--retry-deferred` (all) or `--requeue NAME` (one) |
+| The LLM output was invalid twice, the page is invalid, the document is empty or longer than `LLM_MAX_INPUT_CHARS`, or an unexpected error | `failed` | `failed/` with an `.error.txt` | Read the error, fix the cause, `--requeue` |
+| A dry run found a YouTube clip without saved facts | `would_fetch` | Nothing was written, YouTube was not called | Run without `--dry-run` |
 | A shorter clip of the same conversation | `duplicate` | `duplicates/` | Nothing |
 | It was a dry run | `would_publish` | Nothing was written | Run without `--dry-run` |
 
@@ -205,12 +216,15 @@ sequenceDiagram
 
 | Protection | Where | What it does |
 | --- | --- | --- |
-| **The YouTube gap** | Before every fetch | At least 2 minutes (plus up to 5 minutes of jitter) between two fetches, so the calls are spread out. A clip that must wait stays in `inbox/` |
+| **The YouTube gap** | Before every fetch | At least 2 minutes (plus up to 5 minutes of jitter) between two fetches, so the calls are spread out. A clip that must wait stays in `inbox/`, or goes back there when the gap closed after its check |
 | **The YouTube breaker** | After a 429 or a bot check | No call to YouTube for 6 hours, then 12, then 24. A fetch that works closes it. Retrying during a block would only make it longer |
 | **Saved facts** | Before every fetch | A video is fetched once, ever. A retry, a requeue or a rerun reads `facts/<id>.json` |
 | **The offline switch** | `YOUTUBE_OFFLINE=1` | Never call YouTube (development and tests) |
 | **LLM retries** | Inside the backend | A 5xx, a timeout or a dropped connection is retried up to 5 calls, with 2, 4, 8 and 16 seconds between them. One more call if the JSON is invalid |
 | **The usage-limit block** | During a run | A used-up budget, a 429 or a bad key blocks that backend for the rest of the run. The other documents that need it are deferred at once, without a call |
+| **The run lock** | Start of a real run | Only one `catcher run pipeline` at a time on a machine (`pipeline.lock`). A second one is refused. A dry run needs no lock |
+| **A damaged gate file** | The YouTube gate | The file is kept as `youtube-gate.corrupt` and the gate closes for the block hours, because losing an active block is the expensive mistake |
+| **Empty or too long** | Before the LLM call | A document that is empty or longer than `LLM_MAX_INPUT_CHARS` fails without a call |
 | **One broken document** | The loop | An unexpected error fails that one document only |
 | **`--limit N`** | The loop | At most N documents are started. The rest stay in the inbox |
 | **`--dry-run`** | The whole run | No file is written and nothing is committed |
