@@ -1,7 +1,8 @@
-"""The job queue: put work on it, and (in later steps) claim, finish and reap it."""
+"""The job queue: put work on it, claim it, and (in later steps) finish and reap it."""
 
 import uuid
-from datetime import datetime
+from collections.abc import Sequence
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, text
@@ -69,3 +70,39 @@ def enqueue(
             return existing, False
         # The active job finished between the insert and the select: the key is free, insert again.
     raise RuntimeError(f"could not enqueue or find an active job for dedupe key {dedupe_key!r}")
+
+
+def claim(
+    session: Session,
+    *,
+    worker: str,
+    now: datetime,
+    lease_s: float,
+    types: Sequence[str] | None = None,
+) -> Job | None:
+    """Take the most urgent due job and mark it running for `worker`, or return None.
+
+    Order: priority (high first), then run_after, then created_at. Rows other workers have locked
+    are skipped, not waited for. The row stays locked until the caller commits, so commit promptly.
+    `(locked_by, attempts)` on the returned job is the attempt token for fencing later writes."""
+    require_aware(now)
+    statement = select(Job).where(Job.status == "queued", Job.run_after <= now)
+    if types is not None:
+        statement = statement.where(Job.type.in_(types))
+    statement = (
+        statement.order_by(Job.priority.desc(), Job.run_after, Job.created_at)
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    job = session.scalars(statement, execution_options={"populate_existing": True}).one_or_none()
+    if job is None:
+        return None
+    job.status = "running"
+    job.locked_by = worker
+    job.attempts += 1
+    if job.started_at is None:
+        job.started_at = now
+    job.heartbeat_at = now
+    job.lease_until = now + timedelta(seconds=lease_s)
+    session.flush()
+    return job
