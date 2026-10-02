@@ -79,7 +79,7 @@ If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ER
 - `LLM_RETRY_WAIT_S` (default `2`): seconds to wait before the second attempt. The wait doubles before each one after it (2, 4, 8, 16 s with the defaults). Each failed call can itself take up to a minute, so five failures in a row take around five minutes.
 - **YouTube** (to avoid an IP ban; see [YouTube and the gap between calls](../idea-catcher-how-to-run/#youtube-gap)):
   - `YOUTUBE_REQUEST_DELAY_S` (default `10`): seconds between the requests inside one fetch (yt-dlp `sleep_interval_requests`).
-  - `YOUTUBE_MIN_GAP_S` (default `600`): minimum seconds between the start of two fetches. `YOUTUBE_GAP_JITTER_S` (default `300`) adds up to that many random seconds.
+  - `YOUTUBE_MIN_GAP_S` (default `120`, 2 minutes): minimum seconds between the start of two fetches. `YOUTUBE_GAP_JITTER_S` (default `300`) adds up to that many random seconds, so the real gap is 2 to 7 minutes. It started at 10 minutes in the design and was lowered on 2026-10-02 to start low and watch for a block; raise it if YouTube blocks the IP.
   - `YOUTUBE_BLOCK_HOURS` (default `6`): no calls for this long after a block. It doubles each time, up to 24 hours.
   - `YOUTUBE_OFFLINE` (default off): `1` means never call YouTube; saved facts still work.
   - `YOUTUBE_SKIP_MANIFESTS` (default off): skip yt-dlp's request for the video formats, which we never use. **Untested live:** try one `youtube facts` by hand before turning it on.

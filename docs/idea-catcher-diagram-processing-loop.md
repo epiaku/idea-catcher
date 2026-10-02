@@ -107,7 +107,7 @@ flowchart TB
   f3 -->|"yes"| fblk["wait until it ends<br/>no call is made"]
   f3 -->|"no"| f4{"has the gap passed<br/>since the last fetch?"}
   f4 -->|"no"| fgap["wait, or sleep through it<br/>with --wait-youtube"]
-  f4 -->|"yes"| f5["take the slot: the next fetch<br/>is allowed in 10 minutes plus jitter"]
+  f4 -->|"yes"| f5["take the slot: the next fetch<br/>is allowed in 2 minutes plus jitter"]
   f5 --> f6["one yt-dlp extraction:<br/>watch page, player data, caption file<br/>10 seconds between the requests"]
   f6 --> f7{"what did YouTube answer?"}
   f7 -->|"the facts"| f8["close the breaker<br/>save facts/video id.json"]
@@ -205,7 +205,7 @@ sequenceDiagram
 
 | Protection | Where | What it does |
 | --- | --- | --- |
-| **The YouTube gap** | Before every fetch | At least 10 minutes (plus jitter) between two fetches, so the calls are spread out. A clip that must wait stays in `inbox/` |
+| **The YouTube gap** | Before every fetch | At least 2 minutes (plus up to 5 minutes of jitter) between two fetches, so the calls are spread out. A clip that must wait stays in `inbox/` |
 | **The YouTube breaker** | After a 429 or a bot check | No call to YouTube for 6 hours, then 12, then 24. A fetch that works closes it. Retrying during a block would only make it longer |
 | **Saved facts** | Before every fetch | A video is fetched once, ever. A retry, a requeue or a rerun reads `facts/<id>.json` |
 | **The offline switch** | `YOUTUBE_OFFLINE=1` | Never call YouTube (development and tests) |

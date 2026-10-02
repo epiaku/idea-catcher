@@ -211,9 +211,10 @@ YouTube blocks an IP address that asks too fast, and retrying during a block mak
 
 - **Saved facts.** The facts of a video (title, description, chapters, transcript, counts) are saved once in `facts/<video id>.json` in `idea-bucket` and committed with everything else. A retry, a requeue or a rerun reads that file and **never calls YouTube again**. `--refresh-facts` fetches again. A video without captions is asked again only after a day.
 - **One fetch, paced.** One yt-dlp extraction gets the info and the captions: about 3 requests, `YOUTUBE_REQUEST_DELAY_S` (10 s) apart.
-- **A gap between fetches.** At least `YOUTUBE_MIN_GAP_S` (10 minutes) plus up to `YOUTUBE_GAP_JITTER_S` of random time between the start of two fetches. The state is a small file on this machine (`~/.catcher/state/youtube-gate.json`), shared by every run.
+- **A gap between fetches.** At least `YOUTUBE_MIN_GAP_S` (2 minutes) plus up to `YOUTUBE_GAP_JITTER_S` (5 minutes) of random time between the start of two fetches. The state is a small file on this machine (`~/.catcher/state/youtube-gate.json`), shared by every run.
 - **A clip that must wait stays in `inbox/`** with the status `waiting` and a message. It is not an error, and there is nothing to requeue: the next run takes it. With `--wait-youtube` the run sleeps instead (up to `YOUTUBE_WAIT_MAX_S`, 30 minutes).
 - **The breaker.** After a 429 or a bot check, no call is made for `YOUTUBE_BLOCK_HOURS` (6), then 12, then 24 hours. A fetch that works closes it.
+- **How to see whether YouTube is blocking you.** When the breaker opens, the log has an ERROR line: `YouTube is blocking us (block 1): no calls for 6 hours, until <time>`. Every clip that is waiting then says `YouTube blocked until <time>`. The state is in `~/.catcher/state/youtube-gate.json`: `blocked_until` is the end of the block, and `streak` counts the blocks in a row (0 means none). If it happens, raise `YOUTUBE_MIN_GAP_S` (for example back to `600`) before the block ends.
 - **`YOUTUBE_OFFLINE=1`** never calls YouTube (saved facts still work). Tests and development use it or saved fixtures.
 
 All settings are in `.env`; see the [configuration page](../idea-catcher-configuration/).
@@ -511,7 +512,7 @@ uv run catcher run pipeline --file "<the-file>"
 - **Many notes `deferred` with `OPENAI_API_KEY is not set`:** add the key to `.env`.
 - **`deferred` with `openai budget reached`:** the key's budget is used up. Raise it, or point the profile at another provider in `profiles.yaml`. The working copies stall in `output/`; move the files from `archive/` back into `inbox/` once the budget is back.
 - **`profile problem: unknown LLM profile`:** use `notes`, `clippings`, `youtube` or `fake`. Old names like `claude-sub-now` no longer exist.
-- **`waiting` with `YouTube: next call allowed at 14:35`:** normal. Calls to YouTube are spaced at least `YOUTUBE_MIN_GAP_S` (10 minutes) apart. Run again later, or use `--wait-youtube`.
+- **`waiting` with `YouTube: next call allowed at 14:35`:** normal. Calls to YouTube are spaced at least `YOUTUBE_MIN_GAP_S` (2 minutes) apart. Run again later, or use `--wait-youtube`.
 - **`YouTube blocked until 20:10`:** YouTube answered with a 429 or a bot check, so **no call is made until then** (6 hours, then 12, then 24 if it happens again). Retrying earlier only makes a block longer. The clips wait in `inbox/` and are taken when it ends.
 - **`deferred` for a YouTube note with `facts unavailable`:** YouTube did not answer from this network, or the video has no captions. Try again later. You can test one video with `youtube facts`.
 - **`not-found  no document named ...`:** the name matches no file in `inbox/`. Check the spelling, or move the file into `inbox/`.

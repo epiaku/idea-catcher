@@ -11,7 +11,7 @@ def test_the_defaults_are_the_agreed_ones(monkeypatch):
         if name.startswith("YOUTUBE_"):
             monkeypatch.delenv(name)
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    assert settings.youtube_request_delay_s == 10 and settings.youtube_min_gap_s == 600
+    assert settings.youtube_request_delay_s == 10 and settings.youtube_min_gap_s == 120
     assert settings.youtube_gap_jitter_s == 300 and settings.youtube_block_hours == 6
     assert settings.youtube_offline is False and settings.youtube_skip_manifests is False
     assert settings.youtube_wait_max_s == 1800 and settings.youtube_negative_ttl_h == 24

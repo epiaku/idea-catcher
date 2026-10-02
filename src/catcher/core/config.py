@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     transcript_languages: str = "en"
     # How we talk to YouTube. A ban is per IP and about request rate, so we go slowly and stop when told no.
     youtube_request_delay_s: float = 10.0  # seconds between the requests inside one fetch
-    youtube_min_gap_s: float = 600.0  # minimum seconds between the start of two fetches
+    youtube_min_gap_s: float = 120.0  # minimum seconds between the start of two fetches (2 minutes)
     youtube_gap_jitter_s: float = 300.0  # up to this many random extra seconds on the gap
     youtube_block_hours: float = 6.0  # wait after the first block; doubles each time, at most 24 hours
     youtube_offline: bool = False  # never call YouTube, use the saved facts only

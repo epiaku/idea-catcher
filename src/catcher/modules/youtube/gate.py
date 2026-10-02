@@ -81,7 +81,7 @@ class YoutubeGate:
         self,
         state_dir: Path,
         *,
-        min_gap_s: float = 600.0,
+        min_gap_s: float = 120.0,
         jitter_s: float = 300.0,
         block_hours: float = 6.0,
         clock: Callable[[], float] = time.time,

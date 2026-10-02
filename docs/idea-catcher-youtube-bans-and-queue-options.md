@@ -14,7 +14,7 @@ The protections of Step 1 are in the code and tested (no network). How they diff
 | A cache of the facts, the existing facts file | **`facts/<video id>.json`** at the root of `idea-bucket` (one file per video, found by id, committed with the run). It **replaces** the `.youtube.json` that used to sit next to each page. A requeue keeps it |
 | One extraction per video | **One yt-dlp extraction** gets the info and the caption track. `youtube-transcript-api` is **removed** from the code and the dependencies. Skipping the manifest request is the setting `YOUTUBE_SKIP_MANIFESTS`, **off by default**, because it is untested live: try one `catcher youtube facts` by hand before turning it on |
 | Pacing | `YOUTUBE_REQUEST_DELAY_S` (10 s) between requests, also before the caption file, and yt-dlp's own retries lowered to 1 |
-| A minimum time between calls | `YOUTUBE_MIN_GAP_S` (10 minutes) plus up to `YOUTUBE_GAP_JITTER_S` (5 minutes), in a state file on this machine, shared by every run, with a file lock. **No daily cap** |
+| A minimum time between calls | `YOUTUBE_MIN_GAP_S` (**2 minutes**, changed from the 10 minutes of the design on 2026-10-02 to start low and watch for a block) plus up to `YOUTUBE_GAP_JITTER_S` (5 minutes), in a state file on this machine, shared by every run, with a file lock. **No daily cap** |
 | A breaker | A 429, a bot check, `IpBlocked` or `RequestBlocked` opens it for `YOUTUBE_BLOCK_HOURS` (6), then 12, then 24 hours. A working fetch closes it. A block on the caption file is not hidden as "no captions" |
 | A document that must wait is deferred | Better: it is **not touched and stays in `inbox/`** with the status `waiting` (before any work starts), so the next run takes it and there is nothing to requeue. `--wait-youtube` sleeps through a short gap (up to `YOUTUBE_WAIT_MAX_S`) so one run can do a batch. `--refresh-facts` fetches again |
 | A guard against live calls in development | `YOUTUBE_OFFLINE=1` (saved facts still work). `catcher youtube facts` goes through the same gap and breaker |
@@ -153,7 +153,7 @@ resource_state(resource PK, next_allowed_at, blocked_until, streak, day, count_t
 - **A block is not a job failure:** on a 429 set the resource's `blocked_until` and push the job's `run_after` past it, **without** counting an attempt. No call to YouTube meanwhile.
 - **Split the work:** a `youtube.fetch` job (limited resource, idempotent, cached) and a `llm.reason` job (retried freely). An LLM failure then never causes a YouTube call.
 - **Other resources get the same table:** FreeLLMApi (the in-call retry of Stage A stays below this), OpenAI (the budget).
-- **Starting values, to tune:** a gap of about 10 minutes between fetches (plus up to 5 minutes of jitter), 10 s between requests inside a fetch, blocks of 6/12/24 h. No daily cap is needed: the gap already limits the day (see the table in [How the calls are dosed](#dosing)).
+- **Starting values, to tune:** a gap of 2 minutes between fetches (plus up to 5 minutes of jitter; first designed as 10 minutes), 10 s between requests inside a fetch, blocks of 6/12/24 h. No daily cap is needed: the gap already limits the day (see the table in [How the calls are dosed](#dosing)).
 
 ### Step 3: a decision point
 
@@ -173,10 +173,10 @@ Build the queue core as a small module with tests on **real Postgres** and a **f
 
 **One fetch is a short sequence of requests, never in parallel.** To get one video, yt-dlp has to ask YouTube in order (the watch page, the player data, then the caption file), and each step needs the previous one, so they cannot be skipped. The floor is about 3 to 4 requests with a single yt-dlp extraction, and about 6 to 10 today with two tools and a fallback (_estimate_). We do **not** want these back to back. We space them with yt-dlp's `sleep_interval_requests`: **10 seconds by default, set with `YOUTUBE_REQUEST_DELAY_S`** (see [Settings](#settings)). A fetch of 3 requests then takes about 30 seconds. Two limits: the links YouTube returns inside a fetch (the caption URL) expire, which I believe takes hours (not verified), so wait seconds to a minute between the steps of one fetch and not minutes; and **only yt-dlp can be paced**. The transcript library makes its requests back to back with no pacing hook, which is another reason to use yt-dlp for both the info and the captions (option B). The dosing between videos is the quiet time **between** fetches.
 
-| Gap between fetches | At most per day | Good for |
+| Gap between fetches (before jitter) | At most per day | Good for |
 | --- | --- | --- |
-| 5 minutes | about 288 | catching up quickly after a batch |
-| **10 minutes (suggested)** | about 144 | a few clips a day, with room |
+| **2 minutes (the default since 2026-10-02)** | about 720, or about 290 with the default jitter (a real cycle of about 5 minutes) | catching up quickly, and watching whether YouTube blocks us |
+| 10 minutes (the first design) | about 144 | a few clips a day, with room |
 | 30 minutes | about 48 | very careful |
 
 You will rarely get near the limit: with the cache, each video is fetched **once, ever**, so the gap only matters when many new clips arrive together.
@@ -201,7 +201,7 @@ All adjustable in `.env` (read by `Settings`, with these defaults). Nothing is h
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `YOUTUBE_REQUEST_DELAY_S` | `10` | Seconds between the requests inside **one** fetch (yt-dlp `sleep_interval_requests`) |
-| `YOUTUBE_MIN_GAP_S` | `600` | Minimum seconds between the **start** of two fetches (10 minutes) |
+| `YOUTUBE_MIN_GAP_S` | `120` | Minimum seconds between the **start** of two fetches (2 minutes) |
 | `YOUTUBE_GAP_JITTER_S` | `300` | Up to this many random extra seconds are added to the gap, so the timing is not regular |
 | `YOUTUBE_BLOCK_HOURS` | `6` | The wait after the first block. It doubles to 12 and then 24 hours (and stops at 24) |
 | `YOUTUBE_OFFLINE` | `0` | `1` = never call YouTube, use saved facts only. For development and tests |
@@ -257,13 +257,13 @@ The existing behaviour stays for hand runs: `run pipeline` commits at the end, a
 Today there are many YouTube links that were never analysed (in `epiaku-docs` and elsewhere). After that first batch, the number of new videos a day drops. The design handles both with the same machinery:
 
 - **Getting them in:** a one-time import (a command such as `catcher youtube import`, to be designed) finds the YouTube links in the docs, skips the video ids that already have a page, and adds the rest as **low-priority** jobs. New clips keep their normal priority and go first. The backlog uses the quiet time slots.
-- **How long it takes:** a cycle is about the gap (10 minutes), plus an average of 2.5 minutes of jitter, plus about 30 seconds for the fetch, so about 13 minutes. That is **about 110 fetches a day at most** (_estimate_):
+- **How long it takes:** a cycle is about the gap (2 minutes), plus an average of 2.5 minutes of jitter, plus about 30 seconds for the fetch, so about 5 minutes. That is **about 290 fetches a day at most** (_estimate_; with a 10 minute gap it would be about 110):
 
 | Backlog | Days to finish (_estimate_) | LLM cost at the video 1 rate (about $0.024 each) |
 | --- | --- | --- |
-| 100 videos | about 1 day | about $2.4 |
-| 500 videos | about 4.5 days | about $12 |
-| 1,000 videos | about 9 days | about $24 |
+| 100 videos | about 8 hours | about $2.4 |
+| 500 videos | about 1.7 days | about $12 |
+| 1,000 videos | about 3.5 days | about $24 |
 
   Longer videos cost more (the whole transcript goes to the LLM), and the OpenAI key has a **budget cap**, so a big backfill should have a budget or a `--limit` per day. The YouTube gap is the bottleneck, not the LLM.
 - **All the videos of a channel:** this is **riskier than one video**. Listing a channel makes many requests (yt-dlp's own guidance says hundreds of index pages are what trigger a 429). So list it **once**, with yt-dlp's flat playlist mode, **paced**, store the ids in the database, and only then add the videos as low-priority jobs. Try it by hand on a small channel first; I have not measured how many requests a listing needs.
@@ -325,7 +325,7 @@ Both tools can use one: yt-dlp has a `proxy` option, and the transcript library 
 ## Decisions (made 2026-10-01)
 
 1. **Facts cache:** choice **a**. Reuse the facts file (read it back, do not delete it on a requeue), and refetch only when asked (for example `--refresh-facts`).
-2. **Gap between fetches:** **10 minutes** plus jitter. **No daily cap.**
+2. **Gap between fetches:** first **10 minutes** plus jitter; **lowered to 2 minutes on 2026-10-02** to start low and monitor for a block (raise `YOUTUBE_MIN_GAP_S` if one happens). **No daily cap.**
 3. **Request delay inside a fetch:** **10 seconds**, adjustable with `YOUTUBE_REQUEST_DELAY_S`. The other settings are in [Settings](#settings).
 4. **No proxy.** The Data API is not needed now.
 5. **Queue:** our **own** queue on Postgres, with Procrastinate only as the fallback if it gets big or buggy.
