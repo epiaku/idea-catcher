@@ -1,0 +1,9 @@
+default: notes
+retry_delay: 60m                   # used from stage B: a deferred job is tried again after this
+budget_retry_delay: 6h             # used from stage B: same, when the API key's budget is used up
+stuck_after_days: 3                # used from stage B
+profiles:
+  notes:     { backend: freellmapi, model: "${FREELLMAPI_MODEL:-auto}" }
+  clippings: { backend: openai,     model: "${OPENAI_MODEL_CLIPPINGS}" }   # AI chats, web clips
+  youtube:   { backend: openai,     model: "${OPENAI_MODEL_YOUTUBE}" }     # both YouTube classes
+  fake:      { backend: fake }

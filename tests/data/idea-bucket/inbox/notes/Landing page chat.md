@@ -1,0 +1,1 @@
+Make the landing page an ai chat connected to second brain docs

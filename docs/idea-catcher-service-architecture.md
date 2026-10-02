@@ -16,9 +16,9 @@ The design has two parts:
 ## 📝 Summary {#summary}
 
 - **One job model for everything.** A schedule, an API call and (later) a dashboard button all do the same thing: they put a **job** on a **queue** in Postgres. A worker picks up jobs and runs them. The API never waits for long work. It returns a `job_id` straight away.
-- **The LLM step is its own job type (`llm.reason`)** with **LLM options in the message**: a named **profile** that sets the backend, the model and **when** to run (`now` or `evening`). One generic `reason()` function serves every document type.
-- **MVP backends:** **FreeLLMApi** for short notes (now) and **`claude -p` on the Claude subscription** for AI chats and YouTube clips (evening). No paid API and **no fallback from free to paid**. A failed LLM job is logged and put back on the queue for the **next day**. After 3 failed days the note is flagged **stuck**.
-- **A reviewer checks YouTube summaries.** A generic `llm.review` step compares a summary with the video's real transcript and `yt-dlp` facts, lists unsupported claims and missed points, and returns a corrected version. It reviews both **summaries the pipeline wrote** and **summaries made in the Gemini web chat** and clipped in Obsidian. It is switched on by a `review` attribute in the job message, **`true` by default**.
+- **The LLM step is its own job type (`llm.reason`)** with **LLM options in the message**: a named **profile** that sets the API provider (backend) and the model. One generic `reason()` function serves every document type.
+- **MVP backends, all API calls with a key:** **FreeLLMApi** for short notes (profile `notes`) and the **OpenAI API** for AI chats and web clips (profile `clippings`) and for both YouTube classes (profile `youtube`). There is **no CLI and no subscription** (`claude -p` was unreliable and is removed), so the service runs 24/7 on the Mac, on Proxmox or in the cloud. **No fallback between providers.** A failed LLM job is logged and retried on the next run. After 3 failed days the note is flagged **stuck**.
+- **One class, one prompt, one LLM call.** Every document class has its own prompt file and profile, and `reason()` makes exactly one call per document — including the two YouTube classes, where the transcript and facts Python fetched are the source of truth given to that one call. See [One class, one prompt, one call](#mvp-one-prompt-per-class).
 - **Metrics from day one.** Every run and every processed doc is a row in Postgres: when, which type, which model, how many tokens, warnings and errors. The future React dashboard only has to read what is already there.
 - **Same setup everywhere.** One `compose.yaml` runs the stack (`db`, `api`, `worker`) on the Mac for testing and in a Proxmox LXC in production. A manual `deploy.sh` ships it.
 - **The docs site stays as it is.** The service commits pages to `epiaku-docs` `main`. You still deploy the site manually with `deploy.sh`.
@@ -43,11 +43,11 @@ The design has two parts:
 
 | #   | Requirement                                                                                                                                                                                         | Part   | What it means for the design                                                                       |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------- |
-| R1  | **Scheduled runs** a few times a day: take docs from `idea-bucket/inbox/`, process them, move them to `archive/`, and write pages to `epiaku-docs` under `hugo/content/en/docs/idea-bucket/<type>/`. | MVP    | A scheduler plus a `pipeline.run` job. Git access to both repos.                                   |
+| R1  | **Scheduled runs** a few times a day: look only at `idea-bucket/inbox/` for work. When work on a document starts, move it out of `inbox/`: an untouched copy to `archive/` and a working copy to `output/`, which becomes the final page. Write pages to `epiaku-docs` under `hugo/content/en/docs/idea-bucket/<type>/`. | MVP    | A scheduler plus a `pipeline.run` job. Git access to both repos.                                   |
 | R2  | **An API** to send commands and read information.                                                                                                                                                   | MVP (minimal) → Future (full) | FastAPI with an OpenAPI schema. The MVP only starts runs and reads runs and items.        |
 | R3  | **Start a run from the API**, as well as on a schedule.                                                                                                                                             | MVP    | Both paths put the same job on the queue. Only one pipeline run at a time.                         |
 | R4  | **Persistent metrics** per run: when it ran, how many docs of each type, warnings and errors.                                                                                                       | MVP (stored) → Future (dashboard endpoints) | `jobs`, `job_items` and `job_events` tables.                          |
-| R5  | **Configurable LLM step:** backend and timing (now or evening) set **per message**, one generic function for all doc types.                                                                         | MVP    | `llm.reason` jobs with LLM options and named profiles.                                             |
+| R5  | **Configurable LLM step:** provider and model set **per message** through three profiles (`notes`, `clippings`, `youtube`), one generic function for all doc types.                                                                         | MVP    | `llm.reason` jobs with LLM options and named profiles.                                             |
 | R6  | **Run locally and on Proxmox the same way**, deploy easily.                                                                                                                                         | MVP    | Docker Compose on both, a manual `deploy.sh`.                                                      |
 | R7  | **A YouTube summary endpoint:** send a URL, get summary markdown.                                                                                                                                   | Future | A `youtube` module that reuses the MVP's YouTube facts and LLM step.                               |
 | R8  | **React front ends inside the Hugo docs site** (dashboards, trigger jobs, YouTube), room for more apps (a mini AI chat).                                                                            | Future | Web components and a Hugo shortcode.                                                               |
@@ -65,11 +65,12 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | Build order         | **MVP first**, and it only processes idea-bucket docs. Everything else is a future feature.                                                                                               |
 | MVP scope           | Scheduler + queue + worker + metrics in Postgres + a **minimal API** (start a run, list runs and items). **No UI** in the MVP.                                                             |
 | Trigger model       | The API and the scheduler both **enqueue jobs**. The worker does the work.                                                                                                                |
-| LLM step            | Its own job type (`llm.reason`). **Backend, model and timing come from the message**, as a named **profile**, with a default per document class. We start with the proposed profiles and test them. |
-| MVP LLM backends    | **FreeLLMApi** and **`claude -p`** (Claude subscription). No paid API key in the MVP.                                                                                                     |
-| Failures            | **No fallback from free to paid** (no fallbacks at all). A failed LLM job is logged and **re-queued for the next day**. After **3 failed days** the note is flagged **stuck** in the log and metrics, and keeps retrying daily. |
-| Same video twice    | A video clipped directly **and** summarized in Gemini keeps **both** pages (IDs `<video-id>` and `<video-id>-gemini`), so they can be compared.                                           |
-| Reviewer            | A generic **`llm.review`** step, one review round, for **both** YouTube summaries written by the pipeline **and** YouTube summaries made in the Gemini web chat. Switched by `review.enabled` in the job message, **default `true`**. |
+| LLM step            | Its own job type (`llm.reason`). **Provider and model come from the message**, as a named **profile**, with a default per document class (`note` → `notes`, `ai-chat` and `web-clip` → `clippings`, `youtube` and `youtube-gemini` → `youtube`). We start with these three and test them. |
+| MVP LLM backends    | **FreeLLMApi** (`notes`) and the **OpenAI API** (`clippings`, `youtube`). Every call is an API call with a key: no CLI, no subscription. Anthropic and Gemini APIs can be added later as another profile. |
+| Folders             | **Five top-level folders, one rule:** a run **only looks at `inbox/`** for work. When work on a document starts, it leaves `inbox/`: it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`, at most 128 characters), the original goes to `archive/` (unchanged except for two added frontmatter lines, `original_filename` and `calculated_filename`) and a working copy to `output/` (with a `stage` in its frontmatter), so a document is never started twice. `output/` then holds the final page. `failed/` holds permanent failures (with an `.error.txt`) and `duplicates/` earlier snapshots of a longer clip. A temporary error stalls the working copy in `output/` (`stage: deferred`, with the reason). **To retry, move the file from `archive/` back into `inbox/`**: it keeps its calculated name, so the next run overwrites the stalled copy. The same name is used in `archive/`, `output/` and `epiaku-docs`, so two documents called `New chat.md` never overwrite each other. A run never reads `output/`. Each folder has `notes/` and `clippings/`, and a file keeps its inbox name. See [the layout](../idea-catcher-pipeline/#repo-layout). |
+| Failures            | **No fallback between providers.** A failed LLM job is logged and **retried on the next run** (after `retry_delay`). After **3 failed days** the note is flagged **stuck** in the log and metrics, and keeps retrying. |
+| Same video twice    | A video clipped directly **and** summarized in Gemini keeps **both** pages (IDs `<video-id>` and `<video-id>-gemini`), so they can be compared. The two pages do **not** link to each other: the cross-link was built and then removed because nobody needed it. The direct page is the default, the Gemini page the fallback and a second opinion ([comparison](../idea-catcher-youtube-methods-comparison/)).                                           |
+| One call per class  | Every class (including both YouTube classes) makes exactly **one** LLM call, on its own prompt file. No separate review step and no second call for any class. |
 | Queue               | The Postgres `jobs` table **is** the queue, used through a shared module (`enqueue` / `claim` / `complete`) in the API and the worker. **No dedicated queue container** ([why](#queue-placement)). |
 | Database            | **PostgreSQL 17** (image `pgvector/pgvector:pg17`) for the queue, logging, metrics and future data. See [Database options](#db-options) for the alternatives.                          |
 | Hosting             | **One Proxmox LXC with Docker Compose.** The same `compose.yaml` runs locally. No VM.                                                                                                     |
@@ -77,12 +78,18 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | Docs site deploy    | **Unchanged.** The service commits pages to `epiaku-docs` `main`. You deploy the site manually with `deploy.sh`, as today.                                                               |
 | Hugo build check    | **Not in the MVP.** Python validates the frontmatter and page structure. Your manual Hugo build catches anything else.                                                                   |
 | Repo                | A new **`idea-catcher`** repo for the service (and later its React front end).                                                                                                          |
-| Evening window      | **21:00–06:00** local time for `evening` jobs. Free (`now`) jobs that failed retry at **08:00** the next day.                                                                             |
+| Retry               | A deferred LLM job is retried after **`retry_delay`** (default 60 minutes). If the API key's **budget is used up**, it waits **`budget_retry_delay`** (default 6 hours) instead. There is no evening window: every profile is an API and can run at any hour. |
+| Retry inside a call  | A transient LLM failure (a 5xx, a timeout, a dropped connection) is tried again **inside the same run**, up to `LLM_MAX_ATTEMPTS` calls (default 5) with a doubling wait. A used-up budget, a 429, a bad key and other 4xx errors are **not** retried. This sits below the job-level `retry_delay` above: after the last attempt the document defers as before. Added in Stage A because the free provider fails often and a retry is routed to another provider. |
+| Re-running a document | `run pipeline --requeue NAME` moves the archived original back to `inbox/`, deletes what the earlier run left (`output/`, and for a failed document `failed/` and its `.error.txt`), and processes only that document. The saved YouTube facts in `facts/` are kept, so a requeue never calls YouTube again. A document is in **one place** at a time. |
+| Tags               | The **idea-type tag is optional, at most one**; topic tags are 1 to 4 and chosen only from the fixed list. A missing tag **never fails a page** (most pages on the site have no tags). The rule "exactly one" was in the first design and failed a good page, so it was dropped. |
+| What the LLM may write | **Python owns the facts; the LLM writes prose.** Metrics, upload date, chapters and ids come from code. The one exception is a `youtube-gemini` page, which shows the metrics and chapters Gemini wrote. Links are picked by the LLM and kept only if the URL is literally in the video description. |
+| Business context   | A short `epiaku-context.md` tells the **direct** YouTube prompt who Epiaku is, for the Channel Application part. It is **not** sent to the Gemini prompt, which only restructures Gemini's own answer. |
+| Dictated notes     | A `glossary.yaml` of often-misheard words is added to the note prompt, and Dutch (or any non-English) notes are translated to English first. The original language is kept in the page frontmatter (`language`). |
 | Free model          | FreeLLMApi starts with **`auto`** routing. The model is an **env var** (`FREELLMAPI_MODEL`), so a specific model or a group/chain of models can be set later without code changes.     |
 | Access              | LAN/VPN only + **scoped API keys on every endpoint** (read and write).                                                                                                                    |
 | Front end (future)  | React apps as **web components** placed in Docsy pages with a Hugo shortcode.                                                                                                             |
 | Dashboards (future) | **Built in React**, so we can make simple custom dashboards. No Grafana.                                                                                                                  |
-| GitHub Action       | The two-stage rocket's GitHub Action is **no longer needed**. The evening subscription run is a profile option.                                                                           |
+| GitHub Action       | The two-stage rocket's GitHub Action is **no longer needed**, and so is the Claude Code CLI. |
 
 ---
 
@@ -93,16 +100,16 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | Input           | idea-bucket `inbox/`: notes, AI chats, YouTube clips                                       | YouTube URLs from the API, other sources, web clips                                                      |
 | Containers      | `db`, `api`, `worker`                                                                      | + `llm-worker` (split out), + `caddy` for React bundles                                                  |
 | Queue           | Postgres jobs table, one job at a time, `run_after` for delays                             | Per-backend parallel slots, parent/child job trees, cancel                                               |
-| LLM backends    | `freellmapi`, `claude-code`, `fake` (tests)                                                | `anthropic-api`, `gemini-api` (videos without captions), `openai-api`, budgets                          |
+| LLM backends    | `freellmapi`, `openai`, `fake` (tests)                                                     | `anthropic-api`, `gemini-api` (videos without captions), budgets                                        |
 | Profiles        | In a config file (`profiles.yaml`)                                                         | Stored in the DB, editable from the dashboard                                                            |
 | Schedules       | In `.env` (cron expressions)                                                               | Stored in the DB, editable from the dashboard                                                            |
 | API             | Health, start a run, list runs and items. Polling for progress.                           | Metrics, replay, cancel, YouTube, profiles, schedules, keys. Live progress stream.                      |
 | API keys        | Listed in `.env` with scopes                                                               | Stored hashed in the DB, managed from the API                                                            |
 | Metrics         | Stored: runs, items, events, tokens                                                        | Aggregation endpoints + React dashboards                                                                 |
-| YouTube         | Facts (counts, transcript) for **clips** in the inbox, then the LLM step                  | Endpoint, cache, extra verify checks, Gemini for videos without captions                                |
-| Long inputs     | Sent whole (Sonnet via `claude -p` has a large context)                                    | Map-reduce chunking, needed for free models on long texts                                                |
+| YouTube         | Facts (counts, transcript) for direct **clips** only, then the LLM step (`youtube-gemini` makes no YouTube API call at all) | Endpoint, cache, extra verify checks, Gemini for videos without captions                                |
+| Long inputs     | Sent whole (the OpenAI models have a 1M context)                                          | Map-reduce chunking, needed for free models on long texts                                                |
 | Front end       | None (Swagger UI at `/docs`, `curl`)                                                       | React web components in the docs site                                                                    |
-| Review          | `llm.review` on YouTube summaries (pipeline-made and Gemini-chat-made), on by default     | Reviewer for other classes, an agentic reviewer with tools                                               |
+| Fact-checking   | Free, non-LLM checks on both YouTube classes (timestamp and tool checks against the transcript) | An agentic checker with tools (for example open the video page or search) for any class                  |
 | Safety          | Python page validation                                                                     | Hugo build check, GitHub App instead of a PAT                                                            |
 
 ---
@@ -139,10 +146,10 @@ The MVP processes the docs from `idea-bucket` and nothing else. It is deliberate
  │    └────────────────────────────────────────────────────┘                  │
  │                                                                            │
  └────────────────────────────────────────────────────────────────────────────┘
-      │ git pull/push (PAT)             │ LAN                │ CLI
+      │ git pull/push (PAT)             │ LAN                │ HTTPS
       ▼                                 ▼                    ▼
-  GitHub: idea-bucket              FreeLLMApi LXC       claude -p
-          epiaku-docs (main)       (free models)        (subscription)
+  GitHub: idea-bucket              FreeLLMApi LXC       OpenAI API
+          epiaku-docs (main)       (free models)        (HTTPS, API key)
       │
       ▼  manual, as today: ./.github/workflows/deploy.sh → web server 10.10.60.7
 ```
@@ -152,11 +159,11 @@ The MVP processes the docs from `idea-bucket` and nothing else. It is deliberate
 | Component   | Runs as                                         | Responsibility                                                                                                                              | Secrets it holds                                      |
 | ----------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | **api**     | Container, `catcher api` (FastAPI, port 8000)   | Checks the API key scope, starts runs (enqueues a job), reads jobs and items. **No Git, no LLM calls, no long work.**                        | API keys                                              |
-| **worker**  | Container, `catcher worker`                     | Runs the scheduler loop and claims jobs from **both queues** (`default` and `llm`), **one job at a time**: Git, staging, YouTube facts, LLM calls, rendering, publishing. | GitHub token, `CLAUDE_CODE_OAUTH_TOKEN`, FreeLLMApi URL |
+| **worker**  | Container, `catcher worker`                     | Runs the scheduler loop and claims jobs from **both queues** (`default` and `llm`), **one job at a time**: Git, reading the inbox, YouTube facts, LLM calls, rendering, publishing. | GitHub token, `OPENAI_API_KEY`, FreeLLMApi URL |
 | **db**      | Container, `pgvector/pgvector:pg17`, named volume | Jobs (the queue), items, events.                                                                                                            | –                                                     |
 | **CLI**     | Same image, `catcher …`                         | Local runs and fixes without the API: `catcher run pipeline --dry-run`, `catcher items requeue <doc_id> --profile …`, `catcher db upgrade`. | –                                                     |
 
-**Why a separate API and worker already in the MVP?** The API must answer while a run takes minutes, and a crash in Git, `yt-dlp` or `claude -p` must not take the API down. It is the same codebase and the same image, just two commands.
+**Why a separate API and worker already in the MVP?** The API must answer while a run takes minutes, and a crash in Git or `yt-dlp` must not take the API down. It is the same codebase and the same image, just two commands.
 
 **Why one worker for both queues?** It is simpler, and the volume is small (a few notes a day, a few chats a week). Because LLM jobs already sit on their own `llm` queue, splitting them out to a separate `llm-worker` container later is a Compose change, not a code change (see [Scaling out](#f-scaling)).
 
@@ -169,23 +176,22 @@ Every job, whoever creates it, is a row in the `jobs` table with the same shape:
   "type": "pipeline.run",
   "queue": "default",
   "params": { "dry_run": false },
-  "llm": { "profile": "claude-sub-evening" },
-  "review": { "enabled": true, "profile": "claude-sub-evening" },
+  "llm": { "profile": "clippings" },
   "trigger": "api",
   "run_after": "2026-09-27T12:00:00+02:00"
 }
 ```
 
-The `llm` and `review` blocks are optional. They are passed down to the `llm.reason` and `llm.review` jobs that the run creates. `review.enabled` defaults to `true` (see [Reviewer](#mvp-review)).
+The `llm` block is optional. It is passed down to the `llm.reason` job the run creates for each document; without it, the document's class picks the profile.
 
 ```text
  queued ──claim (run_after ≤ now)──▶ running ──▶ succeeded
     ▲                                   │  ├───▶ succeeded_with_warnings
     │                                   │  └───▶ failed
-    └──── deferred (run_after = next day) ◀── LLM failure or usage limit
+    └──── deferred (run_after = now + retry_delay) ◀── LLM failure, quota or rate limit
 ```
 
-- **Enqueue:** insert a row with `status='queued'` and `run_after` (now, or later for evening jobs). The API returns `202 Accepted` + `{ "job_id": … }`.
+- **Enqueue:** insert a row with `status='queued'` and `run_after` (now, or later for a deferred job). The API returns `202 Accepted` + `{ "job_id": … }`.
 - **Claim:** the worker runs `SELECT … WHERE status='queued' AND run_after <= now() ORDER BY priority, run_after FOR UPDATE SKIP LOCKED LIMIT 1`. `SKIP LOCKED` keeps this correct when more workers are added later.
 - **Wake-up:** the API sends `NOTIFY jobs` after inserting, and the worker `LISTEN`s, so an API-triggered run starts within a second. A 30-second poll picks up delayed jobs whose time has come.
 - **One pipeline run at a time.** A second trigger while a `pipeline.run` is queued or running returns the **existing** `job_id`. This is enforced with a partial unique index on `(type) WHERE status IN ('queued','running')`.
@@ -199,17 +205,18 @@ All reasoning goes through **one function** and **one job type**. A module never
 ```python
 # catcher/modules/llm/service.py
 class LlmOptions(BaseModel):
-    profile: str | None = None            # a named profile from profiles.yaml
-    backend: Literal["freellmapi", "claude-code", "fake"] | None = None
-    model: str | None = None              # e.g. "sonnet", "haiku", or a FreeLLMApi model id
-    when: Literal["now", "evening"] | None = None
+    profile: str | None = None  # a named profile from profiles.yaml: "notes", "clippings", "youtube"
+    backend: Literal["freellmapi", "openai", "fake"] | None = None
+    model: str | None = None  # e.g. an OpenAI model id, or a FreeLLMApi model id
+
 
 class LlmRequest(BaseModel):
-    task: str                             # prompt template: "note", "ai-chat", "youtube-summary"
-    prompt_version: str                   # stored with the result, so replays are traceable
-    input: dict                           # template variables (note body, transcript, facts, …)
-    schema_name: str                      # Pydantic output model, e.g. "NoteSummary"
+    task: str  # prompt template: "note", "ai-chat", "youtube-summary"
+    prompt_version: str  # stored with the result, so replays are traceable
+    input: dict  # template variables (note body, transcript, facts, …)
+    schema_name: str  # Pydantic output model, e.g. "NoteSummary"
     llm: LlmOptions
+
 
 async def reason(req: LlmRequest) -> LlmResult:
     """Build the prompt, call the backend, validate the JSON, return the result + usage."""
@@ -219,116 +226,84 @@ The same function handles notes, AI chats and YouTube clips now, and the YouTube
 
 **Where the options come from** (the first one that sets a field wins):
 
-1. The `llm` block in the **job message** (for example `POST /pipeline/runs {"llm": {"profile": "free-fast"}}`).
+1. The `llm` block in the **job message** (for example `POST /pipeline/runs {"llm": {"profile": "notes"}}`).
 2. The **default profile of the document class** (`doctypes.py`).
 3. The **global default** in `profiles.yaml`.
 
-**MVP profiles** (`profiles.yaml`). We start with these and adjust after testing them with the [model test suite](../idea-catcher-pipeline/#test-suite).
+**MVP profiles** (`profiles.yaml`). Three profiles, one per kind of capture, each an API with a key. We start with these and adjust after testing them with the [model test suite](../idea-catcher-pipeline/#test-suite).
 
-| Profile              | Backend       | Model                   | When    | Default for                       |
-| -------------------- | ------------- | ----------------------- | ------- | --------------------------------- |
-| `free-fast`          | `freellmapi`  | `$FREELLMAPI_MODEL` (starts as `auto`) | now | **Short notes**            |
-| `claude-sub-evening` | `claude-code` | Sonnet                  | evening | **AI chats** and **YouTube clips** |
-| `claude-sub-now`     | `claude-code` | Sonnet                  | now     | Manual runs when usage is left    |
-| `fake`               | `fake`        | –                       | now     | Tests and local development       |
+| Profile     | Backend      | Model                                        | Default for                                                       |
+| ----------- | ------------ | -------------------------------------------- | ----------------------------------------------------------------- |
+| `notes`     | `freellmapi` | `$FREELLMAPI_MODEL` (starts as `auto`)       | **Notes** (`note`)                                                |
+| `clippings` | `openai`     | `$OPENAI_MODEL_CLIPPINGS` (e.g. `gpt-6-sol`) | **AI chats** (`ai-chat`: Gemini and Claude clips that are not YouTube) and **web clips** (`web-clip`: any other clipped page) |
+| `youtube`   | `openai`     | `$OPENAI_MODEL_YOUTUBE` (e.g. `gpt-6-sol`)   | **`youtube` and `youtube-gemini`** (the latter makes no YouTube API call — it only reformats Gemini's own answer) |
+| `fake`      | `fake`       | –                                            | Tests and local development                                       |
 
 ```yaml
 # profiles.yaml
-default: free-fast
-evening_window: { start: "21:00", end: "06:00" }   # local time
-retry_time: "08:00"                                 # when "now" jobs retry the next day
+default: notes
+retry_delay: 60m                 # a deferred job is tried again after this (Stage B)
+budget_retry_delay: 6h           # same, when the API key's budget is used up (Stage B)
 stuck_after_days: 3
 profiles:
-  free-fast:          { backend: freellmapi,  model: "${FREELLMAPI_MODEL:-auto}", when: now }
-  claude-sub-evening: { backend: claude-code, model: sonnet,                when: evening }
-  claude-sub-now:     { backend: claude-code, model: sonnet,                when: now }
-  fake:               { backend: fake,        when: now }
+  notes:     { backend: freellmapi, model: "${FREELLMAPI_MODEL:-auto}" }
+  clippings: { backend: openai,     model: "${OPENAI_MODEL_CLIPPINGS}" }
+  youtube:   { backend: openai,     model: "${OPENAI_MODEL_YOUTUBE}" }
+  fake:      { backend: fake }
 ```
 
-**Timing:**
+**Changing the provider of one kind of capture** is a one-line change in `profiles.yaml`: point `youtube` at another `backend` and `model`. `clippings` and `youtube` are separate profiles on purpose, so they can use different providers or models, for example a cheaper model for chats and a stronger one for video summaries. There is no `when` option: every profile is an API and can run at any hour.
 
-- **`now`:** `run_after = now()`.
-- **`evening`:** `run_after` = the start of the next evening window. This is the "use leftover subscription usage" idea from the pipeline page, as a job option.
-
-**When an LLM job fails, there is no fallback to another backend:**
+**When an LLM job fails, there is no fallback to another provider:**
 
 | What happens                                            | What the worker does                                                                                                                         |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Invalid JSON or schema error                            | Retry **once, immediately**, on the **same** backend, with the validation error added to the prompt. If it fails again, treat it as a failure (below). |
-| FreeLLMApi error, timeout, rate limit, context too long | Log a **warning** event with the reason. The job becomes `deferred` with `run_after` = **next day** (at `retry_time` for `now` profiles, at the next evening window for `evening` profiles). |
-| `claude -p` usage limit                                 | Same: `deferred` to the next evening window. The worker **stops claiming other `claude-code` jobs** until then (they would hit the limit too). |
-| Failing on **3 days** (`stuck_after_days`)              | The note's item is flagged **`stuck`**, with a warning event. It **keeps retrying daily**. `GET /items?status=stuck` lists these notes, so you can pick another profile with `catcher items requeue <doc_id> --profile …`. |
+| Invalid JSON or schema error                            | Retry **once, immediately**, on the **same** profile, with the validation error added to the prompt. If it fails again, treat it as a failure (below). |
+| Timeout, connection error, server error, context too long | Log a **warning** event with the reason. The job becomes `deferred` with `run_after = now + retry_delay`.                                   |
+| Rate limit (`429`, `rate_limit_exceeded`)               | Temporary. `deferred` with `run_after = now + retry_delay`. The worker **stops claiming other jobs of the same backend** until then (they would hit the limit too); other backends carry on. |
+| **Budget reached** (`insufficient_quota`, billing or spend limit) | The API key's budget is used up, so the backend cannot answer **until the budget is raised or renewed**. The job is `deferred` with `run_after = now + budget_retry_delay` (default 6 hours, so we notice a raised budget the same day without hammering the API). The backend is **blocked for the rest of the run**, and the log gets **one `ERROR` per backend** with the number of waiting notes: `openai budget reached: 4 note(s) waiting; raise the key's budget or point the profile at another provider`. Nothing is lost: the notes stay in `output/` and go through as soon as calls work again. |
+| Failing on **3 days** (`stuck_after_days`)              | The note's item is flagged **`stuck`**, with a warning event. It **keeps retrying**. `GET /items?status=stuck` lists these notes, so you can pick another profile with `catcher items requeue <doc_id> --profile …`. |
 
-The note stays in `staging/` the whole time, so nothing is lost.
+The working copy stays in `output/` (`stage: deferred`, with the reason) and the untouched original is in `archive/`, so nothing is lost. In Stage A you retry with `catcher run pipeline --requeue NAME`, which moves the original from `archive/` back into `inbox/` (clearing the stale `output/` copy) and runs it again (or by moving the file back by hand).
 
 **MVP backends:**
 
-| Backend       | Client                                                            | Output handling                                                  | Metrics                                      |
-| ------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
-| `freellmapi`  | OpenAI SDK, `base_url=http://<h4-ip>:3001/v1`                     | Prompted JSON, validated with Pydantic                           | Tokens if FreeLLMApi reports them, cost 0    |
-| `claude-code` | `claude -p --output-format json --max-turns 1`, `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` | Prompted JSON (or `--json-schema` if the CLI supports it) | Tokens from the JSON output, cost 0          |
-| `fake`        | Canned JSON per schema                                            | –                                                                | –                                            |
+| Backend      | Client                                                                       | Output handling                                                                                   | Metrics                                        |
+| ------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `freellmapi` | OpenAI SDK, `base_url=$FREELLMAPI_URL` (`http://<h4-ip>:3001/v1`)            | Prompted JSON, validated with Pydantic                                                            | Tokens if FreeLLMApi reports them, cost 0      |
+| `openai`     | OpenAI SDK, `base_url=$OPENAI_BASE_URL`, `api_key=$OPENAI_API_KEY`           | JSON mode (`response_format={"type": "json_object"}`), validated with Pydantic, one retry | Tokens from the response, cost from the price table |
+| `fake`       | Canned JSON per schema                                                       | –                                                                                                 | –                                              |
 
-{{% alert title="Subscription terms — verified" color="info" %}}
-Headless, unattended `claude -p` on a personal subscription via `claude setup-token` is Anthropic's documented use case for CI pipelines and background services ([Claude Code authentication](https://code.claude.com/docs/en/authentication), [Scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks)), and shares the same weekly limit as interactive use. The only hard rule: never extract the OAuth token for use outside the official `claude` binary (blocked since January 2026). Our `claude-code` backend only shells out to `claude -p`, so this is compliant.
-{{% /alert %}}
+Both real backends are **one OpenAI-compatible client** with a different base URL, key and model. The API key is read from the environment, is never logged and never written to a page or a sidecar. Set a **monthly spend limit** on the OpenAI key.
 
-### 🔍 Reviewer {#mvp-review}
+### 🧭 One class, one prompt, one call {#mvp-one-prompt-per-class}
 
-YouTube summaries go wrong in ways that schema validation can't catch: a claim the video never makes, a misread argument, a missed key point, invented view counts. This happens with summaries **the pipeline writes** and with summaries **made in the Gemini web chat** that you clip in Obsidian. The reviewer is one generic step for both.
+Every document class works the same way: one detection rule picks the class, the class names its own prompt file and its own profile, and `reason()` makes exactly **one** LLM call. There is no separate "reviewer" step, no second call for any class, and no `review` job or attribute.
 
-**What it does.** An `llm.review` job runs the same `reason()` function with the `review` task. It gets:
+| Class            | Detected from                                    | Prompt              | Provider/model (profile) | LLM calls |
+| ---------------- | ------------------------------------------------- | -------------------- | ------------------------- | --------- |
+| `note`           | no `source`, or an unrecognised one                | `note.md`             | `notes` (FreeLLMApi)       | 1         |
+| `ai-chat`        | Gemini/Claude chat, not about a video              | `ai-chat.md`          | `clippings` (OpenAI)       | 1         |
+| `web-clip`       | any other clipped web page                         | `web-clip.md`         | `clippings` (OpenAI)       | 1         |
+| `youtube`        | a direct YouTube clip                              | `youtube.md`, given Python's transcript, title, counts | `youtube` (OpenAI) | 1         |
+| `youtube-gemini` | a Gemini chat that summarized a video              | `youtube-gemini.md`, given only Gemini's own answer — no facts, no transcript, no YouTube API call | `youtube` (OpenAI) | 1         |
 
-- the **summary** to check: the pipeline's own LLM result, or the answer from a clipped Gemini chat;
-- the **source of truth**, fetched by Python during staging: the transcript (with timestamps) and the `yt-dlp` facts (title, channel, counts, description, chapters).
+This replaces an earlier design where `youtube` got a second, separate "reviewer" LLM call that re-checked a summary already built from the real transcript — extra cost with no new source of truth. `youtube-gemini` was originally designed to check Gemini's answer against our own transcript, which meant it needed the same YouTube API calls `youtube` needs and could get stuck with nothing published when that endpoint was blocked. It is now treated purely as a clipping-reformatting task: Gemini already produced a good, human-made summary, so `youtube-gemini` takes that summary as its only source, restructures it into the page schema, and never calls the YouTube API — not `yt-dlp`, not the transcript endpoint, not even for the video's own counts.
 
-It returns, in **one call**:
-
-```python
-class ReviewIssue(BaseModel):
-    kind: Literal["unsupported_claim", "wrong_fact", "missing_point", "wrong_metric", "format"]
-    severity: Literal["low", "medium", "high"]
-    excerpt: str               # the part of the summary it is about
-    evidence: str | None       # transcript quote + timestamp, or None if nothing supports it
-    fix: str                   # what should change
-
-class Review(BaseModel):
-    verdict: Literal["ok", "fixed", "needs_attention"]
-    issues: list[ReviewIssue]
-    revised: YoutubeSummary    # the corrected summary, always in the class's output schema
-```
-
-**Rules:**
-
-- **One round only.** The reviewer never reviews its own revision, so there are no loops and the cost is predictable: about **one extra LLM call per video**.
-- **Python keeps the last word on facts.** Views, likes, subscribers and dates are always filled in from `yt-dlp`, whatever the summary or the reviewer says. The Python checks (timestamps exist and fall inside the video length, quoted tools appear in the transcript) run on the revised summary as well.
-- **The revised summary is used** if it passes validation. Otherwise the original is used, with the issues attached.
-- **Visible on the page.** Frontmatter gets `review: { status, issues, model, reviewed_at }`. With `needs_attention`, the page shows a warning box listing the high-severity issues.
-- **No transcript available:** the reviewer can only check the facts and the internal consistency. The review is marked `limited`.
-- **Same failure rules as other LLM jobs:** it is deferred to the next day when the backend fails, and flagged `stuck` after 3 days. A review is **never skipped silently**.
-
-**The `review` attribute** in the job message:
-
-```json
-"review": { "enabled": true, "profile": "claude-sub-evening" }
-```
-
-- `enabled` defaults to **`true`**. In the MVP the reviewer has a prompt for the two YouTube classes. For other classes the attribute is ignored until they get a review prompt. The reviewer is generic, so adding one is a prompt, not new code.
-- `profile` defaults to `claude-sub-evening`. The reviewer should be at least as strong as the model that wrote the summary.
-- Set `"enabled": false` in a message to skip it, for example for a quick test run.
+**Free checks apply only to `youtube`.** Python checks that class's finished summary against the facts it was given — a timestamp later than the end of the video, or a tool named that isn't in the transcript, title or description — and reports them as warnings in the page's frontmatter. Nothing is "fixed" by a second model call; the warning just tells you where to look. Views, likes, subscribers and dates always come from `yt-dlp`, never from the model. `youtube-gemini` has no facts to check against, so it runs no free checks and its page has no metrics table.
 
 **Two YouTube classes:**
 
 | Class            | Comes from                                                                                              | Steps                                                                                                                                                                                             |
 | ---------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `youtube`        | A YouTube link clipped in Obsidian                                                                      | Staging fetches the facts + transcript → `llm.reason` writes the summary → `llm.review` checks it → publish                                                                                        |
-| `youtube-gemini` | A **Gemini web chat** that ran the YouTube summary prompt, clipped in Obsidian (`source` is gemini.google.com and the **first user message contains a YouTube URL**, or an explicit `type: youtube-gemini`) | Staging extracts the video URL and Gemini's final answer, and fetches the facts + transcript → `llm.review` checks Gemini's answer **and** returns it in the `YoutubeSummary` schema → publish. With review off, a plain `llm.reason` conversion step is used instead. |
+| `youtube`        | A YouTube link clipped in Obsidian                                                                      | Ingest fetches the facts + transcript → `llm.reason` (`youtube.md`) writes the summary → publish                                                                                                  |
+| `youtube-gemini` | A **Gemini web chat** that ran the YouTube summary prompt, clipped in Obsidian (`source` is gemini.google.com and the **first user message contains a YouTube URL**, or an explicit `type: youtube-gemini`) | Ingest parses the video ID straight out of the YouTube URL in Gemini's own chat text (no network call) → `llm.reason` (`youtube-gemini.md`) reformats Gemini's final answer into the page format → publish. No YouTube API call anywhere in this path. |
 
 Both classes write to `idea-bucket/youtube/`, and **both pages are kept** when the same video arrives both ways. The page ID is the video ID for `youtube` and `<video-id>-gemini` for `youtube-gemini`. This rarely happens, and when it does the two summaries can be compared side by side. Each page links to the other when both exist.
 
 ### 🔄 Processing Flow {#mvp-flow}
 
-A run is up to four kinds of jobs: one `pipeline.run`, one `llm.reason` per note, one `llm.review` per YouTube note (when review is enabled), and a `pipeline.publish` that collects all notes whose result is ready.
+A run is up to three kinds of jobs: one `pipeline.run`, one `llm.reason` per note (exactly one LLM call per document, whatever its class), and a `pipeline.publish` that collects all notes whose result is ready.
 
 ```text
  schedule / POST /pipeline/runs
@@ -336,42 +311,48 @@ A run is up to four kinds of jobs: one `pipeline.run`, one `llm.reason` per note
         ▼
  pipeline.run  (default queue)
    1. pull idea-bucket
-   2. per note in inbox/: add id, detect class, clean frontmatter
-      • youtube / youtube-gemini → yt-dlp counts + transcript (with fetch date)
-      • youtube-gemini → also extract the video URL and Gemini's answer
-      • no transcript → mark "no transcript", use title + description
-   3. write to staging/ (replacing a staged copy with the same id), push
-   4. per staged note without an open LLM job → enqueue llm.reason
+   2. scan inbox/ (read-only): per document work out class and id in memory
+      • unreadable file → archive + failed/<sub>/ + .error.txt
+      • earlier snapshots of a longer clip (same id) → archive + duplicates/<sub>/
+      • youtube → yt-dlp counts + transcript (with fetch date)
+      • youtube-gemini → extract the video URL from Gemini's own chat text only
+        (no yt-dlp, no transcript call, no YouTube API of any kind)
+      • no transcript (youtube only) → defer (FactsUnavailable), never call the LLM
+        on title + description alone
+      • files that are not markdown (artifacts) → renamed YYYYMMDD-<guid>-<original name>,
+        copied to archive/artifacts/ and epiaku-docs idea-bucket/artifacts/ (no LLM job)
+   3. per remaining document (respecting --limit / --file) right before its LLM step:
+      calculated name YYYYMMDD-<short guid>-<title>.md (kept if it already has one),
+      original → archive/<sub>/ (+ 2 frontmatter lines), working copy (stage: analyzed)
+      → output/<sub>/, remove it from inbox/ (a stalled copy is overwritten)
+   4. per document without an open LLM job → enqueue llm.reason
       with the run's llm options or the class default profile
         │
         ▼
- llm.reason  (llm queue, run_after = now or evening)
-   5. reason(): prompt from template → backend → validated JSON
+ llm.reason  (llm queue, run_after = now)
+   5. reason(): the class's own prompt template → backend → validated JSON
+      (youtube: transcript + facts in; youtube-gemini: only Gemini's answer
+      in, reformatted, no facts of any kind)
    6. store result + usage on the note's job_item
-   7. review enabled for this class? → enqueue llm.review
-      else → enqueue pipeline.publish (folded: at most one queued)
-        │                         failure → deferred to the next day
-        ▼
- llm.review  (llm queue, only YouTube classes when review.enabled)
-   7a. reason(task="review"): summary + transcript + facts → Review
-   7b. store verdict, issues and the revised summary on the job_item
-   7c. enqueue pipeline.publish
+   7. enqueue pipeline.publish (folded: at most one queued)
         │                         failure → deferred to the next day
         ▼
  pipeline.publish  (default queue)
    8. pull both repos
    9. per ready item: keep allowed tags, render the Hugo page (Jinja),
       validate frontmatter, overwrite the page by id,
-      move staging/ → archive/<class>/
+      done: the working copy output/<sub>/<name>.md becomes the final page (drops
+      `stage`), with the YouTube facts next to it;
+      a failed validation moves it to failed/<sub>/ + .error.txt
   10. commit + push epiaku-docs (main), then idea-bucket
         │
         ▼
  you: ./.github/workflows/deploy.sh (manual, as today)
 ```
 
-- **Overwrite by ID:** delete any existing `*_<id>_*.md` in the target folder, then write `YYYYMMDD_<id>_<slug>.md`.
+- **Overwrite by ID:** delete any existing page in the target folder whose frontmatter `id` matches, then write the page under its **calculated file name** `YYYYMMDD-<short guid>-<title>.md`, the same name as in `archive/` and `output/`.
 - **One Git writer:** only the worker touches the repos, and it runs one job at a time. The phone may still push to idea-bucket during a run, so use `pull --rebase` before pushing and retry once.
-- **Per-note errors don't fail the run.** A bad note is marked `failed` or `deferred`, and the other notes go on.
+- **Per-note errors don't fail the run.** A bad note is marked `failed` (moved to `failed/`) or `deferred` (stalls in `output/` with `stage: deferred`), and the other notes go on.
 - **Python validation instead of a Hugo build:** the rendered page must parse as YAML frontmatter + markdown, contain `title`, `description`, `weight` and `type: docs`, only use tags from the allowed list, and only use known shortcodes (`youtube-lite`).
 - **Unknown tags** from the LLM are dropped from the page and logged as a `tag_suggestion` event.
 
@@ -382,12 +363,14 @@ The document-type registry, the prompt templates, the output schemas and the Jin
 The scheduler runs as a loop inside the worker and **only enqueues jobs**. In the MVP the schedule lives in `.env`:
 
 ```bash
-SCHEDULE_PIPELINE_RUN="0 8,12,17,21 * * *"   # local time, cron syntax (croniter)
+SCHEDULE_PIPELINE_RUN="0 8,12,17,21 * * *"   # local time, cron syntax (croniter): process the inbox
+SCHEDULE_IDEAS_PULL="*/30 * * * *"           # pull idea-bucket often: new captures from Obsidian
+SCHEDULE_PUBLISH="0 6,12,18,23 * * *"        # commit + push the results, less often than the pull
 FREELLMAPI_URL="http://<h4-ip>:3001/v1"
 FREELLMAPI_MODEL="auto"                      # later: a specific model or a model group/chain
 ```
 
-Every 30 s the loop checks whether a schedule is due, and enqueues a `pipeline.run` (the dedupe rule applies). After downtime it runs a missed schedule **once**, not once per missed slot. The evening delay for AI chats is **not** a schedule: it is the `when: evening` option on their LLM jobs. So short notes are published within hours, while long chats wait for the evening window.
+Every 30 s the loop checks whether a schedule is due, and enqueues the matching job: a `pipeline.run` (the dedupe rule applies), a pull of `idea-bucket`, or a `pipeline.publish` (commit and push). Pulling, processing and publishing have **separate schedules**, so each can be tuned on its own. The captures are backed up on GitHub from the moment Obsidian pushes them, so only results that were not yet pushed (and the saved YouTube facts) would be lost in a disk crash; see [When to commit](../idea-catcher-youtube-bans-and-queue-options/#when-to-commit). After downtime it runs a missed schedule **once**, not once per missed slot. Every capture is published within one run, because every LLM profile is an API that can be called at any hour.
 
 ### 🗄️ Database & Metrics {#mvp-database}
 
@@ -398,14 +381,13 @@ jobs        id (uuid), root_id, type, queue, status, trigger, api_key_name,
             params jsonb, llm jsonb, result jsonb, error, priority, attempts,
             run_after, progress_done, progress_total, progress_message,
             created_at, started_at, finished_at, heartbeat_at
-job_items   id, root_id → jobs (the pipeline.run that staged it), doc_id, doc_class,
-            source_path, staged_path, output_path,
-            status (staged / waiting_llm / ready / published / deferred / stuck / failed),
+job_items   id, root_id → jobs (the pipeline.run that first saw it), doc_id, doc_class,
+            inbox_path, original_filename, calculated_filename,   (the calculated name and subfolder are
+            archive_path, output_path, failed_path, docs_page     the same in every folder),
+            status (analyzed / waiting_llm / ready / published / deferred / stuck / failed / duplicate),
             failed_days, warnings jsonb, error,
             llm_profile, llm_backend, llm_model, prompt_version,
             tokens_in, tokens_out, llm_duration_ms, llm_result jsonb,
-            review_status (off / ok / fixed / needs_attention / limited),
-            review_issues jsonb, review_model, review_tokens_in, review_tokens_out,
             created_at, updated_at
 job_events  id, job_id, root_id, doc_id, ts, level (info / warning / error), message, data jsonb
 ```
@@ -418,7 +400,6 @@ This already answers the metrics questions, even before a dashboard exists:
 | How many docs of each type per run or per day? | `job_items GROUP BY root_id / day, doc_class, status`                   |
 | Warnings and errors?                         | `job_events WHERE level IN ('warning','error')`, `job_items.status`       |
 | Which model, how many tokens?                | `job_items.llm_backend, llm_model, tokens_*`                              |
-| How often does the reviewer fix something?   | `job_items GROUP BY doc_class, review_status`, issues by `kind`           |
 | What is waiting or stuck?                    | `job_items WHERE status IN ('waiting_llm','deferred','stuck')`            |
 
 Backups: a nightly `pg_dump` to a mounted folder, plus the Proxmox backup (vzdump) of the LXC.
@@ -444,7 +425,7 @@ Callers poll `GET /jobs/{id}` for progress. Metrics aggregation, replay, cancel,
 | Network   | The LXC is reachable only on the LAN/VPN. No port forwarding.                                                                                                |
 | API keys  | `Authorization: Bearer <key>` on **every** endpoint except `/health`. Keys are listed in `.env` as `name:scopes:key` (for example `mac:read,run:…`). One key per device. |
 | Scopes    | `read` (jobs, items), `run` (start runs).                                                                                                                    |
-| Secrets   | In `.env` on the LXC (not in Git): GitHub fine-grained PAT (Contents read/write on `idea-bucket` and `epiaku-docs` only), `CLAUDE_CODE_OAUTH_TOKEN`, DB password, API keys. |
+| Secrets   | In `.env` on the LXC (not in Git): GitHub fine-grained PAT (Contents read/write on `idea-bucket` and `epiaku-docs` only), `OPENAI_API_KEY`, DB password, API keys. |
 
 ### 🖧 Hosting & Deploy {#mvp-hosting}
 
@@ -452,7 +433,7 @@ Callers poll `GET /jobs/{id}` for progress. Metrics aggregation, replay, cancel,
 
 | Where                | How                                                                                                                                             |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Mac (test)**       | OrbStack or Docker Desktop. `docker compose up`. `.env.local` points Git at **local bare copies** of the two repos and uses the `fake` or `free-fast` profile. |
+| **Mac (test)**       | OrbStack or Docker Desktop. `docker compose up`. `.env.local` points Git at **local bare copies** of the two repos and uses the `fake` or `notes` profile. |
 | **Proxmox (prod)**   | An unprivileged Debian LXC with `nesting=1` and `keyctl=1`, Docker installed, the same pattern as the FreeLLMApi LXC. `.env` points at the real GitHub repos. |
 
 ```yaml
@@ -485,7 +466,7 @@ services:
 volumes: { pgdata: {}, repos: {} }
 ```
 
-The image holds Python 3.12 + uv, Git, `yt-dlp` + Deno, `youtube-transcript-api`, and Node + the Claude Code CLI for the `claude-code` backend. There is **no Hugo** in the image, since the docs site deploy stays manual.
+The image holds Python 3.12 + uv, Git, `yt-dlp` + Deno. There is **no Node, no Claude Code CLI and no Hugo** in the image, since the docs site deploy stays manual.
 
 **Deploying the service (manual, like the docs site):**
 
@@ -515,7 +496,7 @@ idea-catcher/
 ├── Dockerfile
 ├── deploy.sh
 ├── .env.example                 ← every setting, no secrets
-├── profiles.yaml                ← LLM profiles, evening window, retry rules
+├── profiles.yaml                ← the three LLM profiles (notes, clippings, youtube), retry rules
 ├── pyproject.toml               ← uv
 ├── src/catcher/
 │   ├── cli.py                   ← catcher api | worker | run … | items … | db upgrade
@@ -524,7 +505,7 @@ idea-catcher/
 │   ├── core/                    ← config, db (SQLAlchemy), queue, registry, git, logging
 │   └── modules/
 │       ├── llm/                 ← service.py (reason), backends/, prompts/, schemas.py
-│       ├── pipeline/            ← doctypes.py, templates/ (Jinja), jobs.py, router.py, tags.yaml
+│       ├── pipeline/            ← doctypes.py, templates/ (Jinja), jobs.py, router.py, tags.yaml, glossary.yaml
 │       └── youtube/             ← facts.py (yt-dlp, transcript) — used by pipeline for clips
 ├── migrations/                  ← Alembic
 ├── tests/                       ← unit, component, integration, api, e2e, live + fixtures (see Testing)
@@ -569,25 +550,25 @@ One automated test suite in the `idea-catcher` repo, run with **pytest**. It is 
 
 **Guiding rules:**
 
-- **No real LLM, network or GitHub in the default suite.** The `fake` backend, a fake `claude` executable, recorded `yt-dlp` output and local bare Git repos make the tests **fast, free and repeatable**. Real services are only used in the opt-in `live` tests.
+- **No real LLM, network or GitHub in the default suite, and no end-to-end tests.** The `fake` backend, HTTP mocked with `respx`, recorded `yt-dlp` output and local bare Git repos make the tests **fast, free and repeatable**. Anything that calls a real LLM (the `live` marker), and the end-to-end tests (the `e2e` marker), are **run manually** on purpose. `pytest` deselects both by default (`addopts = -m "not live and not e2e"` in `pyproject.toml`), so `uv run pytest` never spends API budget.
 - **A real Postgres, not a mock.** The queue depends on `SKIP LOCKED`, `LISTEN/NOTIFY` and the unique indexes, which can't be mocked meaningfully. Tests use the same `pgvector/pgvector:pg17` image as production.
-- **A frozen clock.** The evening window, the next-day retry and "stuck after 3 days" are all about time. Tests set the time with `time-machine` instead of waiting.
+- **A frozen clock.** The retry delay and "stuck after 3 days" are about time. Tests set the time with `time-machine` instead of waiting.
 - **Each build stage adds its own layers** (see [Tests per stage](#tests-per-stage)).
 
 #### Test layers {#test-layers}
 
 | Layer | What it tests | Examples | Dependencies | Speed |
 | --- | --- | --- | --- | --- |
-| **1. Unit** (`tests/unit`) | Pure functions: the "algorithm" | `detect()` class detection (incl. `youtube-gemini`), ID and filename rules, frontmatter cleaning, YouTube URL parsing, allowed-tag filtering, page validation, **profile resolution** (message > class > global), **`run_after` calculation** (evening window, next-day retry, stuck after 3 days), review merge rules (Python owns the metrics) | None | Milliseconds |
-| **2. Component** (`tests/component`) | One module with its outside world faked | `reason()` with the `fake` backend; the `claude-code` backend with a **fake `claude` script** on `PATH` (returns canned JSON, invalid JSON or a usage-limit error); `freellmapi` with HTTP mocked (`respx`); YouTube facts from **recorded `yt-dlp` / transcript JSON**; Jinja rendering compared with **snapshot pages** (`syrupy`) | None | Milliseconds |
-| **3. Git** (`tests/integration/git`) | Staging and publishing against **real Git**, with local bare repos in a temp folder | Stage → publish moves notes to `archive/` and writes pages; overwrite by ID; both YouTube pages kept; a "phone push" in the middle of a run is handled by `pull --rebase`; `--push` off pushes nothing | `git` | Seconds |
+| **1. Unit** (`tests/unit`) | Pure functions: the "algorithm" | `detect()` class detection (incl. `youtube-gemini`), ID and filename rules, frontmatter cleaning, YouTube URL parsing, allowed-tag filtering, page validation, **profile resolution** (message > class > global), **`run_after` calculation** (retry delay, stuck after 3 days), the free timestamp/tool checks on YouTube summaries | None | Milliseconds |
+| **2. Component** (`tests/component`) | One module with its outside world faked | `reason()` with the `fake` backend; the `freellmapi` and `openai` backends with HTTP mocked (`respx`: canned JSON, invalid JSON, `429` rate limit, `insufficient_quota`, timeout); YouTube facts from **recorded `yt-dlp` / transcript JSON**; Jinja rendering compared with **snapshot pages** (`syrupy`) | None | Milliseconds |
+| **3. Git** (`tests/integration/git`) | Processing the inbox against **real Git**, with local bare repos in a temp folder | A document leaves `inbox/` when work starts (archive + working copy in `output/`), ends as the final page; failures go to `failed/`, earlier snapshots to `duplicates/`; a deferred document stalls in `output/` with `stage: deferred`; moving the file from `archive/` back into `inbox/` overwrites the stalled copy; `--file` and `--limit` only touch the chosen documents; overwrite by ID; both YouTube pages kept; a "phone push" in the middle of a run is handled by `pull --rebase`; `--push` off pushes nothing | `git` | Seconds |
 | **4. DB & queue** (`tests/integration/db`) | Migrations, the queue, the metrics tables against a **real Postgres** | Alembic upgrade from empty (and downgrade); `enqueue`/`claim`/`complete`; **two workers never claim the same job**; `run_after` in the future is not claimed; dedupe of `pipeline.run`; heartbeat reaper re-queues a crashed job; `NOTIFY` wakes the worker; deferral + stuck with a frozen clock; folded `pipeline.publish` | Postgres container | Seconds |
 | **5. API** (`tests/api`) | FastAPI routes on the test database | No key → `401`, wrong scope → `403`; `POST /pipeline/runs` → `202`, second call → `200` + same `job_id`; filters on `/jobs` and `/items`; an **OpenAPI schema snapshot** (the contract for the future React client) | Postgres container | Seconds |
-| **6. End-to-end** (`tests/e2e`) | The **whole stack** in Compose, with the fake LLM | `docker compose -f compose.yaml -f compose.test.yaml up`; seed a bare idea-bucket with **one fixture note per class**; `POST /pipeline/runs`; poll the job; assert the pages in the bare epiaku-docs repo, `archive/`, `job_items` metrics and review status; run **`hugo` on the result** as the build check the worker doesn't do | Docker, `hugo` on the host | ~1–2 min |
-| **7. Live** (`tests/live`, marker `live`) | The real outside world, opt-in | One tiny note through real `claude -p`; one note through real FreeLLMApi; `yt-dlp` + transcript on one known video; `git ls-remote` on both GitHub repos | Network, tokens, subscription usage | Minutes |
-| **8. Model evals** | **Quality** of prompts, profiles and the reviewer | The [model test suite](../idea-catcher-pipeline/#test-suite): golden notes, chats and videos per class, scored per profile (schema valid, required sections, facts correct, reviewer catches planted errors) | Real LLMs | Minutes, costs usage |
+| **6. End-to-end** (`tests/e2e`, marker `e2e`, **manual**) | The **whole stack** in Compose, with the fake LLM | `docker compose -f compose.yaml -f compose.test.yaml up`; seed a bare idea-bucket with **one fixture note per class**; `POST /pipeline/runs`; poll the job; assert the pages in the bare epiaku-docs repo, `archive/`, `output/`, `job_items` metrics; run **`hugo` on the result** as the build check the worker doesn't do | Docker, `hugo` on the host | ~1–2 min |
+| **7. Live** (`tests/live`, marker `live`, **manual**) | The real outside world, opt-in | One tiny note through the real OpenAI API (`notes` and `clippings` profiles); one note through real FreeLLMApi; `yt-dlp` + transcript on one known video; `git ls-remote` on both GitHub repos | Network, API keys, a few cents of API usage | Minutes |
+| **8. Model evals** | **Quality** of prompts and profiles | The [model test suite](../idea-catcher-pipeline/#test-suite): golden notes, chats and videos per class, scored per profile (schema valid, required sections, facts correct) | Real LLMs | Minutes, costs usage |
 
-Layers 1–6 form the **default suite**. They need no secrets and no internet, so they can run anywhere, including GitHub Actions. Layer 7 checks that the real integrations still work. Layer 8 is not pass/fail on exact text; it compares profiles and prompt versions.
+Layers 1–5 form the **default suite** (`uv run pytest`). They need no secrets and no internet, so they can run anywhere, including GitHub Actions. **Layers 6, 7 and 8 are manual:** the end-to-end run (`uv run pytest -m e2e`), the live tests that call real LLMs and services (`uv run pytest -m live`), and the model evals. They spend API budget or need Docker, so you start them yourself, for example before a deploy. Layer 8 is not pass/fail on exact text; it compares profiles and prompt versions.
 
 #### Test fixtures {#test-fixtures}
 
@@ -595,15 +576,15 @@ Layers 1–6 form the **default suite**. They need no secrets and no internet, s
 tests/
 ├── unit/  component/  integration/{git,db}/  api/  e2e/  live/
 ├── conftest.py                    ← Postgres fixture, bare-repo factory, frozen clock, API client with test keys
-├── bin/claude                     ← fake claude CLI: returns a canned file chosen by an env var
 └── fixtures/
-    ├── idea-bucket/inbox/         ← one real-looking note per class: note, ai-chat, youtube, youtube-gemini, no-template
+    ├── idea-bucket/inbox/         ← one real-looking note per class: note, ai-chat, web-clip, youtube, youtube-gemini, no-template
     ├── youtube/<video-id>.json    ← recorded yt-dlp metadata + transcript
-    ├── llm/<task>/<case>.json     ← recorded LLM outputs: good, invalid JSON, usage limit, review "fixed"
+    ├── llm/<task>/<case>.json     ← recorded LLM outputs: good, invalid JSON, usage limit
     └── pages/                     ← expected Hugo pages (snapshots)
 ```
 
 - **Recorded, not generated:** fixtures are captured once from real runs (a `catcher fixtures record` helper) and then committed, so tests reflect real formats.
+- **Test data from the real repos:** `tests/data/` holds a committed copy of only the folders the Idea Catcher uses (`idea-bucket/inbox/` with the captures, and the empty Hugo `idea-bucket` output folders of `epiaku-docs`). `catcher testdata reset` turns it into fresh git repos without a remote in `tmp/ic`, for manual tries, and the test suite runs the whole pipeline on the same data.
 - **Snapshots** of rendered pages make template changes visible in the diff. Update them on purpose with `pytest --snapshot-update`.
 - **Postgres for tests:** a session-scoped fixture starts the `pgvector/pgvector:pg17` container (with `testcontainers`, or the `db` service from `compose.test.yaml`). It runs the Alembic migrations once, and gives each test a clean database (truncate between tests).
 
@@ -613,11 +594,14 @@ A sketch of the queue test that matters most:
 # tests/integration/db/test_queue.py
 async def test_two_workers_never_claim_the_same_job(queue):
     ids = {await queue.enqueue("demo.sleep", {}) for _ in range(20)}
-    async def drain(): 
+
+    async def drain():
         got = []
         while job := await queue.claim(queue="default", worker_id="w"):
-            got.append(job.id); await queue.complete(job.id)
+            got.append(job.id)
+            await queue.complete(job.id)
         return got
+
     a, b = await asyncio.gather(drain(), drain())
     assert set(a) | set(b) == ids and not set(a) & set(b)
 ```
@@ -628,16 +612,16 @@ async def test_two_workers_never_claim_the_same_job(queue):
 | --- | --- | --- | --- |
 | While coding | Unit + component for the module you're working on | `uv run pytest tests/unit -x` (or `ptw` to watch) | – |
 | Before a commit | `ruff` (lint + format), `pyright` (types), unit + component | A **pre-commit** hook | The commit |
-| On push to GitHub (recommended) | The default suite (layers 1–6) on GitHub Actions, with a Postgres service container. No secrets, no LLM, no deploy. | `.github/workflows/test.yml` | A red badge; nothing is deployed from CI |
-| **Before a deploy** | The full default suite (layers 1–6) and `docker compose build` | `make test` inside `deploy.sh` | **The deploy.** `deploy.sh` stops if anything fails. |
+| On push to GitHub (recommended) | The default suite (layers 1–5) on GitHub Actions, with a Postgres service container. No secrets, no LLM, no e2e, no deploy. | `.github/workflows/test.yml` | A red badge; nothing is deployed from CI |
+| **Before a deploy** | The default suite (layers 1–5) and `docker compose build`. You **run the end-to-end tests (layer 6) by hand** first when the change touches the flow. | `make test` inside `deploy.sh`; `uv run pytest -m e2e` by hand | **The deploy.** `deploy.sh` stops if the default suite fails. |
 | **After a deploy** | **Smoke test** on the LXC: `/health` is `200`, the worker heartbeat is recent, migrations are at head, and `catcher selftest` passes (below). Then a `POST /pipeline/runs {"dry_run": true}` with a smoke key is polled to success. | The end of `deploy.sh` | Prints a clear failure. Roll back by redeploying the previous commit. |
-| Weekly, or before a bigger change | The live tests (layer 7) | `uv run pytest -m live` | – |
-| When prompts, profiles or models change | Model evals (layer 8) | `catcher eval --profiles free-fast,claude-sub-now` | The prompt/profile change |
+| Manually: weekly, or before a bigger change | The live tests (layer 7), which call the real LLM APIs | `uv run pytest -m live` | – |
+| When prompts, profiles or models change | Model evals (layer 8) | `catcher eval --profiles notes,clippings,youtube` | The prompt/profile change |
 
 **`catcher selftest`** runs inside the worker container and checks the real outside world **without spending LLM usage**:
 
 - the database is reachable and migrations are at head;
-- `claude --version` works and `CLAUDE_CODE_OAUTH_TOKEN` is set;
+- `OPENAI_API_KEY` is set and `GET /v1/models` on the OpenAI API answers;
 - FreeLLMApi answers `GET /v1/models`;
 - the GitHub token can read both repos (`git ls-remote`);
 - `yt-dlp --version` works.
@@ -648,9 +632,9 @@ It is part of the post-deploy smoke test, and it can be run by hand whenever som
 
 | Stage | Test layers added | Done when |
 | --- | --- | --- |
-| [A: Python pipeline](#mvp-stage-a) | 1 Unit, 2 Component (fake `claude`, recorded YouTube data, page snapshots), 3 Git, pre-commit | Every class has fixtures and snapshot pages, and the Git flow passes on bare repos |
+| [A: Python pipeline](#mvp-stage-a) | 1 Unit, 2 Component (mocked HTTP, recorded YouTube data, page snapshots), 3 Git, pre-commit. No live or e2e tests in the default run. | Every class has fixtures and snapshot pages, and the Git flow passes on bare repos |
 | [B: Postgres + queue](#mvp-stage-b) | 4 DB & queue, frozen-clock tests for deferral and stuck | The concurrency, dedupe, reaper and deferral tests pass |
-| [C: API](#mvp-stage-c) | 5 API, 6 End-to-end, the GitHub Actions workflow | `make test` runs layers 1–6 green, locally and in CI |
+| [C: API](#mvp-stage-c) | 5 API, 6 End-to-end (manual), the GitHub Actions workflow | `make test` runs layers 1–5 green, locally and in CI, and `uv run pytest -m e2e` passes by hand |
 | [Proxmox](#mvp-stage-deploy) | `catcher selftest`, post-deploy smoke, 7 Live, 8 Model evals | `deploy.sh` runs tests before and smoke after, and the evals pick the profiles |
 
 ### 🪜 Build Steps {#mvp-steps}
@@ -658,65 +642,87 @@ It is part of the post-deploy smoke test, and it can be run by hand whenever som
 The MVP is built in **three stages**. Each stage is a series of small steps: build a little, test it locally, refactor until we're satisfied, and only then move on. Each stage **wraps** the code of the previous one instead of rewriting it:
 
 ```text
- Stage A: plain Python functions + CLI         ← the real work: stage, reason, review, render, publish
+ Stage A: plain Python functions + CLI         ← the real work: scan, reason, render, publish
  Stage B: + Postgres queue: jobs call those same functions
  Stage C: + API: enqueues jobs and reads the results from Postgres
  Then:    deploy the same Compose stack to the Proxmox LXC
 ```
 
-To make that possible, the core logic lives in **plain functions with no knowledge of the queue or the API** (`stage_note()`, `reason()`, `review()`, `render_page()`, `publish()`). The CLI calls them directly in stage A. Job handlers call them in stage B.
+To make that possible, the core logic lives in **plain functions with no knowledge of the queue or the API** (`scan_inbox()`, `reason()`, `render_page()`, `publish()`). The CLI calls them directly in stage A. Job handlers call them in stage B.
 
-#### Stage A: Python pipeline + `claude -p`, run locally {#mvp-stage-a}
+#### Stage A: Python pipeline + LLM APIs, run locally {#mvp-stage-a}
 
 **Goal:** process real notes from `idea-bucket` into pages in `epiaku-docs`, run by hand from the Mac. No database, no Docker, no API.
 
 | Step | What we build                                                                                                         | How we test it                                                                                                     |
 | ---- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | A1   | The `idea-catcher` repo, `uv`, the package layout, config from `.env`, logging                                         | `uv run catcher --help`                                                                                            |
-| A2   | Staging: read `inbox/`, detect the class, add IDs, clean frontmatter, write `staging/`                                  | On a **local copy** of idea-bucket: `catcher stage --ideas ../idea-bucket-copy`, then inspect `staging/`          |
-| A3   | The `llm` module: `reason()` with the `fake` and `claude-code` backends, `profiles.yaml`, output schemas, prompts for notes | `catcher reason <staged-note> --profile claude-sub-now` prints validated JSON. On the Mac, `claude -p` uses your logged-in Claude Code, so no token is needed yet. |
-| A4   | Rendering + validation: Jinja page templates, allowed tags, frontmatter checks, overwrite by ID                        | `catcher render <staged-note>` writes into a local copy of epiaku-docs. Check it with `hugo server`.               |
-| A5   | Publishing: archive, commit, push, with a `--push` flag that is **off by default**                                    | Without `--push` first (inspect the local commits), then against the real GitHub repos with `--push`               |
+| A2   | Read the inbox: scan `inbox/` (read-only), detect the class, derive IDs, find earlier snapshots (`duplicates/`), move unreadable files to `failed/`; then start work per document: original to `archive/`, working copy to `output/`                                  | On a **local copy** of idea-bucket: `catcher scan --ideas ../idea-bucket-copy`, then inspect the output of `catcher scan`          |
+| A3   | The `llm` module: `reason()` with the `fake`, `freellmapi` and `openai` backends, `profiles.yaml` (`notes`, `clippings`, `youtube`), output schemas, prompts for notes | `catcher reason <output-note> --profile notes` prints validated JSON. The `openai` profiles need `OPENAI_API_KEY` in `.env`. |
+| A4   | Rendering + validation: Jinja page templates, allowed tags, frontmatter checks, overwrite by ID                        | `catcher render <output-note>` writes into a local copy of epiaku-docs. Check it with `hugo server`.               |
+| A5   | Publishing: the working copy in `output/` becomes the final page, `failed/` for permanent failures, `stage: deferred` for temporary ones, commit, push, with a `--push` flag that is **off by default**                                    | Without `--push` first (inspect the local commits), then against the real GitHub repos with `--push`               |
 | A6   | AI chats, then YouTube clips (`yt-dlp` + transcript), then the `freellmapi` backend                                  | Real clips from the inbox, one class at a time                                                                     |
-| A7   | The reviewer (`review()`) and the `youtube-gemini` class                                                               | Review a pipeline-made and a Gemini-made summary of the same video (both pages are kept)                         |
+| A7   | The `youtube-gemini` class: **one call that only restructures Gemini's own answer** (no YouTube call, no fact-check). It keeps Gemini's metrics, chapters and advice | Process a pipeline-made and a Gemini-made summary of the same video (both pages are kept), and compare them with the transcript ([comparison](../idea-catcher-youtube-methods-comparison/)) |
 | A8   | One command for the whole flow: `catcher run pipeline [--dry-run] [--push]`                                            | A full run on a copy, then a real run                                                                              |
 
-**Done when:** a real run turns every doc class in the inbox into correct pages on GitHub, and we are happy with the prompts, templates and code structure. Failures are only logged in this stage, and the note stays in `staging/`. Retry, deferral and metrics come in stage B.
+**Done when:** a real run turns every doc class in the inbox into correct pages on GitHub, and we are happy with the prompts, templates and code structure. Nothing is stored about a document's state in this stage (no Postgres): the folder a file is in, its `stage` and the Python log show what happened, and a deferred document stalls in `output/`. Retry, deferral and metrics come in stage B.
+
+**Status: done (2026-10-01).** Stage A ran for five days (2026-09-27 to 2026-10-01): about 50 commits, about 3,500 lines of Python, 391 tests, five document classes. The full story, with what changed from this plan and the lessons, is in [Stage A: what we built and what we learned](../idea-catcher-stage-a-lessons-learned/). In short, compared with the steps above:
+
+- **Changed:** the `staging/` folder became the inbox-only flow with calculated names; the `claude -p` subscription backend became API-key profiles; the separate YouTube reviewer became free Python checks; `youtube-gemini` stopped checking against YouTube.
+- **Added (not in the plan):** the `web-clip` class, artifacts (PDFs and images), `--requeue`, in-call retries, a glossary and Dutch translation, the original language, chapters, links, the upload date, a business context, clear errors for wrong paths, a version string, YouTube protections against an IP ban (saved facts per video, one paced extraction, a gap between fetches, a breaker), and a committed test data set with `testdata reset`.
+- **Not done, left for later:** a Hugo build check, the model test suite, long-input chunking and the stuck-note rules (stage B).
 
 #### Stage B: Postgres + the queue, locally {#mvp-stage-b}
 
-**Goal:** the same work, now driven by jobs in a Postgres queue, with deferral, stuck rules and metrics. Still local, without an API.
+**Goal:** the same work, now driven by jobs in a Postgres queue, with deferral, retries, schedules and the state of every document in the database. Still local, without an API.
 
-| Step | What we build                                                                                                                     | How we test it                                                                                                   |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| B1   | `compose.yaml` with only `db` (`pgvector/pgvector:pg17`), SQLAlchemy, Alembic, the `jobs` / `job_items` / `job_events` tables      | `docker compose up db`, `catcher db upgrade`, then look at the tables                                           |
-| B2   | The queue module: `enqueue()`, `claim()` (`SKIP LOCKED`, `run_after`), `complete()`, heartbeat, `LISTEN/NOTIFY`                    | Unit tests on the queue. `catcher jobs add demo.sleep` + `catcher worker`, including two workers at once        |
-| B3   | Job handlers that call the stage A functions: `pipeline.run`, `llm.reason`, `llm.review`, `pipeline.publish`                        | `catcher jobs add pipeline.run` + `catcher worker` on a copy of the repos gives the same pages as stage A       |
-| B4   | Deferral (next day), `stuck` after 3 days, the evening window, metrics on `job_items`                                              | Set `run_after` and the clock in tests. Stop FreeLLMApi and check that jobs defer. Query the metrics with SQL.  |
-| B5   | The scheduler loop in the worker, and the worker in Compose next to `db`                                                         | `docker compose up`, then watch scheduled runs happen                                                           |
+*Updated 2026-10-01 after Stage A.* The steps below include what we decided since the first plan: our **own** Postgres queue (see [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/)), the YouTube gate moving into the database, separate schedules for pulling and publishing, and a low-priority backfill. Steps **B0, B4, B6 and B8 are new**.
 
-**Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
+| Step | What we build | How we test it |
+| ---- | ------------- | -------------- |
+| B0   | **Make the run steppable.** `run_pipeline` is one loop today. Split it into steps a job can call on its own: scan and stage, process one document, publish what is ready. Behaviour stays the same. Do this **first**: everything else depends on it | The Stage A tests (unit, component, git integration) stay green and unchanged |
+| B1   | `compose.yaml` with only `db` (`pgvector/pgvector:pg17`), SQLAlchemy, Alembic. Tables `jobs`, `job_items`, `job_events`, plus **`resource_state`** (the YouTube gap and breaker, the LLM budgets) and the schedules | `docker compose up db`, `catcher db upgrade`, then look at the tables. Migrations upgrade from empty and downgrade |
+| B2   | **Our own queue module** on Postgres: `enqueue()`, `claim()` (`FOR UPDATE SKIP LOCKED`, `run_after`), `complete()`, a lease and heartbeat so a crashed worker's job comes back, `LISTEN/NOTIFY`. Azure-style semantics: `attempts`, `max_attempts` 5, a `dead` status, an invisible delay before a retry. **Priorities:** a new clip and a requeue you asked for by hand go first, a backfill goes last | Tests on **real Postgres with a fake clock**: two workers never claim the same job; a crashed worker's job comes back; backoff and `dead`; the priority order |
+| B3   | Job handlers that call the Stage A functions: `pipeline.run`, `llm.reason`, `pipeline.publish`, and a separate **`youtube.fetch`** (the rate-limited resource, idempotent, saved facts) so that **an LLM failure never causes a YouTube call**. Every handler is idempotent (overwrite by id already helps) | `catcher jobs add pipeline.run` + `catcher worker` on a copy of the repos gives the same pages as Stage A. A failing LLM makes no YouTube call |
+| B4   | **The YouTube gate moves into Postgres** (`resource_state`). The claim reserves the slot in the same transaction, so two workers can never break the gap. A 429 sets `blocked_until` and pushes `run_after` past it **without counting an attempt** | Fake clock: two workers cannot break the gap; a block stops every fetch; a working fetch closes the breaker |
+| B5   | **State, retries and metrics.** `job_items.status` (waiting, deferred, stuck, failed...), `stuck` after 3 days, per-backend blocking on a quota error, and how the in-call LLM retries (5 calls) and the job-level `retry_delay` add up. The **frontmatter mirror** (`stage`, `stage_reason`, `stage_since`) is written on status changes only. A `catcher reconcile` rebuilds the database from the folders. The metrics queries | Set `run_after` and the clock in tests. Stop FreeLLMApi and check that jobs defer. Delete the database and reconcile. Query the metrics with SQL |
+| B6   | **The scheduler loop in the worker** with three cron variables: `SCHEDULE_IDEAS_PULL` (often), `SCHEDULE_PIPELINE_RUN` and `SCHEDULE_PUBLISH` (a few times a day), plus a manual `catcher publish`. A missed slot runs once | Fake clock: each schedule fires on time; a missed slot runs once; the pull runs more often than the publish |
+| B7   | The worker in Compose next to `db`: the `repos` volume, the image (Python 3.12, `uv`, Git, `yt-dlp` + Deno) | `docker compose up`, then watch scheduled runs happen |
+| B8   | **Backfill import.** `catcher youtube import` finds the YouTube links in the docs, skips the video ids that already have a page, and adds the rest as **low-priority** jobs. A paced channel listing. An LLM budget or a daily `--limit` | Fixtures only in the tests. A hand test on a small channel |
+
+**Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 
 #### Stage C: the API, locally {#mvp-stage-c}
 
 **Goal:** start runs and read the results over HTTP.
 
-| Step | What we build                                                                                        | How we test it                                                                                |
-| ---- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| C1   | FastAPI app with `/health`, API keys + scopes from `.env`                                             | Swagger UI at `http://localhost:8000/docs`. A request without a key must fail.                |
-| C2   | `POST /pipeline/runs` (with dedupe) and `GET /jobs/{id}`                                              | Start a run with `curl`, poll the job until it's done                                         |
-| C3   | `GET /jobs` and `GET /items` (filters for class, status, `stuck`)                                     | Compare the answers with direct SQL queries                                                   |
-| C4   | The `api` container in Compose                                                                        | `docker compose up`: the full stack (`db`, `api`, `worker`) on the Mac                        |
+| Step | What we build | How we test it |
+| ---- | ------------- | -------------- |
+| C1   | FastAPI app with `/health` (including the worker's heartbeat), API keys + scopes from `.env` | Swagger UI at `http://localhost:8000/docs`. A request without a key must fail |
+| C2   | `POST /api/v1/pipeline/runs` (with dedupe: no second run while one is queued or running) and `GET /api/v1/jobs/{id}` | Start a run with `curl`, poll the job until it's done |
+| C3   | `GET /jobs` and `GET /items` (filters for class, status, `stuck`), the manual **publish** and **requeue** triggers, and the YouTube gate state | Compare the answers with direct SQL queries |
+| C4   | The `api` container in Compose | `docker compose up`: the full stack (`db`, `api`, `worker`) on the Mac |
 
 **Done when:** the whole MVP runs locally with `docker compose up`, and everything can be started and checked through the API.
 
 #### Then: Proxmox {#mvp-stage-deploy}
 
-1. Create the LXC (Docker, `nesting=1`, `keyctl=1`), write `deploy.sh`, and put `.env` on the LXC with the GitHub PAT and `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`).
-2. Deploy, and run with the schedule against the real repos.
-3. Run the [model test suite](../idea-catcher-pipeline/#test-suite) against the profiles and adjust them.
+1. Create the LXC (Docker, `nesting=1`, `keyctl=1`), write `deploy.sh`, and put `.env` on the LXC with the GitHub PAT and `OPENAI_API_KEY`. `.env` is never rsynced.
+2. Deploy, and run with the schedule against the real repos. After each deploy, a smoke test: `/health`, the worker's heartbeat, the migrations at head, and a dry-run job.
+3. Backups: a nightly `pg_dump` and a Proxmox `vzdump` of the LXC.
+4. Run the [model test suite](../idea-catcher-pipeline/#test-suite) against the profiles and adjust them.
 
 After that, the [future features](#future) are added one by one in the same way.
+
+#### Order and risks for Stage B and C {#mvp-stage-order}
+
+1. **B0 first.** Everything else needs the run to be callable one step at a time. It is the riskiest refactor, so it comes with the Stage A tests as the safety net.
+2. **B2 and B4 together.** The queue and the YouTube gate share one transaction, so the hardest tests (two workers, a fake clock, a crash) are there.
+3. **Watch the size of the queue core.** If our own queue grows past about 300 lines or shows concurrency bugs, switch to **Procrastinate** (`lock="youtube"` plus our limiter table) instead of maintaining it, as decided in [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/).
+4. **Settle the two retry layers in B5**, so a failing provider cannot make one document take many minutes before it defers.
+5. **Stage C is small** once the queue exists. Most of its value is already in B3 and B5.
+6. **Test with real Postgres in Docker**, never with a mock of the queue: the claim and lease logic is where the bugs would be.
 
 ---
 
@@ -728,7 +734,7 @@ Each feature below is a new module or an extension of the MVP. None of them chan
 | -- | ---------------------------------------- | ------------------------------------------------------------------------------------- | ------------- |
 | F1 | [React front end in Hugo](#f-frontend)   | Web components, `web-app` shortcode, `/svc/` proxy, Caddy, live progress              | F4, F5        |
 | F2 | [YouTube summary endpoint](#f-youtube)   | `POST /youtube/summaries`, cache, verify checks, `youtube-summarizer` component       | F3 (Gemini, optional) |
-| F3 | [More LLM backends](#f-llm)              | `anthropic-api`, `gemini-api`, `openai-api`, budgets, per-backend concurrency         | –             |
+| F3 | [More LLM backends](#f-llm)              | `anthropic-api`, `gemini-api`, a **budget guard** (soft limit, warning at 80%, notification), per-backend concurrency         | –             |
 | F4 | [Dashboard metrics API](#f-metrics)      | `/metrics/*` aggregation endpoints, React dashboards                                  | –             |
 | F5 | [Management API](#f-management)          | Replay, cancel, retry, profiles and schedules in the DB, API keys in the DB           | –             |
 | F6 | [Scaling out](#f-scaling)                | Separate `llm-worker` container, parallel jobs                                        | –             |
@@ -780,16 +786,15 @@ The MVP already fetches YouTube facts for clips and runs the LLM step on them. F
  URL ─▶ 1. PARSE      video ID (watch, youtu.be, shorts, embed URLs)
         2. CACHE?     same video_id + prompt_version done before → return it
         3. FACTS      yt-dlp (counts, description, chapters) + transcript  ← MVP code
-        4. REASON     llm.reason, options from the message                 ← MVP code
-        5. REVIEW     llm.review (review.enabled, default true)            ← MVP code
+        4. REASON     llm.reason on the youtube.md prompt, one call         ← MVP code
                       + Python checks: timestamps, tools in transcript,
                       metrics only from step 3 → warnings, not a crash
         6. RENDER     Hugo page markdown (same template as the pipeline)
         7. OPTIONAL   publish=true → hand it to pipeline.publish
 ```
 
-- `POST /api/v1/youtube/summaries { url, publish?: false, focus?, llm?, review? }` → `202 { job_id }`. The markdown comes from `GET /jobs/{id}` or `GET /youtube/summaries/{video_id}.md` (`text/markdown`).
-- `?wait=90` holds the request up to 90 s and returns the markdown directly if it's ready. This only makes sense with a `now` profile.
+- `POST /api/v1/youtube/summaries { url, publish?: false, focus?, llm? }` → `202 { job_id }`. The markdown comes from `GET /jobs/{id}` or `GET /youtube/summaries/{video_id}.md` (`text/markdown`).
+- `?wait=90` holds the request up to 90 s and returns the markdown directly if it's ready. This works because every profile is an API that answers within seconds.
 - A `youtube_cache` table (video ID, prompt version, facts, markdown).
 - Videos **without captions**: the `gemini-api` backend (F3) with native video understanding.
 - An iOS Shortcut on the share sheet can call the endpoint over the VPN.
@@ -802,7 +807,7 @@ The MVP already fetches YouTube facts for clips and runs the LLM step on them. F
 | `gemini-api`    | Gemini Flash; native video understanding for videos without captions  |
 | `openai-api`    | Other models                                                          |
 
-Paid backends come with a **daily budget** (jobs are deferred when it is reached), a **cost price table** for `cost_usd` in the metrics, and **per-backend concurrency** slots. They are selected **explicitly** by a profile or a message. They are **never an automatic fallback** for a free job.
+Paid backends come with a **budget guard**: the metrics know each call's tokens and cost, so the service compares the month's spend with a configured budget per backend, logs and notifies at **80%**, and defers jobs (as `budget reached`) before the key's own cap is hit, a **cost price table** for `cost_usd` in the metrics, and **per-backend concurrency** slots. They are selected **explicitly** by a profile or a message. They are **never an automatic fallback** for another profile's job.
 
 ### 📊 F4: Dashboard Metrics API {#f-metrics}
 
@@ -825,7 +830,7 @@ Aggregation endpoints on the MVP tables, so the React dashboards stay simple:
 ### 📈 F6: Scaling Out {#f-scaling}
 
 - Split LLM jobs into their own **`llm-worker`** container (`catcher worker --queue llm`). Then the Git worker never holds LLM tokens, and the LLM worker never holds the GitHub token.
-- **Parallel LLM jobs** with per-backend slots (for example `freellmapi` 2, `claude-code` 1).
+- **Parallel LLM jobs** with per-backend slots (for example `freellmapi` 2, `openai` 4).
 - **Parent/child job trees** with a `waiting` status, so a run shows as "done" only when all its notes are published.
 
 ### ➕ F7: Other Additions {#f-other}
@@ -834,8 +839,7 @@ Aggregation endpoints on the MVP tables, so the React dashboards stay simple:
 - **Hugo build check** before pushing (Hugo extended + PostCSS in the image).
 - **GitHub App** (`epiaku-docs-bot`) instead of a fine-grained PAT.
 - **Mini AI chat** module (streams directly, reuses the LLM backends) and its web component.
-- **Web clips** as a new doc class.
-- **Reviewer for more classes** (AI chats, web clips), and an **agentic reviewer** that can use tools (for example open the video page or search) instead of a single call.
+- **An agentic checker** for any class, that can use tools (for example open the source page or search) instead of a single call.
 - **Notifications** for stuck notes (for example a push message), instead of only the log and metrics.
 
 ---
@@ -923,19 +927,30 @@ The database is used for the **job queue** and **logging/metrics** now, and prob
 1. **Pages go live only when you deploy.** The service pushes to `epiaku-docs` `main`, but the site changes only when you run `deploy.sh`. Your local checkout also has to `git pull` first, or the next manual deploy overwrites the new pages with an older checkout.
 2. **No Hugo build check in the MVP.** A page that passes the Python validation could still break the Hugo build (for example a bad shortcode inside the LLM's body text). You would see it in your manual build. Fix it by re-running the note, or with a revert.
 3. **Git races.** Obsidian pushes to `idea-bucket` at any time, and you push to `epiaku-docs` from the Mac. Mitigated by one Git writer, `pull --rebase` + one retry, and pages that only the pipeline writes.
-4. **Evening jobs vs. edited notes.** A note can wait in `staging/` for hours. If you edit or re-clip it in Obsidian meanwhile, a new copy lands in `inbox/`. `pipeline.run` must replace the staged copy with the same `id` and **update** the queued LLM job's input, not add a second one.
-5. **Free models on long inputs.** Without map-reduce (F7), FreeLLMApi will fail on long texts. The MVP routes AI chats and YouTube to `claude -p` for that reason. A note that is unexpectedly long will simply defer, and then become stuck.
-6. **Subscription usage.** Evening jobs share the weekly limit with coding, so a heavy coding week can push summaries to the paid-API fallback. (Terms for unattended `claude -p` use on a server are verified as compliant — see [Subscription terms](#mvp-llm) — as long as the token stays inside the official `claude` binary.)
+4. **Waiting jobs vs. edited notes.** A document can wait in `output/` for hours. If you edit or re-clip it in Obsidian meanwhile, a new copy lands in `inbox/`. With the same file name, the next run overwrites the `archive/` copy and the working copy in `output/`, and **updates** the queued LLM job's input instead of adding a second one. With a different file name but the same `id`, a clip that is an earlier snapshot of a longer one (same messages, cut off at the end) is archived and moved to `duplicates/` (with `duplicate_of` in the frontmatter) and gets **no LLM job**; a clip whose content differs is processed on its own, and the later page overwrites the earlier one by `id`.
+5. **Free models on long inputs.** Without map-reduce (F7), FreeLLMApi will fail on long texts. The MVP routes AI chats and YouTube to the `openai` profiles (1M context) for that reason. A note that is unexpectedly long will simply defer, and then become stuck.
+6. **API budget.** The keys for the `clippings` and `youtube` profiles have a **budget cap**, so the service can reach it and then cannot call the LLM at all. It is treated as its own condition (not a rate limit): the backend is blocked for the run, one `ERROR` says how many notes are waiting, the documents stall in `output/` (`stage: deferred`), and they are retried every `budget_retry_delay` from Stage B (until then you move them back into `inbox/`). Because there is **no automatic fallback** to another provider, only two things fix it: raise or renew the key's budget, or point the profile at another provider in `profiles.yaml` (or run with `--profile`). Notes on the other providers are unaffected. In the MVP you notice it through the log and `GET /items?status=deferred`; **F: a budget guard** (see [F3](#f-llm)) adds a soft limit that warns at 80% and a notification, so it does not come as a surprise. Watch `tokens_in` and `tokens_out` in the metrics meanwhile.
 7. **Stuck is only visible if you look.** In the MVP, stuck notes show up in the log and in `GET /items?status=stuck`. The dashboard (F1/F4) and notifications (F7) make this visible.
 8. **Docker in an LXC** can break on Proxmox upgrades. Snapshot before upgrading.
 9. **Worker down = quiet metrics.** If the worker is down, no metrics are recorded. `/health` reports the worker's heartbeat, and the future dashboard shows "worker last seen".
-10. **The reviewer doubles subscription usage for YouTube.** Each video now takes two `claude -p` calls from the shared weekly limit. Watch the review tokens in the metrics, and switch the review profile if needed.
-11. **The reviewer can be wrong too.** It may flag correct statements or "fix" them badly. Mitigated by requiring transcript evidence for every issue, one round only, Python owning the facts, and the issues staying visible in the frontmatter.
+10. **The one-call summary can still be wrong.** Schema validation and the free timestamp/tool checks catch some mistakes, not all. There is no second LLM call to catch the rest; if quality is not good enough, revisit a checking step deliberately rather than by default.
 12. **Classifying Gemini chats.** A general Gemini chat whose first message happens to contain a YouTube link would be treated as `youtube-gemini`. Use `type: ai-chat` in the clip to override, or tighten the rule (for example, also require the YouTube summary prompt's headings in the answer).
 13. **`yt-dlp` breaks when YouTube changes.** Rebuild the image regularly, or upgrade `yt-dlp` at worker start.
+14. **Gemini's own mistakes pass through.** The `youtube-gemini` class only restructures Gemini's answer, so a wrong claim is copied faithfully (for example "30% to 40% of sales occur during follow-up" where the video says 30 to 40% *more* sales). Nothing can fix this in our code. Do not rely 100% on a Gemini page: when a number or claim matters, compare it with the direct page of the same video.
+15. **LLM output varies between runs.** The same input gives different tags and wording on each run. One run is not a trend. Judge a prompt change on several pages, and use the `output/` history in the test repos (one commit per run) to compare before and after.
+16. **The free provider is unstable.** FreeLLMApi often answers 502 or times out (a call can take a minute), and the model behind `auto` changes between calls. In-call retries help, but a run with many notes can still take minutes per note. Do not classify an error by words in its message: a 502 that mentioned a "retry budget" was once reported as an empty wallet.
+17. **YouTube facts change over time.** Views and likes move, and chapters can appear on a video days after it was published. The fetch date is stored, and a rerun gives a newer page. YouTube also blocked this machine (429) after heavy live testing on 2026-09-28: keep tests offline.
+18. **Tags drift.** An LLM-chosen topic tag is sometimes plausible but off (a RAG page tagged `ai-agents`). Tags are rarely used on the site, so the decision is to do nothing now and look at a few tag pages after about 20 pages.
 
 ---
 
 ## ❓ Open Questions {#open-questions}
 
-No open questions at the moment. New ones will be added here as the MVP is built.
+Carried over from Stage A, to settle in Stage B:
+
+1. **The queue design.** The YouTube protections are built in Stage A (saved facts, one paced extraction, a gap between fetches, a breaker, an offline switch). What is left is moving the gate state into Postgres and the queue itself (our own Postgres queue, Procrastinate as the fallback); see [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/).
+2. **Two retry layers.** Stage A retries a transient failure inside a call (5 calls, doubling wait), and stage B adds a job-level `retry_delay`. Decide how they add up: a failing provider can now make one note take several minutes before it defers.
+3. **Where the business context and the glossary live.** Today both are files inside the code package (`pipeline/epiaku-context.md`, `glossary.yaml`). A running service may want them in the `idea-bucket` repo or the database, so editing one does not need a deploy.
+4. **Stuck and deferred notes need to be visible.** In Stage A you find them by looking in `output/` and the log.
+5. **A model test suite.** The profiles were chosen by hand and by a few comparisons, not by a repeatable suite.
+6. **Name matching.** `--file` and `--requeue` need the whole name. A unique prefix could be accepted.

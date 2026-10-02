@@ -1,0 +1,108 @@
+{% if warnings %}
+{% raw %}{{% alert title="Check this page" color="warning" %}}{% endraw %}
+
+A free, automatic check found something worth a look:
+
+{% for w in warnings %}
+- **{{ w.kind }}**: {{ w.excerpt | md_cell }} → {{ w.fix | md_cell }}
+{% endfor %}
+
+{% raw %}{{% /alert %}}{% endraw %}
+
+{% endif %}
+**{{ s.title }}** by _{{ s.creator }}_
+
+## 📝 Summary
+
+{{ s.summary | trim }}
+
+{% if facts %}
+## 📊 Metrics
+
+| Metric              | Value |
+| ------------------- | ----- |
+| Metrics As Of       | {{ facts.fetched_at }} |
+| Published           | {{ facts.upload_date or "Not available" }} |
+| Views               | {{ facts.views | num }} |
+| Likes               | {{ facts.likes | num }} |
+| Channel Subscribers | {{ facts.subscribers | num }} |
+
+{% elif s.metrics and s.metrics.has_values %}
+## 📊 Metrics
+
+| Metric              | Value |
+| ------------------- | ----- |
+| Metrics As Of       | {{ s.metrics.as_of or "Not available" }} |
+| Views               | {{ s.metrics.views or "Not available" }} |
+| Likes               | {{ s.metrics.likes or "Not available" }} |
+| Channel Subscribers | {{ s.metrics.subscribers or "Not available" }} |
+
+{% endif %}
+{% if facts and facts.chapters %}
+## 🗂️ Chapters
+
+{% for c in facts.chapters %}
+- {{ c.start_s | ts }} {{ c.title }}
+{% endfor %}
+
+{% elif s.chapters %}
+## 🗂️ Chapters
+
+{% for c in s.chapters %}
+- {{ c.time }} {{ c.title | md_cell }}
+{% endfor %}
+
+{% endif %}
+## 🎯 Main Purpose
+
+{{ s.main_purpose | trim }}
+
+## 💡 Key Examples
+
+{% for item in s.key_examples %}
+- {{ item }}
+{% else %}
+Not available.
+{% endfor %}
+
+## ✅ Action Plan
+
+{% for item in s.action_plan %}
+- {{ item }}
+{% else %}
+Not available.
+{% endfor %}
+
+## 🛠️ Tech Stack
+
+{% for item in s.tools %}
+- {{ item }}
+{% else %}
+Not available.
+{% endfor %}
+{% if s.tips %}
+
+## 💬 Tips
+
+| Tip | Explanation | How to Apply |
+| --- | ----------- | ------------ |
+{% for t in s.tips %}
+| {{ t.tip | md_cell }} | {{ t.explanation | md_cell }} | {{ t.how_to_apply | md_cell }} |
+{% endfor %}
+{% endif %}
+
+## 📺 Channel Application
+
+{{ s.channel_application | trim }}
+{% if s.links %}
+
+## 🔗 Links
+
+{% for link in s.links %}
+- [{{ link.label }}]({{ link.url }})
+{% endfor %}
+{% endif %}
+
+## 📄 YouTube Source
+
+{{ embed }}

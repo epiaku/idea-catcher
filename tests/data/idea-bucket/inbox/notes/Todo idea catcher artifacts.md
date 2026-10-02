@@ -1,0 +1,1 @@
+If in inbox a file that is not a md file , then just sent it to Epiaku-docs without analysing to a subfolder artifacts

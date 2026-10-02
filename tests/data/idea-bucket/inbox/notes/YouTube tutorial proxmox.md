@@ -1,0 +1,1 @@
+Create YouTube tutorial showing how you can use proxmox on your own server for example to run to AI agents or web sites

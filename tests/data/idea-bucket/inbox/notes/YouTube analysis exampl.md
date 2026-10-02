@@ -1,0 +1,1 @@
+Create a YouTube demo video to show what libraries like like Python or Google Gemini API model we can use to analyse YouTube video to create a summary and give an and built-in real demo or dashboard to analyse some YouTube videos

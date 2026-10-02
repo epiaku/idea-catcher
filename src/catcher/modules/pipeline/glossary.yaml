@@ -1,0 +1,25 @@
+# Words and names this author uses often, for the note prompt (dictated notes only).
+# Dictation gets them wrong, so the LLM is told to spell them like this when a word in the note
+# clearly sounds like one of them. Adding a term = adding one line here.
+#
+#   - Term                  # just the right spelling
+#   - Term: [misheard, as]  # the right spelling, and what the dictation often writes instead
+terms:
+  - epiaku: [epicu, epic you, a pea aku, epiacu]
+  - Claude Code: [cloud code, clod code, claw code]
+  - VS Code: [vscode, v s code, vs coat, fish studio code]
+  - Docsy: [taxi, docksy]
+  - tags: [tax IDs, text IDs]
+  - Obsidian
+  - Hugo
+  - FreeLLMApi: [free llm api, free LLM API, free l l m api]
+  - LLM: [l l m, LLMs]
+  - Gemini
+  - OpenAI
+  - Postgres: [post gress, postgress]
+  - Proxmox: [prox mox, proxmocs]
+  - Supabase: [super base, supa base]
+  - Neo4j: [neo 4j, neo for j]
+  - Docker
+  - NFS
+  - server

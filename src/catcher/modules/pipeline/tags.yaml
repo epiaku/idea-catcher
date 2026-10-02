@@ -1,0 +1,47 @@
+# The one source of truth for page tags. Adding a tag = adding one line here.
+idea_types:
+  - app-idea
+  - saas-idea
+  - youtube-idea
+  - digital-product-idea
+  - ai-influencer-idea
+  - todo
+  - tech-note
+  - strategy
+topics:
+  # AI & coding
+  - ai-agents
+  - llm-models
+  - freellmapi
+  - claude-code
+  - codex
+  - harnesses
+  - skills
+  - token-usage
+  - vibe-coding
+  - ai-coding-workflow
+  # Knowledge & tooling
+  - second-brain
+  - obsidian
+  - hugo
+  - automation
+  - home-lab
+  # YouTube
+  - tech-channel
+  - senior-wisdom
+  - content-creation
+  - script-writing
+  - video-production
+  - youtube-growth
+  # Business
+  - marketing
+  - monetization
+  - online-courses
+  - crm
+  - instagram
+  - freelancing
+  - bookkeeping
+  - administration
+projects:
+  - idea-catcher
+  - yummystream

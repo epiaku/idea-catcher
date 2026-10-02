@@ -1,0 +1,1 @@
+In the idea that we create getting the doc from Obsidian also add a summary and structured checker so we automatically already did a grammar check and we have better documents that end up indicator

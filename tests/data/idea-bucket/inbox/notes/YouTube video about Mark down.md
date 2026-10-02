@@ -1,0 +1,1 @@
+Create YouTube video explaining why must start writing in markdown and give some clear examples. You can even show our website and you go how we can use markdown to create aesthetic documentation website also find order use cases for markdown and compare markdown to other types of documentation formats.
