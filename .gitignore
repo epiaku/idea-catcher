@@ -6,3 +6,9 @@ dist/
 .env
 .env.local
 tmp/
+.cline/
+.claude/
+.clinerules/
+.roo/
+.roomodes
+CLAUDE.md
