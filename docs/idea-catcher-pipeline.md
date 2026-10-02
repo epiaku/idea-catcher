@@ -731,16 +731,18 @@ Derived from the current sections and pages of epiaku-docs.
 
 **Idea type** (at most one):
 
+At most one idea type. If a model returns several, the one that is higher in this table wins (the order is the order of `idea_types` in `tags.yaml`); `tech-note` is the catch-all and always loses.
+
 | Tag                    | Meaning                                              | Curated page that links to the tag page |
 | ---------------------- | ---------------------------------------------------- | --------------------------------------- |
-| `app-idea`             | Phone or web app idea                                | `apps/ideas/`                           |
-| `saas-idea`            | SaaS service idea                                    | `saas/ideas/`                           |
 | `youtube-idea`         | Video idea for one of the channels                   | `youtube-ideas/`                        |
+| `saas-idea`            | SaaS service idea                                    | `saas/ideas/`                           |
+| `app-idea`             | Phone or web app idea                                | `apps/ideas/`                           |
 | `digital-product-idea` | Course, template, e-book or other digital product    | `digital-products/`                     |
 | `ai-influencer-idea`   | AI persona or influencer concept                     | `ai-influencers/`                       |
 | `todo`                 | Something to do, not an idea                         | `todo/`                                 |
-| `tech-note`            | Learning, tool or architecture note (like this page) | `tech-stack/`                           |
 | `strategy`             | Business direction, positioning, freelancing         | `strategy/`                             |
+| `tech-note`            | Learning, tool or architecture note (like this page) | `tech-stack/`                           |
 
 **Topics** (1–4):
 

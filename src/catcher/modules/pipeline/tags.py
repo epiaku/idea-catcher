@@ -47,17 +47,21 @@ def clean_tag(tag: object) -> str:
 
 
 def normalize_tags(raw: Iterable[str], tags: TagList) -> TagResult:
-    idea: list[str] = []
+    cleaned: list[str] = []
+    for tag in map(clean_tag, raw):
+        if tag and tag not in cleaned:
+            cleaned.append(tag)
+    # The idea type that is first in tags.idea_types (highest priority) wins.
+    candidates = [t for t in cleaned if t in tags.idea_types]
+    winner = min(candidates, key=tags.idea_types.index) if candidates else None
+    idea: list[str] = [winner] if winner else []
     topics: list[str] = []
     projects: list[str] = []
     dropped: list[str] = []
-    seen: set[str] = set()
-    for tag in map(clean_tag, raw):
-        if not tag or tag in seen:
-            continue
-        seen.add(tag)
-        if tag in tags.idea_types and not idea:
-            idea.append(tag)
+    for tag in cleaned:
+        if tag in tags.idea_types:
+            if tag != winner:
+                dropped.append(tag)
         elif tag in tags.topics and len(topics) < MAX_TOPICS:
             topics.append(tag)
         elif tag in tags.projects and not projects:

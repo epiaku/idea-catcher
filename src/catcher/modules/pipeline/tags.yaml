@@ -1,13 +1,15 @@
 # The one source of truth for page tags. Adding a tag = adding one line here.
+# Idea types in priority order: when a page gets several, the one listed first wins.
+# The general catch-all (tech-note) stays last.
 idea_types:
-  - app-idea
-  - saas-idea
   - youtube-idea
+  - saas-idea
+  - app-idea
   - digital-product-idea
   - ai-influencer-idea
   - todo
-  - tech-note
   - strategy
+  - tech-note
 topics:
   # AI & coding
   - ai-agents
