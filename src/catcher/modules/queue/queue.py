@@ -1,4 +1,4 @@
-"""The job queue: put work on it, claim it, finish it, and (in a later step) reap it."""
+"""The job queue: put work on it, claim it, finish it, and reap the ones that were abandoned."""
 
 import math
 import uuid
@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import inspect, select, text, update
+from sqlalchemy import func, inspect, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
@@ -182,3 +182,41 @@ def defer(session: Session, job: Job, *, now: datetime, run_after: datetime, rea
     require_aware(run_after)
     values = {"status": "queued", "run_after": run_after, "reason": reason, **_UNLOCKED}
     return _fenced_update(session, job, values, attempts_delta=-1)
+
+
+def reap(session: Session, *, now: datetime) -> list[Job]:
+    """Recover jobs whose worker went silent: every running job with `lease_until < now`.
+
+    With attempts left it goes back to `queued` (due now, `reason='lease expired'`); the claim already
+    counted the attempt, and `claim_seq` stays put so the old worker's token stays dead. Out of attempts
+    (a poison job that keeps killing its worker) it becomes `failed`. `heartbeat_at` is left as it was:
+    it shows when the worker was last seen. Returns the jobs it changed, as they are now. Does not commit.
+
+    A heartbeat after the lease expired but before a reap still succeeds and revives the lease: the reap
+    is the authority, not the clock. Each UPDATE re-checks its WHERE after waiting for a row lock, so a
+    concurrent heartbeat, complete or reaper wins cleanly. Run it at worker start and on a timer."""
+    require_aware(now)
+    expired = (Job.status == "running", Job.lease_until < now)
+    requeue = (
+        update(Job)
+        .where(*expired, Job.attempts < Job.max_attempts)
+        .values(status="queued", run_after=now, reason="lease expired", **_UNLOCKED)
+    )
+    give_up = (
+        update(Job)
+        .where(*expired, Job.attempts >= Job.max_attempts)
+        .values(
+            status="failed",
+            error=func.concat("lease expired too often (", Job.attempts, " attempts)"),
+            finished_at=now,
+            **_UNLOCKED,
+        )
+    )
+    changed: list[Job] = []
+    with session.no_autoflush:  # a flush would write unrelated pending changes mid-reap
+        for statement in (requeue, give_up):
+            statement = statement.returning(Job).execution_options(
+                synchronize_session=False, populate_existing=True
+            )
+            changed.extend(session.scalars(statement))
+    return changed
