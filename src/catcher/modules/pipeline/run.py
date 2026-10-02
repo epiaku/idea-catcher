@@ -7,21 +7,12 @@ from typing import Literal
 from catcher import __version__
 from catcher.core.files import file_lock
 from catcher.core.git import GitError, commit_paths, pull, push
-from catcher.modules.llm.profiles import UnknownProfile
-from catcher.modules.llm.service import (
-    BackendUnavailable,
-    BudgetExhausted,
-    InputRejected,
-    InvalidOutput,
-    UsageLimitReached,
-)
 from catcher.modules.pipeline.inbox import (
     Note,
     Requeued,
     ScanResult,
     copy_artifact,
     deferred_in_output,
-    is_snapshot_of,
     mark_deferred,
     move_to_duplicates,
     move_to_failed,
@@ -31,10 +22,11 @@ from catcher.modules.pipeline.inbox import (
     scan_inbox,
     start_work,
 )
+from catcher.modules.pipeline.outcome import Outcome, classify
 from catcher.modules.pipeline.process import ProcessedPage, ProcessOptions, Services, process_note
 from catcher.modules.pipeline.publish import write_output, write_page
+from catcher.modules.pipeline.steps import order_notes, split_duplicates
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
-from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable, FetchSkipped
 from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.run")
@@ -96,6 +88,73 @@ class RunReport:
 
     def counts(self) -> dict[str, int]:
         return dict(Counter(item.status for item in self.items))
+
+
+@dataclass
+class RunState:
+    """What the run loop remembers from one document to the next."""
+
+    blocked: set[str]  # backends not to call again in this run (a usage limit or budget was hit)
+    budget_blocked: dict[str, int]  # backend -> notes waiting because its budget is used up
+    attempted: int  # documents worked on, counted against --limit
+    seen_ids: set[str]  # ids processed so far, to warn when a page replaces an earlier one
+
+
+def outcome_message(outcome: Outcome, state: RunState) -> str:
+    """The report message: a usage limit on a backend whose budget is already used up is the budget too.
+    `classify` cannot know that (it is stateless), so the rule lives here."""
+    backend = outcome.backend
+    if backend is not None and not outcome.budget and backend in state.budget_blocked:
+        return f"budget reached ({backend})"
+    return outcome.message
+
+
+def log_outcome(who: str, outcome: Outcome, message: str, error: BaseException) -> None:
+    """One log line per outcome, at the level the run has always used. Call it inside the `except` block,
+    so `log.exception` has the traceback."""
+    if outcome.unexpected:
+        log.exception("%s: failed, %s", who, message)
+    elif outcome.kind == "failed":
+        log.error("%s: failed, %s", who, message)
+    elif outcome.config_error:
+        log.error("%s: deferred, configuration error: %s", who, message)
+    elif outcome.budget:
+        log.warning("%s: deferred, %s: %s", who, message, error)
+    elif outcome.kind == "deferred":
+        log.warning("%s: deferred, %s", who, message)
+    elif outcome.kind == "interrupted":
+        log.warning("%s: interrupted, back in inbox/", who)
+    elif outcome.kind == "waiting":
+        log.info("%s: waiting, %s", who, message)
+    else:  # would_fetch
+        log.info("%s: %s", who, message)
+
+
+def apply_outcome(
+    ideas: Path, note: Note, outcome: Outcome, state: RunState, item: ItemReport, *, dry_run: bool
+) -> list[Path]:
+    """A document did not get published: record why in its report item and in the run state, and put the
+    document where it belongs (a dry run moves nothing). Returns the touched idea-bucket paths."""
+    message = outcome_message(outcome, state)
+    item.status, item.message = outcome.kind, message
+    backend = outcome.backend
+    if backend is not None:
+        state.blocked.add(backend)
+        if outcome.budget or backend in state.budget_blocked:
+            state.budget_blocked[backend] = state.budget_blocked.get(backend, 0) + 1
+    if outcome.kind == "waiting":
+        state.attempted -= 1  # it was not worked on, so it does not count against --limit
+    if dry_run:
+        return []
+    if outcome.kind == "deferred":  # a temporary error: the working copy stays in output/ and says why
+        return mark_deferred(ideas, note, message)
+    if outcome.kind == "failed":
+        return move_to_failed(
+            ideas, note.output_path(ideas), message, doc_id=note.doc_id, doc_class=note.doctype.name
+        )
+    if outcome.kind in ("waiting", "interrupted"):  # leave it where the next run finds it
+        return return_to_inbox(ideas, note)
+    return []  # would_fetch: a dry run only
 
 
 def finish(ideas: Path, note: Note, processed: ProcessedPage) -> list[Path]:
@@ -215,9 +274,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
         report.unreadable[rel] = reason
         if not opts.dry_run:
             touched_ideas += move_to_failed(ideas, ideas / rel, f"cannot read the capture: {reason}")
-    ordered = sorted(
-        scan.notes, key=lambda n: (str(n.doc.fm.get("captured", "")), n.doc_id, n.path.as_posix())
-    )
+    ordered = order_notes(scan.notes)
 
     for query in opts.only or []:
         if query not in scan.matched:
@@ -231,17 +288,8 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
 
     # Several clips of one conversation: only the longest goes to the LLM.
     # Earlier snapshots of it move to duplicates/ (nothing is deleted).
-    winners: dict[str, Note] = {}
-    for note in ordered:
-        best = winners.get(note.doc_id)
-        if best is None or len(note.doc.body) > len(best.doc.body):
-            winners[note.doc_id] = note
-    to_process: list[Note] = []
-    for note in ordered:
-        winner = winners[note.doc_id]
-        if note is winner or not is_snapshot_of(note.doc.body, winner.doc.body):
-            to_process.append(note)
-            continue
+    to_process, duplicates = split_duplicates(ordered)
+    for note, winner in duplicates:
         item = ItemReport(
             note.doc_id, note.doctype.name, "duplicate", f"duplicate of {winner.rel.as_posix()}"
         )
@@ -264,28 +312,12 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
         len(scan.errors),
     )
 
-    def file_as_failed(note: Note, reason: str) -> None:
-        if not opts.dry_run:
-            touched_ideas.extend(
-                move_to_failed(
-                    ideas, note.output_path(ideas), reason, doc_id=note.doc_id, doc_class=note.doctype.name
-                )
-            )
-
-    def stall(note: Note, reason: str) -> None:
-        """A temporary error: the working copy stays in output/ and says why."""
-        if not opts.dry_run:
-            touched_ideas.extend(mark_deferred(ideas, note, reason))
-
-    blocked: set[str] = set()
-    budget_blocked: dict[str, int] = {}  # backend -> notes waiting because its budget is used up
-    attempted = 0
-    seen_ids: set[str] = set()
+    state = RunState(blocked=set(), budget_blocked={}, attempted=0, seen_ids=set())
     for position, note in enumerate(ordered, start=1):
         who = f"({position}/{total}) {note_label(note)}"
         item = ItemReport(note.doc_id, note.doctype.name, "skipped")
         report.items.append(item)
-        if opts.limit is not None and attempted >= opts.limit:
+        if opts.limit is not None and state.attempted >= opts.limit:
             item.message = "run limit reached"
             log.info("%s: skipped, %s", who, item.message)
             continue
@@ -299,16 +331,16 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
                 item.status, item.message = "waiting", f"{waiting.message()} (stays in inbox/)"
                 log.info("%s: waiting, %s", who, item.message)
                 continue
-        attempted += 1
+        state.attempted += 1
         log.info("%s: processing", who)
-        if note.doc_id in seen_ids:
+        if note.doc_id in state.seen_ids:
             item.message = "same id as an earlier document in this run: this page replaces the earlier one"
             log.warning("%s: %s", who, item.message)
-        seen_ids.add(note.doc_id)
+        state.seen_ids.add(note.doc_id)
         popts = ProcessOptions(
             profile=opts.profile,
             dry_run=opts.dry_run,
-            blocked_backends=frozenset(blocked),
+            blocked_backends=frozenset(state.blocked),
             facts_dir=facts_dir,
             refresh_facts=opts.refresh_facts,
             wait_youtube=opts.wait_youtube,
@@ -323,65 +355,18 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
                     log.error("%s: %s", who, item.message)
                     continue
             processed = process_note(note, svc, popts)
-        except KeyboardInterrupt:  # Ctrl-C or SIGTERM: leave the document where the next run finds it
-            if not opts.dry_run:
-                touched_ideas += return_to_inbox(ideas, note)
-            item.status, item.message = "interrupted", "back in inbox/"
-            log.warning("%s: interrupted, back in inbox/", who)
-            report.problems.append("interrupted: the remaining documents were not processed")
-            break
-        except BudgetExhausted as e:
-            blocked.add(e.backend)
-            budget_blocked[e.backend] = budget_blocked.get(e.backend, 0) + 1
-            item.status, item.message = "deferred", f"budget reached ({e.backend})"
-            log.warning("%s: deferred, %s: %s", who, item.message, e)
-            stall(note, item.message)
-            continue
-        except UsageLimitReached as e:
-            blocked.add(e.backend)
-            if e.backend in budget_blocked:
-                budget_blocked[e.backend] += 1
-                item.status, item.message = "deferred", f"budget reached ({e.backend})"
-            else:
-                item.status, item.message = "deferred", f"usage limit ({e.backend}): {e}"
-            log.warning("%s: deferred, %s", who, item.message)
-            stall(note, item.message)
-            continue
-        except BackendUnavailable as e:
-            item.status, item.message = "deferred", str(e)
-            log.warning("%s: deferred, %s", who, item.message)
-            stall(note, item.message)
-            continue
-        except UnknownProfile as e:  # a configuration problem, not a bad note
-            item.status, item.message = "deferred", str(e)
-            log.error("%s: deferred, configuration error: %s", who, item.message)
-            stall(note, item.message)
-            continue
-        except (InvalidOutput, InputRejected) as e:  # the document itself: a retry would fail the same way
-            item.status, item.message = "failed", str(e)
-            log.error("%s: failed, %s", who, item.message)
-            file_as_failed(note, item.message)
-            continue
-        except FactsDeferred as e:  # YouTube is closed for now (the gap, the breaker): wait in inbox/
-            if not opts.dry_run:
-                touched_ideas += return_to_inbox(ideas, note)
-            attempted -= 1  # it was not worked on, so it does not count against --limit
-            item.status, item.message = "waiting", f"{e} (back in inbox/)"
-            log.info("%s: waiting, %s", who, item.message)
-            continue
-        except FetchSkipped as e:  # a dry run does not call YouTube
-            item.status, item.message = "would_fetch", str(e)
-            log.info("%s: %s", who, item.message)
-            continue
-        except FactsUnavailable as e:
-            item.status, item.message = "deferred", str(e)
-            log.warning("%s: deferred, %s", who, item.message)
-            stall(note, item.message)
-            continue
-        except Exception as e:  # one broken note must not stop the run
-            item.status, item.message = "failed", f"unexpected {type(e).__name__}: {e}"
-            log.exception("%s: failed, %s", who, item.message)
-            file_as_failed(note, item.message)
+        except (Exception, KeyboardInterrupt) as e:  # one broken note must not stop the run; Ctrl-C does
+            outcome = classify(e)
+            # Back to inbox/ (waiting, interrupted): the file moves, then the log line; else the reverse.
+            back_to_inbox = outcome.kind in ("waiting", "interrupted")
+            if not back_to_inbox:
+                log_outcome(who, outcome, outcome_message(outcome, state), e)
+            touched_ideas += apply_outcome(ideas, note, outcome, state, item, dry_run=opts.dry_run)
+            if back_to_inbox:
+                log_outcome(who, outcome, item.message, e)
+            if outcome.kind == "interrupted":  # Ctrl-C or SIGTERM: the rest waits for the next run
+                report.problems.append("interrupted: the remaining documents were not processed")
+                break
             continue
         finally:
             if vid and not opts.dry_run:  # the saved facts are committed, whatever happened next
@@ -394,7 +379,14 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
         if processed.problems:
             item.status, item.message = "failed", "; ".join(processed.problems)
             log.error("%s: failed, page is invalid: %s", who, item.message)
-            file_as_failed(note, f"page is invalid: {item.message}")
+            if not opts.dry_run:
+                touched_ideas += move_to_failed(
+                    ideas,
+                    note.output_path(ideas),
+                    f"page is invalid: {item.message}",
+                    doc_id=note.doc_id,
+                    doc_class=note.doctype.name,
+                )
         elif opts.dry_run:
             item.status = "would_publish"
             log.info("%s: would publish %s", who, processed.filename)
@@ -408,7 +400,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             item.message = f"{item.message}; {dropped}" if item.message else dropped
             log.warning("%s: %s", who, dropped)
 
-    for backend, waiting in budget_blocked.items():
+    for backend, waiting in state.budget_blocked.items():
         log.error(
             "%s budget reached: %d note(s) waiting; "
             "raise the key's budget or point the profile at another provider",
@@ -419,7 +411,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     counts = report.counts()
     log.info(
         "processed %d/%d: %s",
-        attempted,
+        state.attempted,
         total,
         ", ".join(f"{n} {status}" for status, n in sorted(counts.items())) or "nothing to do",
     )
