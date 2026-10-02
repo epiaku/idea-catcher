@@ -28,6 +28,7 @@ ITEM_STATUSES = (
     "failed",
     "duplicate",
 )
+ITEM_ORIGINS = ("inbox", "backfill")
 EVENT_LEVELS = ("info", "warning", "error")
 
 
@@ -53,6 +54,8 @@ class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
         CheckConstraint(_in("status", JOB_STATUSES), name="ck_jobs_status"),
+        CheckConstraint("attempts >= 0 AND claim_seq >= 0", name="ck_jobs_counters_non_negative"),
+        CheckConstraint("status <> 'running' OR lease_until IS NOT NULL", name="ck_jobs_running_has_lease"),
         Index(
             "uq_jobs_active_dedupe_key",
             "dedupe_key",
@@ -66,6 +69,7 @@ class Job(Base):
             "created_at",
             postgresql_where=text("status = 'queued'"),
         ),
+        Index("ix_jobs_running_lease", "lease_until", postgresql_where=text("status = 'running'")),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -93,7 +97,11 @@ class Job(Base):
 
 class JobItem(Base):
     __tablename__ = "job_items"
-    __table_args__ = (CheckConstraint(_in("status", ITEM_STATUSES), name="ck_job_items_status"),)
+    __table_args__ = (
+        CheckConstraint(_in("status", ITEM_STATUSES), name="ck_job_items_status"),
+        CheckConstraint(_in("origin", ITEM_ORIGINS), name="ck_job_items_origin"),
+        Index("ix_job_items_root_job_id", "root_job_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     calculated_name: Mapped[str] = mapped_column(Text, unique=True)  # <subfolder>/<name>.md
@@ -125,7 +133,11 @@ class JobItem(Base):
 
 class JobEvent(Base):
     __tablename__ = "job_events"
-    __table_args__ = (CheckConstraint(_in("level", EVENT_LEVELS), name="ck_job_events_level"),)
+    __table_args__ = (
+        CheckConstraint(_in("level", EVENT_LEVELS), name="ck_job_events_level"),
+        Index("ix_job_events_job_id", "job_id"),
+        Index("ix_job_events_item_id", "item_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id"))

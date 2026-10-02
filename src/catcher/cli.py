@@ -332,9 +332,18 @@ def db_upgrade(revision: Annotated[str, typer.Argument()] = "head") -> None:
     alembic_command.upgrade(alembic_config(Settings().database_url), revision)
 
 
-@db_app.command("downgrade")
-def db_downgrade(revision: Annotated[str, typer.Argument()] = "base") -> None:
-    """Downgrade the database in DATABASE_URL to REVISION (default: empty)."""
+@db_app.command("downgrade", context_settings={"ignore_unknown_options": True})  # so that -1 is a revision
+def db_downgrade(
+    revision: Annotated[
+        str, typer.Argument(help="a revision, or -1 for one step back; base drops everything")
+    ],
+    yes: Annotated[bool, typer.Option("--yes", help="do not ask before downgrading to base")] = False,
+) -> None:
+    """Downgrade the database in DATABASE_URL to REVISION.
+
+    `base` drops every table with all its rows, so it asks first unless --yes is given."""
+    if revision == "base" and not yes:
+        typer.confirm("Downgrade to base drops every table and all its rows. Continue?", abort=True)
     alembic_command.downgrade(alembic_config(Settings().database_url), revision)
 
 

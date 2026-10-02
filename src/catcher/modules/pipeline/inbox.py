@@ -294,6 +294,8 @@ def rel_in_inbox(ideas_repo: Path, src: Path) -> Path:
 def _rel_in_folder(ideas_repo: Path, src: Path) -> tuple[str, Path]:
     """The top folder (`inbox` or `output`) a file is in, and its path below it."""
     parts = src.resolve().relative_to(ideas_repo.resolve()).parts
+    if not parts:
+        raise ValueError(f"{src} is the repo itself")
     return parts[0], Path(*parts[1:])
 
 

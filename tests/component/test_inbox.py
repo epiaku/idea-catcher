@@ -578,3 +578,11 @@ def test_a_path_outside_the_five_folders_is_refused(tmp_path):
     outside = put(tmp_path.parent, f"{tmp_path.name}-outside.md", "text\n")
     with pytest.raises(ValueError):
         load_staged_note(tmp_path, outside)
+
+
+def test_the_repo_root_and_a_stage_folder_itself_are_refused(tmp_path):
+    (tmp_path / "output").mkdir()
+    outside = put(tmp_path.parent, f"{tmp_path.name}-outside2.md", "text\n")
+    for path in (tmp_path, tmp_path / "output", outside):
+        with pytest.raises(ValueError):
+            load_staged_note(tmp_path, path)
