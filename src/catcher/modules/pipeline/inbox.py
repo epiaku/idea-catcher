@@ -24,6 +24,7 @@ _NAMED = re.compile(r"^\d{8}-[0-9a-f]{6}-")  # a name that already has its date 
 _CALCULATED_NAME = re.compile(r"^\d{8}-[0-9a-f]{6}-[a-z0-9-]+\.md$")  # exactly what `calculated_stem` makes
 _JUNK = frozenset({"thumbs.db", "desktop.ini"})
 _ILLEGAL = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+STAGE_FOLDERS = ("inbox", "output", "archive", "failed", "duplicates")
 ORIGINAL_KEY = "original_filename"
 CALCULATED_KEY = "calculated_filename"
 
@@ -589,3 +590,17 @@ def requeue_from_archive(
 def read_note(path: Path, now: datetime | None = None) -> Note:
     """Read one document from anywhere, for `reason` and `render`."""
     return _analyse(path, load(path), path.as_posix(), now or datetime.now().astimezone())
+
+
+def load_staged_note(ideas_repo: Path, path: Path, now: datetime | None = None) -> Note:
+    """Read a document from `inbox/`, `output/`, `archive/`, `failed/` or `duplicates/` and keep its
+    subfolder (`notes/` or `clippings/`), which `read_note` only finds below an `inbox` folder."""
+    try:
+        top, rel = _rel_in_folder(ideas_repo, path)
+    except ValueError:
+        raise ValueError(f"{path} is not inside {ideas_repo}") from None
+    if top not in STAGE_FOLDERS or not rel.parts or rel == Path("."):
+        raise ValueError(f"{path} is not inside one of {', '.join(STAGE_FOLDERS)}")
+    note = _analyse(path, load(path), path.as_posix(), now or datetime.now().astimezone())
+    note.inbox_rel = rel
+    return note

@@ -2,6 +2,7 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from catcher.cli import app
@@ -15,6 +16,7 @@ from catcher.modules.pipeline.inbox import (
     copy_artifact,
     deferred_in_output,
     is_snapshot_of,
+    load_staged_note,
     mark_deferred,
     move_to_duplicates,
     move_to_failed,
@@ -527,3 +529,52 @@ def test_deferred_in_output_lists_only_the_stalled_documents(tmp_path):
     start_work(tmp_path, b, now=NOW)
     mark_deferred(tmp_path, a, "limit", now=NOW)
     assert deferred_in_output(tmp_path) == [f"notes/{a.name}"]
+
+
+def _started(tmp_path):
+    put(tmp_path, "inbox/notes/Walk.md", "Create YouTube content walking around\n")
+    [note] = scan_inbox(tmp_path, now=NOW).notes
+    start_work(tmp_path, note, now=NOW)
+    return note
+
+
+def test_a_note_loaded_from_output_keeps_its_subfolder(tmp_path):
+    started = _started(tmp_path)
+    out = started.output_path(tmp_path)
+    note = load_staged_note(tmp_path, out)
+    assert note.rel == Path("notes") / started.name
+    assert note.path == out
+    assert note.output_path(tmp_path) == out
+
+
+def test_a_note_loaded_from_archive_keeps_its_subfolder(tmp_path):
+    started = _started(tmp_path)
+    archived = tmp_path / "archive" / "notes" / started.name
+    note = load_staged_note(tmp_path, archived)
+    assert note.rel == Path("notes") / started.name
+    assert note.output_path(tmp_path) == started.output_path(tmp_path)
+
+
+def test_a_note_loaded_from_failed_keeps_its_subfolder(tmp_path):
+    started = _started(tmp_path)
+    move_to_failed(tmp_path, started.output_path(tmp_path), "boom", now=NOW)
+    failed = tmp_path / "failed" / "notes" / started.name
+    note = load_staged_note(tmp_path, failed)
+    assert note.rel == Path("notes") / started.name
+    assert note.output_path(tmp_path) == started.output_path(tmp_path)
+
+
+def test_a_note_loaded_from_duplicates_keeps_its_subfolder(tmp_path):
+    started = _started(tmp_path)
+    dup = put(tmp_path, f"duplicates/clippings/{started.name}", started.output_path(tmp_path).read_text())
+    note = load_staged_note(tmp_path, dup)
+    assert note.rel == Path("clippings") / started.name
+
+
+def test_a_path_outside_the_five_folders_is_refused(tmp_path):
+    other = put(tmp_path, "elsewhere/notes/x.md", "text\n")
+    with pytest.raises(ValueError):
+        load_staged_note(tmp_path, other)
+    outside = put(tmp_path.parent, f"{tmp_path.name}-outside.md", "text\n")
+    with pytest.raises(ValueError):
+        load_staged_note(tmp_path, outside)
