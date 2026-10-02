@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from alembic import command as alembic_command
 from dotenv import load_dotenv
 
 from catcher import __version__
 from catcher.core.config import Settings
+from catcher.core.db import alembic_config
 from catcher.core.log import configure_logging
 from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError, reset_test_repos
 from catcher.modules.llm.backends import make_backend
@@ -313,6 +315,27 @@ def youtube_facts(url: str) -> None:
         typer.echo(str(e), err=True)
         raise typer.Exit(2) from e
     typer.echo(facts.model_dump_json(indent=2))
+
+
+db_app = typer.Typer(no_args_is_help=True, help="The database schema (Alembic migrations).")
+app.add_typer(db_app, name="db")
+
+
+@db_app.callback()
+def db_group() -> None:
+    """The database schema (Alembic migrations)."""
+
+
+@db_app.command("upgrade")
+def db_upgrade(revision: Annotated[str, typer.Argument()] = "head") -> None:
+    """Upgrade the database in DATABASE_URL to REVISION (default: the latest)."""
+    alembic_command.upgrade(alembic_config(Settings().database_url), revision)
+
+
+@db_app.command("downgrade")
+def db_downgrade(revision: Annotated[str, typer.Argument()] = "base") -> None:
+    """Downgrade the database in DATABASE_URL to REVISION (default: empty)."""
+    alembic_command.downgrade(alembic_config(Settings().database_url), revision)
 
 
 testdata_app = typer.Typer(no_args_is_help=True, help="Test data for trying the Idea Catcher on copies.")

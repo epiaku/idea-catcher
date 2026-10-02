@@ -1,12 +1,15 @@
 import os
+import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from alembic import command
 from sqlalchemy import Engine, inspect, text
+from sqlalchemy.engine import make_url
 
-from catcher.core.db import make_engine, session_scope
+from catcher.core.db import alembic_config, make_engine, session_scope
 
 IMAGE = "pgvector/pgvector:pg17"
 
@@ -21,7 +24,7 @@ def _point_docker_at_the_desktop_socket() -> None:
 
 
 @pytest.fixture(scope="session")
-def pg_engine() -> Iterator[Engine]:
+def pg_url() -> Iterator[str]:
     _point_docker_at_the_desktop_socket()
     try:
         from testcontainers.community.postgres import PostgresContainer
@@ -30,19 +33,42 @@ def pg_engine() -> Iterator[Engine]:
         container.start()
     except Exception as error:  # no daemon, no socket, no image: the DB tests cannot run here
         pytest.skip(f"Docker is not running ({type(error).__name__})")
-    engine = make_engine(container.get_connection_url())
     try:
-        yield engine  # Task 8 adds `alembic upgrade head` here
+        yield container.get_connection_url()
+    finally:
+        container.stop()
+
+
+@pytest.fixture(scope="session")
+def pg_engine(pg_url: str) -> Iterator[Engine]:
+    command.upgrade(alembic_config(pg_url), "head")
+    engine = make_engine(pg_url)
+    try:
+        yield engine
     finally:
         engine.dispose()
-        container.stop()
+
+
+@pytest.fixture
+def fresh_database_url(pg_url: str) -> Iterator[str]:
+    """A new, empty database in the same container, so migration tests leave the shared schema alone."""
+    name = f"fresh_{uuid.uuid4().hex[:12]}"
+    admin = make_engine(pg_url).execution_options(isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        connection.execute(text(f'create database "{name}"'))
+    try:
+        yield make_url(pg_url).set(database=name).render_as_string(hide_password=False)
+    finally:
+        with admin.connect() as connection:
+            connection.execute(text(f'drop database if exists "{name}" with (force)'))
+        admin.dispose()
 
 
 @pytest.fixture
 def session(pg_engine: Engine):
     with session_scope(pg_engine) as db_session:
         yield db_session
-    tables = inspect(pg_engine).get_table_names(schema="public")
+    tables = [t for t in inspect(pg_engine).get_table_names(schema="public") if t != "alembic_version"]
     if tables:
         names = ", ".join(f'"{name}"' for name in tables)
         with session_scope(pg_engine) as cleanup:

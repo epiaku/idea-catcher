@@ -2,8 +2,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
+from alembic.config import Config
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session
+
+from catcher.core.config import PROJECT_ROOT
 
 
 def make_engine(url: str) -> Engine:
@@ -32,3 +35,11 @@ def require_aware(moment: datetime) -> datetime:
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def alembic_config(url: str) -> Config:
+    """The Alembic setup for one database; `migrations/env.py` reads the URL from the attribute."""
+    config = Config(str(PROJECT_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
+    config.attributes["url"] = url
+    return config
