@@ -91,11 +91,12 @@ What one run does, in order:
   - It works together with `--limit`, which then applies to the named documents.
   - The duplicate check only compares the documents you named. If you name a short clip and not its longer copy, the short clip is processed on its own.
 
-- **`--requeue NAME`**: run a document **again**. It **moves** the archived original from `archive/` back into `inbox/` (same subfolder, same calculated name), deletes everything the earlier run left behind (the working copy in `output/` with its `.youtube.json` facts file, and for a failed note the copy in `failed/` with its `.error.txt`), then processes only that document. So the document is in one place only, `inbox/`, until the run starts on it. Use it to retry a stalled (`deferred`) note, or to redo a published one, for example with another model. Repeat it for more.
+- **`--requeue NAME`**: run a document **again**. It **moves** the archived original from `archive/` back into `inbox/` (same subfolder, same calculated name), deletes everything the earlier run left behind (the working copy in `output/` with its `.youtube.json` facts file, and for a failed note the copy in `failed/` with its `.error.txt`), then processes only that document. So the document is in one place only, `inbox/`, until the run starts on it. Use it to retry a stalled (`deferred`) note, or to redo a published one. A requeue **reuses a good saved LLM reply** (see [Saved LLM replies](#saved-llm-replies)): for a new answer, for example from another model, add `--refresh-llm`. Repeat it for more.
 
   ```bash
   uv run catcher run pipeline --requeue "YouTube walks"
   uv run catcher run pipeline --requeue "YouTube walks" --profile notes
+  uv run catcher run pipeline --requeue "YouTube walks" --refresh-llm
   ```
 
   - The name forms are the same as for `--file`: the name it was captured under, or the calculated name (`notes/20260930-1f8b47-youtube-walks.md`).
@@ -126,7 +127,7 @@ What one run does, in order:
   uv run catcher run pipeline --retry-deferred
   ```
 
-- **`--dry-run`**: change no files and commit nothing. Note that with a real profile a dry run **still calls the LLM**. Combine it with `--profile fake` for a free check. A dry run **never calls YouTube**, and does not use up the gap: a clip with no saved facts shows `would_fetch`.
+- **`--dry-run`**: change no files and commit nothing. Note that with a real profile a dry run **still calls the LLM**, unless a good reply is saved (it reads those, free). Combine it with `--profile fake` for a free check. A dry run **never calls YouTube**, and does not use up the gap: a clip with no saved facts shows `would_fetch`.
 
   ```bash
   uv run catcher run pipeline --profile fake --dry-run
@@ -273,7 +274,7 @@ All settings are in `.env`; see the [configuration page](../idea-catcher-configu
 
 ## Saved LLM replies {#saved-llm-replies}
 
-Every LLM call of `run pipeline` leaves a **trace** in `llm/<subfolder>/<calculated name>.json` in `idea-bucket` (the same subfolder and name as in `archive/`, `output/` and `failed/`), committed with the run like `facts/`. A requeue overwrites the same file. A `--dry-run` writes nothing. A trace holds the raw reply of each attempt, tokens, duration, model, backend, profile, prompt version, the `content_key`, the `prompt_sha256`, the outcome (`ok`, `invalid_output`, `backend_error` or `invalid_page`), the error and the validated output. A trimmed example (replies shortened):
+Every LLM call of `run pipeline` leaves a **trace** in `llm/<subfolder>/<calculated name>.json` in `idea-bucket` (the same subfolder and name as in `archive/`, `output/` and `failed/`), committed with the run like `facts/`. A requeue overwrites the same file. A `--dry-run` writes nothing. A trace holds the raw reply of each attempt, tokens, duration, model, backend, profile, prompt version, the `content_key`, the `prompt_sha256`, the outcome (`ok`, `invalid_output`, `backend_error` or `invalid_page`), the error and the validated output. A trimmed example (replies, description and body shortened or left out):
 
 ```json
 {
@@ -304,7 +305,7 @@ Every LLM call of `run pipeline` leaves a **trace** in `llm/<subfolder>/<calcula
 - **Only `run pipeline`** records and reads traces: `render` and `reason` do not. `duration_ms` is the duration of the last HTTP call only, not of a transient retry before it.
 - **To debug a bad page**, open the trace of the document: `attempts[].reply` is what the model said, `error` says why a call or a page was refused, `output` is what was validated. After a real run, commit and push `idea-bucket` like any other result.
 
-The settings are `LLM_CACHE`, `LLM_TRACE` and `LLM_TRACE_PROMPT` (see the [configuration page](../idea-catcher-configuration/)). The test data holds a frozen run, so a reset test repo runs with no model and no YouTube call (see [What the test data is](#what-the-test-data-is)).
+The settings are `LLM_CACHE`, `LLM_TRACE` and `LLM_TRACE_PROMPT` (see the [configuration page](../idea-catcher-configuration/)). The test data holds a frozen run, so a reset test repo runs with no model and no YouTube call (see [Recipes on test data](#recipes-on-test-data)).
 
 ## Reading the output
 
@@ -525,8 +526,10 @@ uv run catcher run pipeline --requeue "<the-file>"                  # the origin
 #### Redo a note with another model
 
 ```bash
-uv run catcher run pipeline --requeue "YouTube walks" --profile notes
+uv run catcher run pipeline --requeue "YouTube walks" --refresh-llm
 ```
+
+Without `--refresh-llm` a good saved reply is reused and no new call is made, even when `profiles.yaml` points at another model: the saved reply is matched on the profile name and the prompt version, not on the model. A `--profile` override with another profile name is a miss too.
 
 #### Bring back a file from `duplicates/`
 
@@ -568,11 +571,12 @@ uv run catcher run pipeline --push                # process the rest and push
 
 **Send a PDF or an image to epiaku-docs.** Drop the file in `inbox/` (not in `notes/` or `clippings/`) and run the pipeline. It is renamed `YYYYMMDD-<guid>-<original name>` and copied to `archive/artifacts/` and to `idea-bucket/artifacts/` in the root of epiaku-docs. To do it again, move it from `archive/artifacts/` back into `inbox/`: it keeps its name and overwrites the same files. Files over 25 MB (`ARTIFACT_MAX_MB`) stay in `inbox/` with a warning.
 
-**Retry a stalled note** (`stage: deferred` in `output/`) **or redo one with another model:** `--requeue` moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again.
+**Retry a stalled note** (`stage: deferred` in `output/`) **or redo one with another model:** `--requeue` moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again. A good saved LLM reply is reused, so add `--refresh-llm` to call the model again.
 
 ```bash
 uv run catcher run pipeline --requeue "YouTube walks"                    # stalled or published: run it again
-uv run catcher run pipeline --requeue "YouTube walks" --profile notes    # ... with another profile
+uv run catcher run pipeline --requeue "YouTube walks" --profile notes    # ... with another profile (a miss for the saved reply)
+uv run catcher run pipeline --requeue "YouTube walks" --refresh-llm       # ... a new answer from the model
 ```
 
 **A failed note:** `--requeue` works for it too. Read the `.error.txt` in `failed/` and fix the cause first. The copy in `failed/` and the error file are removed for you.

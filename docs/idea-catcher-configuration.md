@@ -135,7 +135,7 @@ The lines `retry_delay`, `budget_retry_delay` and `stuck_after_days` in the file
 - **`--profile NAME`** (`run pipeline`, `render`, `reason`): use this profile for every note. `--profile fake` costs nothing.
 - **`--limit N`** (`run pipeline`): process at most N notes. Use it to cap spend.
 - **`--file NAME`** (`run pipeline`, `scan`): process only the named document from `inbox/`, for example `--file "New chat"`. Repeat it for more. A name that matches nothing gives a warning. See [How to run](../idea-catcher-how-to-run/).
-- **`--dry-run`** (`run pipeline`): change no files and commit nothing. **With a real profile it still calls the LLM.**
+- **`--dry-run`** (`run pipeline`): change no files and commit nothing. **With a real profile it still calls the LLM, unless a good reply is saved (it reads those, free).**
 - **`--push`** (`run pipeline`): push both repos after committing. **Off by default.**
 - **`--log-level LEVEL`** (any command): log level for this run. Put it before the command name: `uv run catcher --log-level DEBUG run pipeline`.
 

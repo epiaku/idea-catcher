@@ -56,7 +56,7 @@ flowchart TB
 ```
 
 - **One broken document never stops the run.** Every document is handled on its own, and an unexpected error becomes `failed` for that document only.
-- **`--dry-run`** goes through the same steps, but writes no file and makes no commit. It still calls the LLM if the profile is a real one, so use `--profile fake` for a free check. It **never calls YouTube** and does not use up the gap: a clip without saved facts shows `would_fetch`. A dry run takes no run lock.
+- **`--dry-run`** goes through the same steps, but writes no file and makes no commit. It still calls the LLM if the profile is a real one, unless a good reply is saved (it reads those, free), so use `--profile fake` for a free check. It **never calls YouTube** and does not use up the gap: a clip without saved facts shows `would_fetch`. A dry run takes no run lock.
 - The commit is **one commit per repo at the end of the run**, with only the files the run touched.
 
 ## 2. One document: parse, analyse, summarize, check, write
