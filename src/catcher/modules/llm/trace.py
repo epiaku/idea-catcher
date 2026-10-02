@@ -10,12 +10,22 @@ from typing import Any
 from pydantic import BaseModel
 
 from catcher.core.files import write_atomic
-from catcher.modules.llm.service import LlmTrace, Replayer
+from catcher.modules.llm.service import LlmTrace, Replayer, SavedReply
 
 log = logging.getLogger("catcher.llm")
 
 LLM_DIR = "llm"
 VERSION = 1
+INVALID_PAGE = "invalid_page"  # the outcome of an `ok` trace whose reply made an invalid page: not reused
+FAKE_BACKEND = "fake"  # its replies never replace the saved replies of a real model
+
+
+def _aware(text: str) -> datetime | None:
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return when if when.tzinfo is not None else None
 
 
 class TraceAttemptFile(BaseModel):
@@ -57,45 +67,79 @@ class TraceStore:
         fields = {name: data[name] for name in TraceFile.model_fields if name in data}
         model = TraceFile(saved_at=now.isoformat(timespec="seconds"), **fields)  # only TraceFile fields
         path = self.path_for(target_rel)
-        if not any(a.reply is not None for a in model.attempts) and self._holds_replies(path):
-            log.warning("keeping the existing trace %s: it holds replies and the new one holds none", path)
-            return path
-        dump = model.model_dump()
-        try:
-            text = json.dumps(dump, indent=2, ensure_ascii=False) + "\n"
-            text.encode("utf-8")
-        except UnicodeEncodeError:  # a lone surrogate in a reply: escaped JSON still reads back exactly
-            text = json.dumps(dump, indent=2, ensure_ascii=True) + "\n"
-        write_atomic(path, text)
+        old = self._read(path) if path.is_file() else None
+        if old is not None and any(a.reply is not None for a in old.attempts):
+            if not any(a.reply is not None for a in model.attempts):
+                log.warning(
+                    "keeping the existing trace %s: it holds replies and the new one holds none", path
+                )
+                return path
+            if model.backend == FAKE_BACKEND and old.backend != FAKE_BACKEND:
+                log.warning(
+                    "keeping the existing trace %s: it holds replies from %s, the new one is from the fake "
+                    "backend",
+                    path,
+                    old.backend,
+                )
+                return path
+        _write(path, model)
         return path
 
-    def _holds_replies(self, path: Path) -> bool:
-        if not path.is_file():
+    def mark_unusable(self, target_rel: Path, *, reason: str) -> bool:
+        """The reply of this `ok` trace made an invalid page: it is not a good reply, so it is not reused.
+        Rewrites the file with `outcome = "invalid_page"` and `error = reason` (the replies stay). Returns
+        whether anything changed; never raises."""
+        path = self.path_for(target_rel)
+        try:
+            if not path.is_file():
+                return False
+            old = self._read(path)
+            if old is None or old.outcome != "ok":
+                return False
+            _write(path, old.model_copy(update={"outcome": INVALID_PAGE, "error": reason}))
+            return True
+        except Exception as e:
+            log.warning("could not mark the trace %s as not reusable: %s", path, e)
             return False
-        old = self._read(path)
-        return old is not None and any(a.reply is not None for a in old.attempts)
 
-    def find(self, task: str, content_key: str) -> list[str] | None:
-        """The replies of the newest usable trace for this task and key, or None (never an empty list)."""
+    def find(self, task: str, content_key: str, *, profile: str, prompt_version: str) -> SavedReply | None:
+        """The saved reply of the newest `ok` trace for this task, profile, prompt version and document text,
+        or None (never one without replies). The newest by `saved_at` read as a time; on a tie, the last
+        path."""
         if not self.directory.is_dir():
             return None
-        best: tuple[str, str, list[str]] | None = None
+        best: tuple[datetime, str, SavedReply] | None = None
         for path in sorted(self.directory.rglob("*.json")):
             trace = self._read(path)
-            if trace is None or trace.task != task or trace.content_key != content_key:
+            if trace is None or trace.outcome != "ok":
                 continue
-            if trace.outcome not in ("ok", "invalid_output"):
+            wanted = (task, profile, prompt_version, content_key)
+            if (trace.task, trace.profile, trace.prompt_version, trace.content_key) != wanted:
                 continue
             replies = [a.reply for a in trace.attempts if a.reply is not None]
             if not replies:
                 continue
-            candidate = (trace.saved_at, path.as_posix(), replies)
+            saved_at = _aware(trace.saved_at)
+            if saved_at is None:
+                log.warning(
+                    "skipping trace %s: saved_at %r is not a time with a UTC offset", path, trace.saved_at
+                )
+                continue
+            saved = SavedReply(
+                replies=replies,
+                backend=trace.backend,
+                model=trace.model,
+                tokens_in=sum(a.tokens_in or 0 for a in trace.attempts),
+                tokens_out=sum(a.tokens_out or 0 for a in trace.attempts),
+                duration_ms=trace.attempts[-1].duration_ms,
+            )
+            candidate = (saved_at, path.as_posix(), saved)
             if best is None or candidate[:2] >= best[:2]:
                 best = candidate
         return best[2] if best else None
 
     def replayer(self) -> Replayer:
-        return lambda req, key: self.find(req.task, key)
+        return lambda req, key, version: self.find(req.task, key, profile=req.profile, prompt_version=version)
 
     @staticmethod
     def _read(path: Path) -> TraceFile | None:
@@ -108,3 +152,13 @@ class TraceStore:
         except (OSError, ValueError) as e:  # includes json and pydantic validation errors
             log.warning("skipping trace %s: %s", path, e)
             return None
+
+
+def _write(path: Path, model: TraceFile) -> None:
+    dump = model.model_dump()
+    try:
+        text = json.dumps(dump, indent=2, ensure_ascii=False) + "\n"
+        text.encode("utf-8")
+    except UnicodeEncodeError:  # a lone surrogate in a reply: escaped JSON still reads back exactly
+        text = json.dumps(dump, indent=2, ensure_ascii=True) + "\n"
+    write_atomic(path, text)

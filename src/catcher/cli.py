@@ -253,6 +253,10 @@ def run_pipeline_cmd(
             "inbox/, so they run again without a --requeue per document",
         ),
     ] = False,
+    refresh_llm: Annotated[
+        bool,
+        typer.Option("--refresh-llm", help="call the LLM again even when a good reply is saved in llm/"),
+    ] = False,
 ) -> None:
     """Process the documents in inbox/: publish pages, file failures and duplicates, and commit."""
     settings = Settings()
@@ -267,6 +271,7 @@ def run_pipeline_cmd(
         refresh_facts=refresh_facts,
         wait_youtube=wait_youtube,
         retry_deferred=retry_deferred,
+        refresh_llm=refresh_llm,
     )
     report = run_pipeline(
         ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)

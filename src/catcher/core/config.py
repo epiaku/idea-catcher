@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     llm_max_input_chars: int = 400_000  # a document (with its facts) longer than this is not sent to the LLM
     llm_trace: bool = True  # every LLM call of a run leaves a trace in `llm/` of the idea-bucket
     llm_trace_prompt: bool = False  # also save the full prompt in the trace (large; it holds the document)
+    llm_cache: bool = True  # read a saved good reply in `llm/` before calling the model
     transcript_languages: str = "en"
     # How we talk to YouTube. A ban is per IP and about request rate, so we go slowly and stop when told no.
     youtube_request_delay_s: float = 10.0  # seconds between the requests inside one fetch

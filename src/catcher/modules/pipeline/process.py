@@ -61,6 +61,7 @@ class ProcessOptions:
     refresh_facts: bool = False  # fetch again even when facts are saved
     wait_youtube: bool = False  # sleep through a short gap instead of deferring
     llm_dir: Path | None = None  # where the LLM traces go (`llm/` in idea-bucket); None: no trace
+    refresh_llm: bool = False  # call the model even when a good reply is saved in `llm_dir`
 
 
 @dataclass
@@ -154,6 +155,7 @@ def ask_llm(
     *,
     llm_dir: Path | None = None,
     dry_run: bool = False,
+    refresh_llm: bool = False,
 ) -> LlmResult:
     if facts is None and not note.doc.body.strip():
         raise InputRejected(f"{note.doc_id}: the document is empty")
@@ -174,13 +176,19 @@ def ask_llm(
     recorder = None
     if llm_dir is not None and svc.settings.llm_trace and not dry_run:
         recorder = trace_recorder(note, llm_dir)
+    replayer = None  # a dry run reads saved replies too: it costs nothing and writes nothing
+    if llm_dir is not None and svc.settings.llm_cache and not refresh_llm:
+        replayer = TraceStore(llm_dir).replayer()
     result = reason(
         request,
         profiles=svc.profiles,
         backends=svc.backends,
         recorder=recorder,
+        replayer=replayer,
         keep_prompt=svc.settings.llm_trace_prompt,
     )
+    if result.from_saved:
+        log.info("%s: using the saved LLM reply (no call)", note_label(note))
     log_llm(note, "reason", result)
     return result
 
@@ -284,5 +292,13 @@ def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPa
     )
     check_not_blocked(profile, opts)
     facts = get_facts(note, svc, opts)
-    result = ask_llm(note, svc, profile_name, facts, llm_dir=opts.llm_dir, dry_run=opts.dry_run)
+    result = ask_llm(
+        note,
+        svc,
+        profile_name,
+        facts,
+        llm_dir=opts.llm_dir,
+        dry_run=opts.dry_run,
+        refresh_llm=opts.refresh_llm,
+    )
     return build_page(note, svc, result, facts)

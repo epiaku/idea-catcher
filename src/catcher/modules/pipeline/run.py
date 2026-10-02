@@ -73,6 +73,7 @@ class RunOptions:
     refresh_facts: bool = False  # fetch the YouTube facts again even when they are saved
     wait_youtube: bool = False  # sleep through a short gap between YouTube calls instead of waiting
     retry_deferred: bool = False  # first put the documents a temporary error stalled back into inbox/
+    refresh_llm: bool = False  # call the LLM even when a good reply is saved in llm/ (`--requeue` reuses it)
 
 
 @dataclass
@@ -347,6 +348,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             refresh_facts=opts.refresh_facts,
             wait_youtube=opts.wait_youtube,
             llm_dir=llm_dir,
+            refresh_llm=opts.refresh_llm,
         )
         try:
             if not opts.dry_run:  # out of inbox/: archive + working copy in output/
@@ -387,6 +389,9 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             item.status, item.message = "failed", "; ".join(processed.problems)
             log.error("%s: failed, page is invalid: %s", who, item.message)
             if not opts.dry_run:
+                # a reply that made an invalid page is not a good one: a plain requeue asks the model again
+                # (the trace file is already in touched_ideas, from the `finally` above)
+                TraceStore(llm_dir).mark_unusable(note.target_rel, reason=f"page is invalid: {item.message}")
                 touched_ideas += move_to_failed(
                     ideas,
                     note.output_path(ideas),

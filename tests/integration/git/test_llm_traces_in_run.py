@@ -100,7 +100,10 @@ def test_a_requeue_overwrites_the_same_trace_file(repos, make_services, sh):
     v2 = json.dumps({**CANNED["ai-chat"], "title": "Bundles v2"})
     chats = FakeBackend([v2])
     report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), make_services(chat_backend=chats)
+        repos.ideas,
+        repos.docs,
+        RunOptions(requeue=["systeme"], refresh_llm=True),  # a requeue alone reuses the saved reply
+        make_services(chat_backend=chats),
     )
     assert report.counts() == {"requeued": 1, "published": 1}
     assert read(path)["output"]["title"] == "Bundles v2"  # the same file, overwritten
@@ -187,7 +190,10 @@ def test_a_failed_requeue_keeps_the_paid_replies_of_the_first_run(repos, make_se
 
     down = FakeBackend([BackendUnavailable("the backend is down")])
     report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), make_services(chat_backend=down)
+        repos.ideas,
+        repos.docs,
+        RunOptions(requeue=["systeme"], refresh_llm=True),  # a requeue alone reuses the saved reply
+        make_services(chat_backend=down),
     )
     assert report.counts().get("deferred") == 1
     assert path.read_bytes() == first

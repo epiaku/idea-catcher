@@ -15,6 +15,7 @@ from catcher.modules.llm.service import (
     LlmRequest,
     LlmTrace,
     Recorder,
+    SavedReply,
     Usage,
     content_key,
     reason,
@@ -162,62 +163,88 @@ def test_content_key_ignores_everything_but_task_body_and_transcript(fake_profil
     assert traces[2].content_key == content_key("note", BODY, "words") != traces[0].content_key
 
 
+def saved(*replies: str, backend: str = "openai", model: str | None = "m-saved") -> SavedReply:
+    return SavedReply(list(replies), backend=backend, model=model, tokens_in=30, tokens_out=12, duration_ms=9)
+
+
 def test_a_replayer_supplies_the_replies_and_the_backend_is_never_built(fake_profiles, prompt_tags):
     traces, rec = recording()
-    seen: list[tuple[LlmRequest, str]] = []
+    seen: list[tuple[LlmRequest, str, str]] = []
 
-    def replayer(req: LlmRequest, key: str) -> list[str]:
-        seen.append((req, key))
-        return [json.dumps(CANNED["note"])]
+    def replayer(req: LlmRequest, key: str, version: str) -> SavedReply:
+        seen.append((req, key, version))
+        return saved(json.dumps(CANNED["note"]), backend="fake", model=None)
 
     profiles = ProfilesConfig(default="fake", profiles={"fake": Profile(backend="fake", model="m-replay")})
     req = note_request(prompt_tags)
     result = reason(req, profiles=profiles, backends=never_build, replayer=replayer, recorder=rec)
     assert isinstance(result.output, NoteSummary) and result.output.title == CANNED["note"]["title"]
-    assert (result.backend, result.model, result.attempts) == ("replay", "m-replay", 1)
-    assert (result.usage.tokens_in, result.usage.tokens_out) == (0, 0)
-    assert seen == [(req, content_key("note", BODY, None))]
-    (t,) = traces
-    assert (t.backend, t.model, t.outcome) == ("replay", "m-replay", "ok")
-    assert t.attempts[0].tokens_in == 0 and t.attempts[0].model == "m-replay"
+    assert (result.backend, result.model, result.attempts) == ("fake", "m-replay", 1)  # no saved model
+    assert result.from_saved and result.prompt_version == "note-7"
+    assert seen == [(req, content_key("note", BODY, None), "note-7")]
+    assert traces == []  # a saved reply is not recorded again
 
 
 def test_a_replayed_invalid_reply_goes_through_the_same_retry_rule(fake_profiles, prompt_tags):
-    replies = ["not json", json.dumps(CANNED["note"])]
+    replies = saved("not json", json.dumps(CANNED["note"]))
     result = reason(
-        note_request(prompt_tags), profiles=fake_profiles, backends=never_build, replayer=lambda r, k: replies
+        note_request(prompt_tags),
+        profiles=fake_profiles,
+        backends=never_build,
+        replayer=lambda r, k, v: replies,
     )
-    assert result.attempts == 2 and result.backend == "replay"
-
-    with pytest.raises(InvalidOutput, match="note: invalid output after 2 attempts"):
-        reason(
-            note_request(prompt_tags),
-            profiles=fake_profiles,
-            backends=never_build,
-            replayer=lambda r, k: ["not json", "{}"],
-        )
+    assert result.attempts == 2 and result.from_saved  # the attempt that validated, as recorded
 
 
-def test_replay_without_enough_replies_raises_invalid_output(fake_profiles, prompt_tags):
-    traces, rec = recording()
-    with pytest.raises(InvalidOutput, match="replay has no more replies"):
-        reason(
-            note_request(prompt_tags),
-            profiles=fake_profiles,
-            backends=never_build,
-            replayer=lambda r, k: ["not json"],
-            recorder=rec,
-        )
-    (t,) = traces
-    assert t.outcome == "invalid_output" and [a.reply for a in t.attempts] == ["not json"]
+def test_saved_replies_that_no_longer_validate_fall_through_to_the_backend(
+    fake_profiles, prompt_tags, caplog
+):
+    for bad in (saved("not json", "{}"), saved("not json")):  # two invalid replies; one invalid, no second
+        traces, rec = recording()
+        fake = FakeBackend()
+        with caplog.at_level(logging.WARNING, logger="catcher.llm"):
+            caplog.clear()
+            result = reason(
+                note_request(prompt_tags),
+                profiles=fake_profiles,
+                backends=lambda p, fake=fake: fake,
+                replayer=lambda r, k, v, bad=bad: bad,
+                recorder=rec,
+            )
+        assert result.backend == "fake" and len(fake.prompts) == 1 and not result.from_saved
+        assert result.output.title == CANNED["note"]["title"]  # type: ignore[attr-defined]
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1 and warnings[0].startswith("note: ")
+        (t,) = traces  # the real call is recorded as usual
+        assert t.backend == "fake" and t.outcome == "ok" and t.attempts[0].tokens_in
 
 
 def test_a_replayer_returning_none_calls_the_backend(fake_profiles, prompt_tags):
     fake = FakeBackend()
     result = reason(
-        note_request(prompt_tags), profiles=fake_profiles, backends=lambda p: fake, replayer=lambda r, k: None
+        note_request(prompt_tags),
+        profiles=fake_profiles,
+        backends=lambda p: fake,
+        replayer=lambda r, k, v: None,
     )
-    assert result.backend == "fake" and len(fake.prompts) == 1
+    assert result.backend == "fake" and len(fake.prompts) == 1 and not result.from_saved
+
+
+def test_a_saved_result_carries_the_recorded_backend_model_and_tokens(prompt_tags):
+    calls: list[LlmTrace] = []
+    profiles = ProfilesConfig(default="fake", profiles={"fake": Profile(backend="openai", model="gpt-x")})
+    result = reason(
+        note_request(prompt_tags),
+        profiles=profiles,
+        backends=never_build,
+        replayer=lambda r, k, v: saved(json.dumps(CANNED["note"]), model="gpt-x-2026-01-01"),
+        recorder=calls.append,
+        keep_prompt=True,
+    )
+    assert (result.backend, result.model, result.profile) == ("openai", "gpt-x-2026-01-01", "fake")
+    assert (result.usage.tokens_in, result.usage.tokens_out, result.usage.duration_ms) == (30, 12, 9)
+    assert result.from_saved and result.attempts == 1
+    assert calls == []  # no recorder call for a saved reply
 
 
 def test_a_recorder_that_raises_does_not_break_the_call(fake_profiles, prompt_tags, caplog):

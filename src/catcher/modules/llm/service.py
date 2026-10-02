@@ -83,6 +83,7 @@ class LlmResult:
     prompt_version: str
     usage: Usage
     attempts: int
+    from_saved: bool = False  # made from a saved reply: no model was called
 
 
 def extract_json(text: str) -> str:
@@ -126,9 +127,21 @@ class LlmTrace:
 
 
 Recorder = Callable[[LlmTrace], None]
-Replayer = Callable[[LlmRequest, str], list[str] | None]
 
-REPLAY_BACKEND = "replay"
+
+@dataclass(frozen=True)
+class SavedReply:
+    """What a saved trace says about a good call: its raw replies in order, and who answered at what cost."""
+
+    replies: list[str]
+    backend: str
+    model: str | None
+    tokens_in: int  # summed over the attempts
+    tokens_out: int
+    duration_ms: int | None  # of the last attempt, like a live result
+
+
+Replayer = Callable[[LlmRequest, str, str], SavedReply | None]  # request, content_key, prompt_version
 
 
 def content_key(task: str, body: str, transcript: str | None) -> str:
@@ -153,9 +166,14 @@ def reason(
     key = ""
     if recorder is not None or replayer is not None:
         key = content_key(req.task, req.input["body"], req.input.get("transcript"))
-    replies = replayer(req, key) if replayer is not None else None
-    backend = backends(profile) if replies is None else None
-    backend_name = backend.name if backend is not None else REPLAY_BACKEND
+    saved = replayer(req, key, version) if replayer is not None else None
+    if saved is not None:
+        try:
+            return _from_saved(req, saved, schema, profile, version)
+        except InvalidOutput as e:  # edited by hand, or the schema changed: ask the model instead
+            log.warning("%s: the saved LLM reply is no longer valid, calling the model: %s", req.task, e)
+    backend = backends(profile)
+    backend_name = backend.name
     attempts: list[LlmAttempt] = []
     outcome: Literal["ok", "invalid_output", "backend_error"] = "backend_error"
     trace_error: str | None = None
@@ -171,20 +189,11 @@ def reason(
             )
             full = prompt if attempt == 1 else f"{prompt}{retry_suffix}"
             started = True
-            if backend is not None:
-                try:
-                    reply = backend.complete(full, model=profile.model, task=req.task)
-                except Exception as e:
-                    outcome, trace_error = "backend_error", str(e)
-                    raise
-            else:
-                assert replies is not None
-                if attempt > len(replies):
-                    outcome, trace_error = "invalid_output", "replay has no more replies"
-                    raise InvalidOutput(trace_error)
-                reply = BackendReply(
-                    text=replies[attempt - 1], usage=Usage(tokens_in=0, tokens_out=0), model=profile.model
-                )
+            try:
+                reply = backend.complete(full, model=profile.model, task=req.task)
+            except Exception as e:
+                outcome, trace_error = "backend_error", str(e)
+                raise
             tokens_in += reply.usage.tokens_in or 0
             tokens_out += reply.usage.tokens_out or 0
             record = LlmAttempt(
@@ -231,3 +240,22 @@ def reason(
                 recorder(trace)
             except Exception as e:
                 log.warning("could not record the LLM trace for %s: %s", req.task, e)
+
+
+def _from_saved(
+    req: LlmRequest, saved: SavedReply, schema: type[BaseModel], profile: Profile, version: str
+) -> LlmResult:
+    """The result from saved raw replies, through the same parsing, validation and second-attempt rule as
+    a real call. It mirrors the recorded call (backend, model, tokens), so the page equals the live one.
+    Raises InvalidOutput when the replies no longer validate. Nothing is called and nothing recorded."""
+    error = "no saved reply"
+    for attempt, text in enumerate(saved.replies[:2], start=1):
+        try:
+            output = schema.model_validate_json(extract_json(text))
+        except (ValueError, ValidationError) as e:
+            error = str(e)[:2000]
+            continue
+        usage = Usage(tokens_in=saved.tokens_in, tokens_out=saved.tokens_out, duration_ms=saved.duration_ms)
+        model = saved.model or profile.model
+        return LlmResult(output, req.profile, saved.backend, model, version, usage, attempt, from_saved=True)
+    raise InvalidOutput(f"{req.task}: the saved replies are not valid: {error}")
