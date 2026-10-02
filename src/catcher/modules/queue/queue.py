@@ -92,7 +92,7 @@ def claim(
 
     Order: priority (high first), then run_after, then created_at. Rows other workers have locked
     are skipped, not waited for. The row stays locked until the caller commits, so commit promptly.
-    `(locked_by, attempts)` on the returned job is the attempt token for fencing later writes.
+    `(locked_by, claim_seq)` on the returned job is the claim token for fencing later writes.
     `types` is a sequence of type names (a bare str is a TypeError); an empty sequence matches nothing."""
     require_aware(now)
     _check_lease(lease_s)
@@ -112,6 +112,7 @@ def claim(
     job.status = "running"
     job.locked_by = worker
     job.attempts += 1
+    job.claim_seq += 1
     if job.started_at is None:
         job.started_at = now
     job.heartbeat_at = now
@@ -126,13 +127,15 @@ def _finish(session: Session, job: Job, values: dict[str, Any], *, attempts_delt
     The token is read from what `job` already holds, never reloaded: a reload would fetch the
     current owner's token and let a stale caller through."""
     loaded = inspect(job).dict
-    if not {"id", "locked_by", "attempts"} <= loaded.keys():
+    if not {"id", "locked_by", "claim_seq"} <= loaded.keys():
         raise ValueError("the job's claim token is not loaded; pass the Job that claim returned")
-    job_id, worker, attempts = loaded["id"], loaded["locked_by"], loaded["attempts"]
+    job_id, worker, claim_seq = loaded["id"], loaded["locked_by"], loaded["claim_seq"]
+    if attempts_delta:
+        values = {**values, "attempts": Job.attempts + attempts_delta}
     statement = (
         update(Job)
-        .where(Job.id == job_id, Job.status == "running", Job.locked_by == worker, Job.attempts == attempts)
-        .values(**values, attempts=attempts + attempts_delta)
+        .where(Job.id == job_id, Job.status == "running", Job.locked_by == worker, Job.claim_seq == claim_seq)
+        .values(**values)
         .returning(*Job.__table__.columns)
         .execution_options(synchronize_session=False)
     )

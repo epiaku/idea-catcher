@@ -173,20 +173,15 @@ def test_after_a_defer_the_deferred_job_object_cannot_finish_the_next_claim(
         assert defer(first, old, now=clock.now, run_after=clock.now, reason="later") is True
     with session_scope(pg_engine) as second:
         new = _claimed(second, clock, worker="w1")
-    assert (new.locked_by, new.attempts) == ("w1", 1)
+    assert (new.locked_by, new.attempts, new.claim_seq) == ("w1", 1, 2)
 
     # `defer` refreshed `old` to the queued state, so its token no longer matches the new claim.
-    assert (old.locked_by, old.attempts) == (None, 0)
+    assert (old.locked_by, old.claim_seq) == (None, 1)
     assert complete(session, old, now=clock.now) is False
     session.commit()
     assert _row(pg_engine, job_id).status == "running"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known gap: defer gives the attempt back, so a copy of the first claim's token "
-    "(w1, 1) equals the token of w1's next claim; see the task 11 report",
-)
 def test_a_copy_of_the_first_claim_cannot_finish_the_same_workers_next_claim(
     pg_engine: Engine, session: Session, clock
 ) -> None:
@@ -194,14 +189,40 @@ def test_a_copy_of_the_first_claim_cannot_finish_the_same_workers_next_claim(
         job_id = enqueue(setup, type="note", now=clock.now)[0].id
     with session_scope(pg_engine) as first:
         old = _claimed(first, clock, worker="w1")
+    assert (old.locked_by, old.attempts, old.claim_seq) == ("w1", 1, 1)
     with session_scope(pg_engine) as owner:
         current = owner.get(Job, job_id)
         assert current is not None
         assert defer(owner, current, now=clock.now, run_after=clock.now, reason="later") is True
+        assert (current.attempts, current.claim_seq) == (0, 1)  # the attempt is given back, the claim is not
     with session_scope(pg_engine) as second:
-        _claimed(second, clock, worker="w1")
+        new = _claimed(second, clock, worker="w1")
+    # Same worker and same attempts as the first claim: only claim_seq tells the two claims apart.
+    assert (new.locked_by, new.attempts, new.claim_seq) == ("w1", 1, 2)
+    before = _row(pg_engine, job_id)
+    old_view = (old.status, old.locked_by, old.attempts, old.claim_seq, old.lease_until)
 
+    assert heartbeat(session, old, now=clock.now, lease_s=30) is False
     assert complete(session, old, now=clock.now) is False
+    assert fail(session, old, now=clock.now, error="late") is False
+    assert defer(session, old, now=clock.now, run_after=clock.now, reason="late") is False
+
+    assert (old.status, old.locked_by, old.attempts, old.claim_seq, old.lease_until) == old_view
+    session.commit()
+    after = _row(pg_engine, job_id)
+    assert (after.status, after.locked_by, after.attempts, after.claim_seq) == ("running", "w1", 1, 2)
+    columns = [c.key for c in Job.__table__.columns]
+    assert {c: getattr(after, c) for c in columns} == {c: getattr(before, c) for c in columns}
+
+
+def test_claim_seq_goes_up_by_one_per_claim(session: Session, clock) -> None:
+    job, _ = enqueue(session, type="note", now=clock.now)
+    assert job.claim_seq == 0
+    for expected in (1, 2, 3):
+        claimed = _claimed(session, clock)
+        assert claimed.claim_seq == expected
+        assert defer(session, claimed, now=clock.now, run_after=clock.now, reason="again") is True
+        assert claimed.claim_seq == expected
 
 
 def test_an_expired_job_is_refused_rather_than_reloaded_with_the_current_owners_token(

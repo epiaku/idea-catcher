@@ -78,6 +78,8 @@ class Job(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     error: Mapped[str | None] = mapped_column(Text)
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # Goes up by one on every claim and never down; `(locked_by, claim_seq)` fences a claim's writes.
+    claim_seq: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default=text("3"))
     locked_by: Mapped[str | None] = mapped_column(Text)
     lease_until: Mapped[datetime | None] = mapped_column(_timestamp())
