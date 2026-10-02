@@ -1,13 +1,17 @@
+import hashlib
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ValidationError
 
 from catcher.modules.llm.profiles import Profile, ProfilesConfig
 from catcher.modules.llm.prompts import render_prompt
 from catcher.modules.llm.schemas import SCHEMAS
+
+log = logging.getLogger("catcher.llm")
 
 
 class Usage(BaseModel):
@@ -95,29 +99,135 @@ def _schema_instructions(schema: type[BaseModel]) -> str:
     )
 
 
-def reason(req: LlmRequest, *, profiles: ProfilesConfig, backends: BackendFactory) -> LlmResult:
+@dataclass
+class LlmAttempt:
+    reply: str | None
+    tokens_in: int | None
+    tokens_out: int | None
+    duration_ms: int | None
+    model: str | None
+    error: str | None
+
+
+@dataclass
+class LlmTrace:
+    task: str
+    profile: str
+    backend: str
+    model: str | None
+    prompt_version: str
+    content_key: str
+    prompt_sha256: str
+    prompt: str | None
+    attempts: list[LlmAttempt]
+    outcome: Literal["ok", "invalid_output", "backend_error"]
+    error: str | None
+    output: dict[str, Any] | None
+
+
+Recorder = Callable[[LlmTrace], None]
+Replayer = Callable[[LlmRequest, str], list[str] | None]
+
+REPLAY_BACKEND = "replay"
+
+
+def content_key(task: str, body: str, transcript: str | None) -> str:
+    """The replay key: the document text, not its id (random per scan) and not the prompt (a prompt edit
+    must not break the replays)."""
+    return hashlib.sha256(f"{task}\0{body}\0{transcript or ''}".encode()).hexdigest()
+
+
+def reason(
+    req: LlmRequest,
+    *,
+    profiles: ProfilesConfig,
+    backends: BackendFactory,
+    recorder: Recorder | None = None,
+    replayer: Replayer | None = None,
+    keep_prompt: bool = False,
+) -> LlmResult:
     profile = profiles.profiles[req.profile]
     schema = SCHEMAS[req.schema_name]
     prompt, version = render_prompt(req.task, req.input)
     prompt += _schema_instructions(schema)
-    backend = backends(profile)
+    key = ""
+    if recorder is not None or replayer is not None:
+        key = content_key(req.task, req.input["body"], req.input.get("transcript"))
+    replies = replayer(req, key) if replayer is not None else None
+    backend = backends(profile) if replies is None else None
+    backend_name = backend.name if backend is not None else REPLAY_BACKEND
+    attempts: list[LlmAttempt] = []
+    outcome: Literal["ok", "invalid_output", "backend_error"] = "backend_error"
+    trace_error: str | None = None
+    output_json: dict[str, Any] | None = None
+    started = False
     tokens_in = tokens_out = 0
     error = ""
-    for attempt in (1, 2):
-        retry_suffix = (
-            f"\n\n## Your previous reply was rejected\n\n{error}\n\nReturn ONLY the corrected JSON object."
-        )
-        full = prompt if attempt == 1 else f"{prompt}{retry_suffix}"
-        reply = backend.complete(full, model=profile.model, task=req.task)
-        tokens_in += reply.usage.tokens_in or 0
-        tokens_out += reply.usage.tokens_out or 0
-        try:
-            output = schema.model_validate_json(extract_json(reply.text))
-        except (ValueError, ValidationError) as e:
-            error = str(e)[:2000]
-            continue
-        usage = Usage(tokens_in=tokens_in, tokens_out=tokens_out, duration_ms=reply.usage.duration_ms)
-        return LlmResult(
-            output, req.profile, backend.name, reply.model or profile.model, version, usage, attempt
-        )
-    raise InvalidOutput(f"{req.task}: invalid output after 2 attempts: {error}")
+    try:
+        for attempt in (1, 2):
+            retry_suffix = (
+                f"\n\n## Your previous reply was rejected\n\n{error}"
+                "\n\nReturn ONLY the corrected JSON object."
+            )
+            full = prompt if attempt == 1 else f"{prompt}{retry_suffix}"
+            started = True
+            if backend is not None:
+                try:
+                    reply = backend.complete(full, model=profile.model, task=req.task)
+                except Exception as e:
+                    outcome, trace_error = "backend_error", str(e)
+                    raise
+            else:
+                assert replies is not None
+                if attempt > len(replies):
+                    outcome, trace_error = "invalid_output", "replay has no more replies"
+                    raise InvalidOutput(trace_error)
+                reply = BackendReply(
+                    text=replies[attempt - 1], usage=Usage(tokens_in=0, tokens_out=0), model=profile.model
+                )
+            tokens_in += reply.usage.tokens_in or 0
+            tokens_out += reply.usage.tokens_out or 0
+            record = LlmAttempt(
+                reply=reply.text,
+                tokens_in=reply.usage.tokens_in,
+                tokens_out=reply.usage.tokens_out,
+                duration_ms=reply.usage.duration_ms,
+                model=reply.model or profile.model,
+                error=None,
+            )
+            attempts.append(record)
+            try:
+                output = schema.model_validate_json(extract_json(reply.text))
+            except (ValueError, ValidationError) as e:
+                error = str(e)[:2000]
+                record.error = error
+                continue
+            usage = Usage(tokens_in=tokens_in, tokens_out=tokens_out, duration_ms=reply.usage.duration_ms)
+            outcome = "ok"
+            if recorder is not None:
+                output_json = output.model_dump(mode="json")
+            return LlmResult(
+                output, req.profile, backend_name, reply.model or profile.model, version, usage, attempt
+            )
+        outcome, trace_error = "invalid_output", error
+        raise InvalidOutput(f"{req.task}: invalid output after 2 attempts: {error}")
+    finally:
+        if recorder is not None and started:
+            trace = LlmTrace(
+                task=req.task,
+                profile=req.profile,
+                backend=backend_name,
+                model=attempts[-1].model if attempts else profile.model,
+                prompt_version=version,
+                content_key=key,
+                prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
+                prompt=prompt if keep_prompt else None,
+                attempts=attempts,
+                outcome=outcome,
+                error=trace_error,
+                output=output_json,
+            )
+            try:
+                recorder(trace)
+            except Exception as e:
+                log.warning("could not record the LLM trace for %s: %s", req.task, e)
