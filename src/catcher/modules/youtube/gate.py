@@ -25,6 +25,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 from catcher.core.files import file_lock, write_atomic
 
@@ -80,6 +81,18 @@ class Wait:
         today = datetime.fromtimestamp(now if now is not None else time.time()).date()
         clock = moment.strftime("%H:%M") if moment.date() == today else moment.strftime("%Y-%m-%d %H:%M")
         return f"YouTube blocked until {clock}" if self.blocked else f"YouTube: next call allowed at {clock}"
+
+
+class Gate(Protocol):
+    """What `YoutubeAccess` needs from a gate: the file gate here, a database gate later."""
+
+    def peek(self) -> Wait | None: ...
+
+    def reserve(self) -> Wait | None: ...
+
+    def record_success(self, started_at: float | None = None) -> None: ...
+
+    def record_block(self, started_at: float | None = None) -> float: ...
 
 
 class YoutubeGate:

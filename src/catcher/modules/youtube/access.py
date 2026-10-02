@@ -24,7 +24,7 @@ from catcher.modules.youtube.facts import (
     fetch_facts,
     is_gone_for_good,
 )
-from catcher.modules.youtube.gate import Wait, YoutubeGate, is_block_error
+from catcher.modules.youtube.gate import Gate, Wait, YoutubeGate, is_block_error
 
 log = logging.getLogger("catcher.youtube")
 
@@ -33,7 +33,7 @@ class YoutubeAccess:
     def __init__(
         self,
         fetch: FactsFetcher,
-        gate: YoutubeGate,
+        gate: Gate,
         *,
         offline: bool = False,
         negative_ttl_s: float = 24 * 3600.0,

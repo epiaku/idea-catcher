@@ -5,7 +5,7 @@ import pytest
 from catcher.modules.youtube.access import YoutubeAccess
 from catcher.modules.youtube.cache import FactsCache
 from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable, Segment, YoutubeFacts
-from catcher.modules.youtube.gate import YoutubeGate
+from catcher.modules.youtube.gate import Gate, Wait, YoutubeGate
 
 VID = "nGVZS_wUDGM"
 
@@ -253,3 +253,58 @@ def test_a_dry_run_does_not_save_a_gone_video_either(tmp_path):
     with pytest.raises(FactsUnavailable):
         access.get(VID, facts_dir=tmp_path / "facts", write_cache=False)
     assert not (tmp_path / "facts").exists()
+
+
+class FakeGate:
+    """A gate that follows the Gate protocol and keeps its state in memory: no files."""
+
+    def __init__(self, clock: Clock) -> None:
+        self.clock = clock
+        self.blocked_until = 0.0
+        self.events: list[str] = []
+
+    def _wait(self) -> Wait | None:
+        if self.clock.now < self.blocked_until:
+            return Wait(self.blocked_until, blocked=True)
+        return None
+
+    def peek(self) -> Wait | None:
+        return self._wait()
+
+    def reserve(self) -> Wait | None:
+        wait = self._wait()
+        if wait is None:
+            self.events.append("reserve")
+        return wait
+
+    def record_success(self, started_at: float | None = None) -> None:
+        self.events.append("success")
+
+    def record_block(self, started_at: float | None = None) -> float:
+        self.events.append("block")
+        self.blocked_until = self.clock.now + 6 * 3600
+        return self.blocked_until
+
+
+def test_access_works_with_any_gate_that_follows_the_protocol(tmp_path):
+    clock = Clock()
+    gate = FakeGate(clock)
+    as_protocol: Gate = gate  # the fake follows the protocol
+    fetch = Fetcher()
+    access = YoutubeAccess(fetch, as_protocol, clock=clock)
+
+    assert access.get(VID, facts_dir=None).title == "T"  # success
+    assert fetch.calls == [VID]
+
+    fetch.error = HttpError("too many requests")  # a 429 opens the breaker
+    with pytest.raises(FactsDeferred, match="blocked until"):
+        access.get("BBBBBBBBBBB", facts_dir=None)
+    assert fetch.calls == [VID, "BBBBBBBBBBB"]
+
+    with pytest.raises(FactsDeferred, match="blocked until"):  # a closed gate: no call at all
+        access.get("CCCCCCCCCCC", facts_dir=None)
+    assert fetch.calls == [VID, "BBBBBBBBBBB"]
+    assert access.wait_needed("CCCCCCCCCCC", facts_dir=None) is not None
+
+    assert gate.events == ["reserve", "success", "reserve", "block"]
+    assert list(tmp_path.iterdir()) == []  # nothing written anywhere
