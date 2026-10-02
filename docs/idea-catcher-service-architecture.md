@@ -220,6 +220,8 @@ def reason(req: LlmRequest, *, profiles: ProfilesConfig, backends: BackendFactor
 
 The same function handles notes, AI chats and YouTube clips now, and the YouTube endpoint, web clips or anything else later. A new task means a new prompt template and a new output schema, not new LLM code.
 
+**Saved replies (Stage A, as built).** Every call leaves a trace in `llm/<subfolder>/<calculated name>.json` in `idea-bucket` (the raw reply of each attempt, tokens, model, backend, profile, prompt version, `content_key`, outcome, validated output), and a run **reads a good saved reply before it calls the model**, like it reads saved facts before calling YouTube. A reply is reused only when the task, the profile, the prompt version and the `content_key` (task + document text + transcript) match and the trace ended `ok`. `--refresh-llm` or `LLM_CACHE=false` skips it. Details: [Saved LLM replies](../idea-catcher-how-to-run/#saved-llm-replies).
+
 **Where the profile comes from** (the first one that sets it wins):
 
 1. The `llm` block in the **job message** (for example `POST /pipeline/runs {"llm": {"profile": "notes"}}`).
@@ -911,6 +913,12 @@ Aggregation endpoints on the MVP tables, so the React dashboards stay simple:
 - **Mini AI chat** module (streams directly, reuses the LLM backends) and its web component.
 - **An agentic checker** for any class, that can use tools (for example open the source page or search) instead of a single call.
 - **Notifications** for stuck notes (for example a push message), instead of only the log and metrics.
+- **`catcher cleanup`** for old `facts/`, `llm/`, `archive/` and `output/` records: a dry run first, by age and status. It must warn that deleting saved facts causes a YouTube refetch on a requeue, and that deleting saved replies costs LLM calls.
+- **Saved replies, deferred items:**
+  - `ItemReport` needs an `llm_saved` flag (or tokens 0) before the Stage B metrics, so the recorded tokens of a reply that was not paid for are not counted.
+  - `TraceStore.find` scans all trace files on each call. Add an index, or look at the document's own path first, when there are thousands.
+  - The output guard of `mark_unusable` for a replay compares the stored output; it should compare the replies.
+  - An interrupted call is recorded as `backend_error` with no error text.
 
 ---
 

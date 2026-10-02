@@ -114,6 +114,12 @@ What one run does, in order:
   uv run catcher run pipeline --refresh-facts    # fetch the YouTube facts again, even when they are saved
   ```
 
+- **`--refresh-llm`**: call the model again even when a good reply is saved in `llm/` (see [Saved LLM replies](#saved-llm-replies)). It can be combined with `--requeue`: a plain `--requeue` reuses the saved reply.
+
+  ```bash
+  uv run catcher run pipeline --requeue "my-note" --refresh-llm    # a new answer for one document
+  ```
+
 - **`--retry-deferred`**: first put every document that a temporary error stalled (in `output/` with `stage: deferred`) back into `inbox/`, so they run again together with the rest, without a `--requeue` per document.
 
   ```bash
@@ -264,6 +270,41 @@ YouTube blocks an IP address that asks too fast, and retrying during a block mak
 - **`YOUTUBE_OFFLINE=1`** never calls YouTube (saved facts still work). Tests and development use it or saved fixtures.
 
 All settings are in `.env`; see the [configuration page](../idea-catcher-configuration/).
+
+## Saved LLM replies {#saved-llm-replies}
+
+Every LLM call of `run pipeline` leaves a **trace** in `llm/<subfolder>/<calculated name>.json` in `idea-bucket` (the same subfolder and name as in `archive/`, `output/` and `failed/`), committed with the run like `facts/`. A requeue overwrites the same file. A `--dry-run` writes nothing. A trace holds the raw reply of each attempt, tokens, duration, model, backend, profile, prompt version, the `content_key`, the `prompt_sha256`, the outcome (`ok`, `invalid_output`, `backend_error` or `invalid_page`), the error and the validated output. A trimmed example (replies shortened):
+
+```json
+{
+  "version": 1,
+  "saved_at": "2026-10-02T19:02:54+00:00",
+  "task": "note",
+  "profile": "notes",
+  "backend": "freellmapi",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "prompt_version": "note-7",
+  "content_key": "86739f3189d0f10f...",
+  "prompt_sha256": "7dbb2b7a693ea26d...",
+  "prompt": null,
+  "attempts": [
+    { "reply": "{\"title\":\"Add summary and grammar checker...", "tokens_in": 1146, "tokens_out": 2331,
+      "duration_ms": 13291, "model": "deepseek-ai/DeepSeek-V4-Flash-0731", "error": null }
+  ],
+  "outcome": "ok",
+  "error": null,
+  "output": { "title": "Add summary and grammar checker to Obsidian docs", "tags": ["app-idea", "obsidian", "automation"], "language": "en" }
+}
+```
+
+- **A run reads a good saved reply before it calls the model**, like it reads saved facts before it calls YouTube. The log says `using the saved LLM reply (no call)`. The reply is reused only when the task, the profile (`notes`, `clippings`, `youtube`, or the `--profile` override), the prompt version (for example `note-7`) and the `content_key` (a sha256 of the task, the document text and the transcript) all match, and the trace ended `ok`. Another profile or a prompt version bump is a miss. Two documents with the same text share a reply.
+- **What is not in the key:** the title, the source URL, tags, glossary, business context and the facts metadata. After you change the glossary or the context, use `--refresh-llm`. Tags are normalised again when the page is rendered, so a new tag rule applies to an old reply. A page made from a saved reply is the same, byte for byte, as the live page. The report shows the recorded tokens, although nothing was paid.
+- **`--requeue` reuses a good saved reply like any run.** For a fresh answer use `--refresh-llm` (alone or with `--requeue`), or delete the trace file (or the whole `llm/` folder). `LLM_CACHE=false` turns the reading off. A saved reply is validated again: if it no longer validates, the run logs a warning and calls the model. A dry run reads saved replies (free) and writes nothing.
+- **Never lost:** a trace that ended `ok` is never replaced by a failed call, and a trace with replies never by one without. A reply that made an invalid page is marked `invalid_page` and is never reused, so a plain requeue calls the model again. (With `LLM_TRACE=false` nothing is written to `llm/`, so such a reply is not marked: use `--refresh-llm`.) A trace that cannot be written never fails a document. No API key is ever written. `LLM_TRACE_PROMPT=true` also saves the prompt text (large: it holds the whole document); otherwise only its `prompt_sha256`.
+- **Only `run pipeline`** records and reads traces: `render` and `reason` do not. `duration_ms` is the duration of the last HTTP call only, not of a transient retry before it.
+- **To debug a bad page**, open the trace of the document: `attempts[].reply` is what the model said, `error` says why a call or a page was refused, `output` is what was validated. After a real run, commit and push `idea-bucket` like any other result.
+
+The settings are `LLM_CACHE`, `LLM_TRACE` and `LLM_TRACE_PROMPT` (see the [configuration page](../idea-catcher-configuration/)). The test data holds a frozen run, so a reset test repo runs with no model and no YouTube call (see [What the test data is](#what-the-test-data-is)).
 
 ## Reading the output
 

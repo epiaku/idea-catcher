@@ -326,7 +326,7 @@ This is the first part of the `pipeline.run` job in the [Idea Catcher Service](.
 
 ### Repo layout (latest version) {#repo-layout}
 
-The layout has **five top-level folders and one rule**: the `notes/` and `clippings/` subfolders of `inbox/` are repeated in every other folder, and a document gets **one calculated file name** that it keeps in every folder from then on (see [File names](#file-names)).
+The layout has **five main folders (plus `facts/` and `llm/`) and one rule**: the `notes/` and `clippings/` subfolders of `inbox/` are repeated in every other folder, and a document gets **one calculated file name** that it keeps in every folder from then on (see [File names](#file-names)).
 
 ```text
 idea-bucket/
@@ -343,6 +343,10 @@ idea-bucket/
 ├── output/                ← the working copy while it is worked on, and the final result
 │   ├── notes/
 │   └── clippings/
+├── facts/                 ← YouTube facts, one file per video
+├── llm/                   ← the trace of each LLM call, same subfolders and names as archive/
+│   ├── notes/
+│   └── clippings/
 ├── failed/                ← documents that could not be processed, with the reason
 │   ├── notes/
 │   └── clippings/
@@ -354,6 +358,8 @@ idea-bucket/
 - **`inbox/`**: new documents. A document leaves it the moment work on it starts.
 - **`archive/`**: the original, made when work starts, under its **calculated file name**. The text is exactly as captured. The only change is two lines added to its frontmatter: `original_filename` and `calculated_filename`. Never deleted by the pipeline.
 - **`output/`**: the working copy (with a `stage` in its frontmatter) while it is worked on, and the **final page** when it is ready: identical to the page written to `epiaku-docs`. For YouTube, the counts and transcript the summary was checked against are saved **once per video** in `facts/<video id>.json` at the root of `idea-bucket` (not next to the page), so a retry, a requeue or a rerun never calls YouTube again.
+- **`llm/`**: one trace per document, `llm/<subfolder>/<calculated name>.json`: the raw reply of each LLM attempt, tokens, outcome and the validated output. A run reads a good trace before it calls the model, so a retry or a requeue does not pay twice. See [Saved LLM replies](../idea-catcher-how-to-run/#saved-llm-replies).
+- **`llm/`**: one trace per document, `llm/<subfolder>/<calculated name>.json`: the raw reply of each LLM attempt, tokens, outcome and the validated output. A run reads a good trace before it calls the model, so a retry or a requeue does not pay twice. See [Saved LLM replies](../idea-catcher-how-to-run/#saved-llm-replies).
 - **`failed/`**: the document, next to `<name>.error.txt` with the reason. See [Failures](#failed-folder).
 - **`duplicates/`**: an earlier snapshot of a longer clip, with `duplicate_of: <subfolder>/<longest file name>` in its frontmatter. See [Duplicates](#duplicates-folder).
 
