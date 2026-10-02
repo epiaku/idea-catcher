@@ -177,3 +177,18 @@ def test_the_trace_holds_no_secret(repos, make_services):
     for path in written:
         text = path.read_text(encoding="utf-8")
         assert "sk-secret-123" not in text and "free-secret-456" not in text
+
+
+def test_a_failed_requeue_keeps_the_paid_replies_of_the_first_run(repos, make_services):
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    path = trace_of(repos.ideas, "clippings", "systeme.md")
+    first = path.read_bytes()
+    assert read(path)["outcome"] == "ok"
+
+    down = FakeBackend([BackendUnavailable("the backend is down")])
+    report = run_pipeline(
+        repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), make_services(chat_backend=down)
+    )
+    assert report.counts().get("deferred") == 1
+    assert path.read_bytes() == first
+    assert read(path)["attempts"][0]["reply"] == json.dumps(CANNED["ai-chat"])

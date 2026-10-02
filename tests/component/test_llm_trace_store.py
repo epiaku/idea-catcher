@@ -122,3 +122,56 @@ def test_a_trace_never_holds_the_api_key(tmp_path):
     trace.prompt = None
     path = TraceStore(tmp_path).put(REL, trace, now=NOW)
     assert "sk-secret" not in path.read_text(encoding="utf-8")
+
+
+def test_a_lone_surrogate_in_a_reply_still_writes_the_trace(tmp_path):
+    store = TraceStore(tmp_path)
+    path = store.put(REL, make_trace(replies=("ok \ud83d done",)), now=NOW)
+    assert path.exists()
+    assert json.loads(path.read_text(encoding="utf-8"))["attempts"][0]["reply"] == "ok \ud83d done"
+    assert store.find("note", "k1") == ["ok \ud83d done"]
+
+
+def test_a_normal_trace_keeps_non_ascii_characters_literal(tmp_path):
+    path = TraceStore(tmp_path).put(REL, make_trace(replies=("grüß",)), now=NOW)
+    assert "grüß" in path.read_text(encoding="utf-8")
+
+
+def test_a_failed_retry_does_not_overwrite_a_trace_with_replies(tmp_path, caplog):
+    store = TraceStore(tmp_path)
+    path = store.put(REL, make_trace(replies=("paid",)), now=NOW)
+    before = path.read_bytes()
+    with caplog.at_level(logging.INFO, logger="catcher.llm"):
+        again = store.put(REL, make_trace(replies=(), outcome="backend_error"), now=NOW + timedelta(hours=1))
+    assert again == path and path.read_bytes() == before
+    assert caplog.records
+    store.put(REL, make_trace(replies=(None,), outcome="backend_error"), now=NOW + timedelta(hours=2))
+    assert path.read_bytes() == before
+
+
+def test_a_new_trace_with_replies_overwrites_an_old_one_with_replies(tmp_path):
+    store = TraceStore(tmp_path)
+    store.put(REL, make_trace(replies=("old",)), now=NOW)
+    store.put(REL, make_trace(replies=("new",)), now=NOW + timedelta(hours=1))
+    assert store.find("note", "k1") == ["new"]
+
+
+def test_an_old_trace_without_replies_is_replaced(tmp_path):
+    store = TraceStore(tmp_path)
+    store.put(REL, make_trace(replies=(), outcome="backend_error"), now=NOW)
+    store.put(REL, make_trace(replies=("fresh",)), now=NOW + timedelta(hours=1))
+    assert store.find("note", "k1") == ["fresh"]
+
+
+def test_a_zero_reply_trace_is_written_when_there_is_no_old_file(tmp_path):
+    path = TraceStore(tmp_path).put(REL, make_trace(replies=(), outcome="backend_error"), now=NOW)
+    assert json.loads(path.read_text(encoding="utf-8"))["outcome"] == "backend_error"
+
+
+def test_an_unreadable_old_file_is_replaced_by_a_zero_reply_trace(tmp_path):
+    store = TraceStore(tmp_path)
+    path = store.path_for(REL)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe{not json")
+    store.put(REL, make_trace(replies=(), outcome="backend_error"), now=NOW)
+    assert json.loads(path.read_text(encoding="utf-8"))["outcome"] == "backend_error"

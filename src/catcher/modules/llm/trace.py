@@ -57,8 +57,23 @@ class TraceStore:
         fields = {name: data[name] for name in TraceFile.model_fields if name in data}
         model = TraceFile(saved_at=now.isoformat(timespec="seconds"), **fields)  # only TraceFile fields
         path = self.path_for(target_rel)
-        write_atomic(path, json.dumps(model.model_dump(), indent=2, ensure_ascii=False) + "\n")
+        if not any(a.reply is not None for a in model.attempts) and self._holds_replies(path):
+            log.warning("keeping the existing trace %s: it holds replies and the new one holds none", path)
+            return path
+        dump = model.model_dump()
+        try:
+            text = json.dumps(dump, indent=2, ensure_ascii=False) + "\n"
+            text.encode("utf-8")
+        except UnicodeEncodeError:  # a lone surrogate in a reply: escaped JSON still reads back exactly
+            text = json.dumps(dump, indent=2, ensure_ascii=True) + "\n"
+        write_atomic(path, text)
         return path
+
+    def _holds_replies(self, path: Path) -> bool:
+        if not path.is_file():
+            return False
+        old = self._read(path)
+        return old is not None and any(a.reply is not None for a in old.attempts)
 
     def find(self, task: str, content_key: str) -> list[str] | None:
         """The replies of the newest usable trace for this task and key, or None (never an empty list)."""
