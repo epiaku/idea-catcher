@@ -44,7 +44,7 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 | `catcher scan` | List what is in the inbox, without changing anything |
 | `catcher reason`, `catcher render` | Try the LLM step, or write one page, on a single document |
 | `catcher youtube facts` | Print the facts of one YouTube video (it respects the YouTube rate limits) |
-| `catcher db upgrade`, `catcher db downgrade` | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see the how-to-run guide) |
+| `catcher db upgrade`, `catcher db downgrade REVISION` (for example `-1`) | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see the how-to-run guide) |
 | `catcher testdata reset` | Make fresh test repos in `tmp/ic` |
 | `catcher version` | Print the version |
 

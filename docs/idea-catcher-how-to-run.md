@@ -39,7 +39,7 @@ uv run catcher run pipeline --push                                   # 3. full r
 - **`reason`**: sends one document to the LLM and prints the answer. Nothing is written.
 - **`render`**: makes the page for one document and writes it into `epiaku-docs`. No commit.
 - **`youtube facts`**: prints the counts and transcript of one YouTube video.
-- **`db upgrade`, `db downgrade`**: create or roll back the Postgres tables (Stage B). See [Database (Stage B)](#database-stage-b).
+- **`db upgrade`, `db downgrade REVISION`**: create or roll back the Postgres tables (Stage B). See [Database (Stage B)](#database-stage-b).
 - **`version`**: prints the version.
 
 **A run only looks at `inbox/` to find work.** When work on a document starts, it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`) and leaves `inbox/`: the original goes to `archive/` and a working copy to `output/`, both under that name. If something temporary goes wrong (the LLM is down, a budget is used up), the working copy stays in `output/` with `stage: deferred` and the reason. The run never reads `output/`, so **to retry, use `--requeue NAME`** (it moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again), or move the file back by hand. It keeps its calculated name, so the next run overwrites the stalled copy.
@@ -222,7 +222,12 @@ The queue and the state tables live in Postgres. Stage A needs none of this: `ru
 docker run --rm -d --name catcher-db -p 5432:5432 \
   -e POSTGRES_USER=catcher -e POSTGRES_PASSWORD=catcher -e POSTGRES_DB=catcher \
   pgvector/pgvector:pg17
-docker stop catcher-db        # when you are done; --rm removes the container (and its data)
+```
+
+When you are done (`--rm` removes the container and its data):
+
+```bash
+docker stop catcher-db
 ```
 
 This matches the default `DATABASE_URL`, `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`. To use another port or server, set `DATABASE_URL` in `.env` or in the shell (see [Configuration](../idea-catcher-configuration/)). There is no `compose.yaml` yet.
@@ -231,10 +236,12 @@ This matches the default `DATABASE_URL`, `postgresql+psycopg://catcher:catcher@l
 
 ```bash
 uv run catcher db upgrade        # migrate to the latest revision (head); a REVISION can be given instead
-uv run catcher db downgrade      # roll back to the empty database (base); a REVISION can be given instead
+uv run catcher db downgrade -1   # roll back one migration; REVISION is required (a revision id, or -1)
 ```
 
-After `upgrade` the tables are `jobs`, `job_items`, `job_events`, `resources`, `schedules` and Alembic's `alembic_version`; after `downgrade` only `alembic_version` is left.
+`catcher db downgrade base` drops **every table with all its rows**, so it asks for confirmation first (`--yes` skips the question). Without a REVISION the command fails and changes nothing.
+
+After `upgrade` the tables are `jobs`, `job_items`, `job_events`, `resources`, `schedules` and Alembic's `alembic_version`; after `downgrade base` only `alembic_version` is left.
 
 **Run the database tests:**
 
