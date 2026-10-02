@@ -39,6 +39,7 @@ uv run catcher run pipeline --push                                   # 3. full r
 - **`reason`**: sends one document to the LLM and prints the answer. Nothing is written.
 - **`render`**: makes the page for one document and writes it into `epiaku-docs`. No commit.
 - **`youtube facts`**: prints the counts and transcript of one YouTube video.
+- **`db upgrade`, `db downgrade`**: create or roll back the Postgres tables (Stage B). See [Database (Stage B)](#database-stage-b).
 - **`version`**: prints the version.
 
 **A run only looks at `inbox/` to find work.** When work on a document starts, it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`) and leaves `inbox/`: the original goes to `archive/` and a working copy to `output/`, both under that name. If something temporary goes wrong (the LLM is down, a budget is used up), the working copy stays in `output/` with `stage: deferred` and the reason. The run never reads `output/`, so **to retry, use `--requeue NAME`** (it moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again), or move the file back by hand. It keeps its calculated name, so the next run overwrites the stalled copy.
@@ -210,6 +211,38 @@ Prints the counts, description and transcript of one video as JSON. It calls You
 ```bash
 uv run catcher youtube facts https://www.youtube.com/watch?v=MBPHU7aaklM
 ```
+
+## Database (Stage B) {#database-stage-b}
+
+The queue and the state tables live in Postgres. Stage A needs none of this: `run pipeline` and the other commands above never touch the database. So far (steps B1 and B2) only the schema commands and the tests use it.
+
+**Start a Postgres 17 for development** (the image has pgvector, as in the design):
+
+```bash
+docker run --rm -d --name catcher-db -p 5432:5432 \
+  -e POSTGRES_USER=catcher -e POSTGRES_PASSWORD=catcher -e POSTGRES_DB=catcher \
+  pgvector/pgvector:pg17
+docker stop catcher-db        # when you are done; --rm removes the container (and its data)
+```
+
+This matches the default `DATABASE_URL`, `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`. To use another port or server, set `DATABASE_URL` in `.env` or in the shell (see [Configuration](../idea-catcher-configuration/)). There is no `compose.yaml` yet.
+
+**Create and drop the tables:**
+
+```bash
+uv run catcher db upgrade        # migrate to the latest revision (head); a REVISION can be given instead
+uv run catcher db downgrade      # roll back to the empty database (base); a REVISION can be given instead
+```
+
+After `upgrade` the tables are `jobs`, `job_items`, `job_events`, `resources`, `schedules` and Alembic's `alembic_version`; after `downgrade` only `alembic_version` is left.
+
+**Run the database tests:**
+
+```bash
+uv run pytest tests/integration/db -q
+```
+
+They start their **own throwaway Postgres container** through testcontainers (`pgvector/pgvector:pg17`) and remove it afterwards, so the development container is not needed and is not touched. They **skip** when Docker is not running. On macOS with Docker Desktop the socket is found automatically if `~/.docker/run/docker.sock` exists (unless `DOCKER_HOST` is set). **The pre-commit hook does not run them**: it runs only `tests/unit` and `tests/component`, so run the database tests yourself before you push anything that touches `modules/queue`, `core/db.py` or `migrations/`.
 
 ## YouTube and the gap between calls {#youtube-gap}
 
