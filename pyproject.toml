@@ -4,12 +4,15 @@ dynamic = ["version"]  # the one place for it: `__version__` in src/catcher/__in
 description = "Turns idea-bucket captures into epiaku-docs pages"
 requires-python = ">=3.12"
 dependencies = [
+  "alembic>=1.20.0",
   "jinja2>=3.1",
   "openai>=1.40,<2",
+  "psycopg[binary]>=3.3.6",
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
   "python-dotenv>=1.0",
   "pyyaml>=6.0",
+  "sqlalchemy>=2.1.2",
   "typer>=0.12",
   "yt-dlp>=2025.1.1",
 ]
@@ -25,6 +28,7 @@ dev = [
   "respx>=0.21",
   "ruff>=0.6",
   "syrupy>=4.6",
+  "testcontainers[postgres]>=4.15.0",
   "types-PyYAML>=6.0",
 ]
 
@@ -43,6 +47,7 @@ testpaths = ["tests"]
 addopts = "-ra --import-mode=importlib -m 'not live and not e2e'"
 markers = [
   "live: calls a real outside service (LLM API, real GitHub, YouTube). Manual only: uv run pytest -m live",
+  "db: needs Docker (a real Postgres 17 through testcontainers); runs with tests/integration/db",
   "e2e: end-to-end against a real stack. Manual only: uv run pytest -m e2e",
 ]
 

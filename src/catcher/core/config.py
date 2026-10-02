@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     git_author_name: str = "idea-catcher"
     git_author_email: str = "idea-catcher@users.noreply.github.com"
     artifact_max_mb: int = 25
+    database_url: str = "postgresql+psycopg://catcher:catcher@localhost:5432/catcher"
     log_level: str = "INFO"
     log_file: Path | None = None
 
