@@ -121,12 +121,16 @@ def claim(
     return job
 
 
-def _finish(session: Session, job: Job, values: dict[str, Any], *, attempts_delta: int = 0) -> bool:
+def _fenced_update(session: Session, job: Job, values: dict[str, Any], *, attempts_delta: int = 0) -> bool:
     """Write `values` only while `job` still holds its claim; refresh `job` when it did.
 
     The token is read from what `job` already holds, never reloaded: a reload would fetch the
-    current owner's token and let a stale caller through."""
-    loaded = inspect(job).dict
+    current owner's token and let a stale caller through. A `job` with unsaved changes is refused,
+    and autoflush is off for the UPDATE: a flush would write those changes without the fence."""
+    state = inspect(job)
+    if state.modified:
+        raise ValueError("the job has unsaved changes; they would be written without the fence")
+    loaded = state.dict
     if not {"id", "locked_by", "claim_seq"} <= loaded.keys():
         raise ValueError("the job's claim token is not loaded; pass the Job that claim returned")
     job_id, worker, claim_seq = loaded["id"], loaded["locked_by"], loaded["claim_seq"]
@@ -139,7 +143,8 @@ def _finish(session: Session, job: Job, values: dict[str, Any], *, attempts_delt
         .returning(*Job.__table__.columns)
         .execution_options(synchronize_session=False)
     )
-    row = session.execute(statement).one_or_none()
+    with session.no_autoflush:
+        row = session.execute(statement).one_or_none()
     if row is None:
         return False
     for key, value in row._mapping.items():
@@ -151,19 +156,23 @@ def heartbeat(session: Session, job: Job, *, now: datetime, lease_s: float) -> b
     """Extend the lease of a job the caller still owns. False when it is no longer theirs."""
     require_aware(now)
     _check_lease(lease_s)
-    return _finish(session, job, {"heartbeat_at": now, "lease_until": now + timedelta(seconds=lease_s)})
+    return _fenced_update(
+        session, job, {"heartbeat_at": now, "lease_until": now + timedelta(seconds=lease_s)}
+    )
 
 
 def complete(session: Session, job: Job, *, now: datetime, result: dict[str, Any] | None = None) -> bool:
     """Mark the caller's job succeeded. False (and nothing written) when it is no longer theirs."""
     require_aware(now)
-    return _finish(session, job, {"status": "succeeded", "finished_at": now, "result": result, **_UNLOCKED})
+    return _fenced_update(
+        session, job, {"status": "succeeded", "finished_at": now, "result": result, **_UNLOCKED}
+    )
 
 
 def fail(session: Session, job: Job, *, now: datetime, error: str) -> bool:
     """Mark the caller's job failed for good (no retry). False when it is no longer theirs."""
     require_aware(now)
-    return _finish(session, job, {"status": "failed", "finished_at": now, "error": error, **_UNLOCKED})
+    return _fenced_update(session, job, {"status": "failed", "finished_at": now, "error": error, **_UNLOCKED})
 
 
 def defer(session: Session, job: Job, *, now: datetime, run_after: datetime, reason: str) -> bool:
@@ -172,4 +181,4 @@ def defer(session: Session, job: Job, *, now: datetime, run_after: datetime, rea
     require_aware(now)
     require_aware(run_after)
     values = {"status": "queued", "run_after": run_after, "reason": reason, **_UNLOCKED}
-    return _finish(session, job, values, attempts_delta=-1)
+    return _fenced_update(session, job, values, attempts_delta=-1)

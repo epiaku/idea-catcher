@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import Engine, select, text
+from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.orm import Session
 
 from catcher.core.db import session_scope
@@ -234,3 +234,59 @@ def test_an_expired_job_is_refused_rather_than_reloaded_with_the_current_owners_
 
     with pytest.raises(ValueError):
         complete(session, job, now=clock.now)
+
+
+def _stale_claim_of_a_job_w2_now_holds(pg_engine: Engine, clock) -> tuple[Job, Job]:
+    """w1's detached Job from its claim, and the row as it is after w2 took the job over."""
+    with session_scope(pg_engine) as setup:
+        job_id = enqueue(setup, type="note", now=clock.now)[0].id
+    with session_scope(pg_engine) as first:
+        stale = _claimed(first, clock, worker="w1")
+    with session_scope(pg_engine) as reaper:
+        reaper.execute(
+            text("update jobs set status = 'queued', locked_by = null, lease_until = null where id = :id"),
+            {"id": job_id},
+        )
+    with session_scope(pg_engine) as second:
+        _claimed(second, clock, worker="w2")
+    return stale, _row(pg_engine, job_id)
+
+
+def _same_row(after: Job, before: Job) -> bool:
+    columns = [c.key for c in Job.__table__.columns]
+    return {c: getattr(after, c) for c in columns} == {c: getattr(before, c) for c in columns}
+
+
+def test_a_job_with_unsaved_changes_is_refused_and_nothing_is_written(pg_engine: Engine, clock) -> None:
+    stale, before = _stale_claim_of_a_job_w2_now_holds(pg_engine, clock)
+    with session_scope(pg_engine) as own:
+        own.add(stale)
+        stale.result = {"stale": True}
+        for call in (
+            lambda: heartbeat(own, stale, now=clock.now, lease_s=30),
+            lambda: complete(own, stale, now=clock.now),
+            lambda: fail(own, stale, now=clock.now, error="late"),
+            lambda: defer(own, stale, now=clock.now, run_after=clock.now, reason="late"),
+        ):
+            with pytest.raises(ValueError):
+                call()
+            # Left as it was: still carrying the caller's unsaved change, not expired or refreshed.
+            assert stale.result == {"stale": True}
+            assert inspect(stale).modified
+        own.rollback()
+
+    assert _same_row(_row(pg_engine, before.id), before)
+
+
+def test_a_merged_stale_copy_cannot_overwrite_the_new_claim(pg_engine: Engine, clock) -> None:
+    stale, before = _stale_claim_of_a_job_w2_now_holds(pg_engine, clock)
+    with session_scope(pg_engine) as own:
+        merged = own.merge(stale)  # copies w1's stale token over w2's as unsaved changes
+        with pytest.raises(ValueError):
+            complete(own, merged, now=clock.now)
+        # The detached original is not modified, but the guarded UPDATE must not flush `merged` first.
+        assert complete(own, stale, now=clock.now) is False
+        assert inspect(merged).modified
+        own.rollback()
+
+    assert _same_row(_row(pg_engine, before.id), before)
