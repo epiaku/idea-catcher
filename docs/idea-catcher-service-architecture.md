@@ -718,14 +718,48 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 **Size check (decision 11).** `wc -l`: `queue.py` is **222 lines**; the whole `queue` package is **377 lines** (`queue.py` 222, `models.py` 155, an empty `__init__.py`). The rule "queue core about 300 lines" is about the queue logic, which is `queue.py`; `models.py` is the schema. **Verdict: under the threshold, so Procrastinate stays the fallback and we continue with our own queue.** No flaky concurrency test was reported in review, and the fencing holes found there were fixed (see above); the concurrency test does not yet force the blocking path or the rollback-by-winner path deterministically. B3 to B5 will add code to the queue, so look at the count again at B5.
 
-**Minors carried into B3** (found in review, not fixed in B2):
+**Minors carried into B3** (found in review, not fixed in B2; this is the full list, the review ledger is not kept):
 
-- The reaper needs a timer loop that tolerates errors (it can deadlock with a concurrent claim) and an index on `status = 'running'` for its WHERE.
-- A `running` row with `lease_until` NULL is never reaped. Consider `CHECK (status <> 'running' OR lease_until IS NOT NULL)`, or document it.
+*Schema and migrations*
+
 - `CHECK attempts >= 0` (and `claim_seq >= 0`); today nothing stops a negative value.
-- Indexes on the foreign keys `job_events.job_id`, `job_events.item_id` and `job_items.root_job_id`.
+- A `running` row with `lease_until` NULL is never reaped. Consider `CHECK (status <> 'running' OR lease_until IS NOT NULL)`, or document it.
+- Indexes on the foreign keys `job_events.job_id`, `job_events.item_id` and `job_items.root_job_id`; and an index on `status = 'running'` for the reaper's WHERE.
+- `job_items.origin` has no CHECK (`'inbox'`, `'backfill'`).
+- `job_items.doc_id` and `doc_class` are NOT NULL: confirm a staged `waiting_youtube` row always has both when it is first written (decision 5). B3 handlers create exactly those rows.
+- The drift test reads `information_schema.data_type`, which hides USER-DEFINED/ARRAY detail (irrelevant for the current text/json columns).
+- The architecture's database section also lists `progress_done/total/message`, `trigger`, `queue` and `failed_days`, which the B1 tables leave out.
+- Stage C's image must copy `alembic.ini` and `migrations/` (`alembic_config` uses `PROJECT_ROOT`).
 - The dedupe predicate text is defined twice (`_ACTIVE_DEDUPE` in `queue.py` and in `models.py`): make it one shared constant.
-- Smaller: `reap()` overwrites unflushed changes on a dirty `Job` in the caller's session (use its own session); `max_attempts=0` runs once and then fails.
+
+*Queue behaviour*
+
+- The reaper needs a timer loop that tolerates errors (it can deadlock with a concurrent claim).
+- `defer()` silently accepts a `run_after` in the past (document "due at once").
+- `claim()` and `heartbeat()` check `lease_s` (finite, > 0); a `types=[]` matches nothing (undocumented).
+- `with_for_update` needs `of=Job` if a join is ever added to `claim()`.
+- `heartbeat()` after the lease expired but before a reap revives the lease (acceptable; documented in `reap()`).
+- `_finish` is named misleadingly for heartbeat (the helper is `_fenced_update`; check no stale name is left).
+- Other dirty instances in the caller's session (for example a merged copy) are still flushed unfenced when that session commits: add one docstring sentence to heartbeat, complete, fail and defer. A same-identity detached/dirty mismatch edge is unhandled.
+- `reap()` overwrites unflushed changes on a dirty `Job` in the caller's session (use its own session). `max_attempts=0` runs once and then fails (acceptable).
+- `enqueue()`: the returned `Job` differs between the key and no-key paths, `populate_existing` on the INSERT does nothing, and the retry-exhaustion `RuntimeError` is untested; there is no test for a naive `run_after`.
+
+*Tests*
+
+- Add `lock_timeout` to worker sessions so a thread test cannot hang the teardown; the thread `join(30)` is non-daemon and can stall pytest exit on failure.
+- The concurrency test does not force the blocking path nor the rollback-by-winner path (add a deterministic holder-session test); its lock-wait poll is not scoped to the reaper (add `datname` / `pg_blocking_pids`).
+- Check rejection tests insert a partial column set, so a NOT NULL violation would also raise `IntegrityError`; the `-x url=` path of `env.py` is untested.
+- The db conftest: a broad `except Exception` turns an ImportError into a Docker skip (import outside the try, catch only the container start); the container is not stopped if `start()` fails partway or `make_engine` raises; the admin engine in `fresh_database_url` is created before the try; the session fixture lacks a return annotation; two `pg_engine` tests request `session` only for its teardown (comment it).
+- Stale comment "reap comes in a later step" in `test_queue_finish.py` (a hand-rolled UPDATE could call `reap`); the poison-pair probe in `test_queue_reap.py` relies on file order; the test name "nothing is written" depends on the explicit `own.rollback()`.
+- Runtime floors were tightened to the resolved versions (`sqlalchemy>=2.1.2`, `alembic>=1.20.0`).
+
+*From B0 (steppable run)*
+
+- `outcome.py`: the subclass-order test is redundant with the parametrized `BudgetExhausted` row. `steps.py`: the "does not touch files" test cannot fail without I/O, and no test asserts `winner.rel`.
+- `inbox.py` (`load_staged_note`): a path equal to the repo root raises `IndexError`, not `ValueError` (catch both); `or rel == Path(".")` is redundant; no tests for path == folder, a symlink out of the repo, or a file directly in a folder.
+- `process.py`: `str(vid)` and `str(gemini_video_id())` would embed "None" if `build_page` is called without `get_facts`; no test that `get_facts` raises with no transcript, or that `ask_llm` is not reached; a `FactsUnavailable` import sits inside a test function (`test_process_steps.py`).
+- The Gate test "no state file written" checks a `tmp_path` that nothing points at (near-vacuous).
+- `run.py`: no test pins the `log_outcome` levels and wording per kind (add a parametrized caplog test); `log_outcome` is called in two places with different message arguments (compute the message once); the dry-run test runs `start_work` first (cosmetic).
 
 **Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 
