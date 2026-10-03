@@ -55,6 +55,7 @@ Document classes: `note`, `ai-chat`, `web-clip`, `youtube` (a clipped YouTube pa
 - **LLM profiles** (`profiles.yaml`): short notes use FreeLLMApi, chats, clips and YouTube use the OpenAI API. Calls that fail for a temporary reason are retried.
 - **YouTube blocks IP addresses that ask too fast.** The Idea Catcher saves the facts of each video once, spaces its requests out, keeps at least 2 minutes between fetches, and stops completely after a block. Details: [YouTube and the gap between calls](docs/idea-catcher-how-to-run.md#youtube-gap).
 - **Checks before every commit:** `ruff`, `pyright` and the unit and component tests (`pre-commit`). Tests never call a real LLM or YouTube.
+- **All checks in one command:** `scripts/check` runs `ruff`, `pyright` and all tests with outgoing network blocked (`scripts/check --fast` skips the database tests, no Docker needed). GitHub runs it on every push and pull request.
 
 ## 📚 Documentation
 

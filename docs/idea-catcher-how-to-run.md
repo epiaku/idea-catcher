@@ -258,6 +258,8 @@ uv run pytest tests/integration/db -q
 
 They start their **own throwaway Postgres container** through testcontainers (`pgvector/pgvector:pg17`) and remove it afterwards, so the development container is not needed and is not touched. They **skip** when Docker is not running. On macOS with Docker Desktop the socket is found automatically if `~/.docker/run/docker.sock` exists (unless `DOCKER_HOST` is set). **The pre-commit hook does not run them**: it runs only `tests/unit` and `tests/component`, so run the database tests yourself before you push anything that touches `modules/queue`, `core/db.py` or `migrations/`.
 
+**Run every check at once:** `scripts/check` (from any folder) runs `ruff check`, `ruff format --check`, `pyright` and then all the tests, and stops at the first failure. The tests run with outgoing network blocked (`tests/support/blocknet.py`): any connection to a host other than localhost, or a DNS lookup of one, raises `NETWORK BLOCKED`, is counted, and makes the run fail even when a test swallowed the error. `scripts/check --fast` runs only `tests/unit` and `tests/component` (no Docker). The database tests skip by themselves when Docker is not running, so `scripts/check` can pass without them: start Docker for the full check. The guard is not loaded by default, so `pytest -m live` by hand still works. GitHub Actions (`.github/workflows/ci.yml`) runs `scripts/check` on every push and pull request.
+
 ## YouTube and the gap between calls {#youtube-gap}
 
 YouTube blocks an IP address that asks too fast, and retrying during a block makes it longer. So the pipeline goes slowly and stops when told no:

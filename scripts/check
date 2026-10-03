@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# One command for every check CI runs. Stops at the first failure.
+#   scripts/check          everything (the database tests need Docker and skip without it)
+#   scripts/check --fast   only tests/unit and tests/component (no Docker)
+# The tests run with outgoing network blocked (tests/support/blocknet.py).
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+fast=0
+case "${1:-}" in
+  "") ;;
+  --fast) fast=1 ;;
+  *) echo "usage: scripts/check [--fast]" >&2; exit 2 ;;
+esac
+
+step() { echo; echo "== $*"; }
+
+step "ruff check"
+uv run ruff check src tests migrations
+step "ruff format --check"
+uv run ruff format --check src tests migrations
+step "pyright"
+uv run pyright
+
+if [ "$fast" = 1 ]; then
+  step "pytest (fast: tests/unit tests/component, network blocked)"
+  paths=(tests/unit tests/component)
+else
+  step "pytest (all tests, network blocked)"
+  echo "note: the database tests need Docker; they skip by themselves when it is not running."
+  paths=(tests)
+fi
+PYTHONPATH=tests/support CATCHER_BLOCK_NETWORK=1 uv run pytest "${paths[@]}" -p blocknet -q
+
+echo
+echo "all checks passed"
