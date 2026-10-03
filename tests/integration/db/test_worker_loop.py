@@ -608,15 +608,16 @@ def test_the_claim_backoff_is_capped(pg_engine: Engine, clock, monkeypatch: pyte
     assert slept == [20, 40, 60, 60, 60]
 
 
-def test_run_once_returns_none_after_a_claim_error_and_works_on_the_next_call(
+def test_run_once_returns_claim_error_after_a_claim_error_and_works_on_the_next_call(
     pg_engine: Engine, clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _enqueue(pg_engine, clock)
     _claim_failing(monkeypatch, times=1)
     worker = _worker(pg_engine, clock, {"note": lambda ctx, j: Done()})
 
-    assert worker.run_once() is None
+    assert worker.run_once() == "claim_error"  # not None: idle and a database error differ
     assert worker.run_once() == "succeeded"
+    assert worker.run_once() is None
 
 
 def test_a_bad_lease_fails_fast_instead_of_retrying(pg_engine: Engine, clock) -> None:

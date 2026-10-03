@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from catcher.core.config import Settings
 from catcher.core.db import make_worker_engine, utc_now
@@ -13,6 +14,9 @@ from catcher.modules.worker.handlers_pipeline import (
     handle_pipeline_publish,
     handle_pipeline_run,
     handle_youtube_fetch,
+    parse_params,
+    parse_publish_params,
+    parse_reason_params,
 )
 
 # Test-only seam: handlers merged into the registry. Production code never writes to it.
@@ -29,6 +33,26 @@ def build_handlers() -> dict[str, Handler]:
     }
     handlers.update(EXTRA_HANDLERS)
     return handlers
+
+
+# The param parser each handler runs first, so `catcher jobs add` refuses what the handler would refuse.
+PARAM_CHECKS: dict[str, Callable[[dict[str, Any]], object]] = {
+    "pipeline.run": parse_params,
+    "youtube.fetch": lambda params: parse_reason_params(params, "youtube.fetch"),
+    "llm.reason": parse_reason_params,
+    "pipeline.publish": parse_publish_params,
+}
+
+
+def check_job(job_type: str, params: dict[str, Any]) -> None:
+    """Raise ValueError when no handler runs `job_type` (EXTRA_HANDLERS included), or when its handler would
+    refuse `params`. A type without a param parser (a test handler) takes any params."""
+    handlers = build_handlers()
+    if job_type not in handlers:
+        raise ValueError(f"unknown job type {job_type!r}: use one of {', '.join(sorted(handlers))}")
+    check = PARAM_CHECKS.get(job_type)
+    if check is not None:
+        check(dict(params))
 
 
 def build_context(

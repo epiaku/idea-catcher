@@ -16,7 +16,8 @@ import typer
 from alembic import command as alembic_command
 from dotenv import load_dotenv
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError, OperationalError
 from sqlalchemy.orm import Session
 
 from catcher import __version__
@@ -45,7 +46,7 @@ from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
 from catcher.modules.queue.models import JOB_STATUSES, Job
-from catcher.modules.worker.app import build_context, build_handlers
+from catcher.modules.worker.app import build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import build_access
@@ -56,6 +57,7 @@ from catcher.modules.youtube.urls import video_id
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
+    pretty_exceptions_show_locals=False,  # a traceback must never print DATABASE_URL or a key from Settings
     help="Idea Catcher: turns idea-bucket captures into epiaku-docs pages.",
 )
 
@@ -415,11 +417,18 @@ def worker(
     poll_s: Annotated[float, typer.Option("--poll-s", help="seconds to wait when no job is due")] = 2.0,
 ) -> None:
     """Run the jobs in the queue, one at a time, until stopped (Ctrl-C or SIGTERM ends it after the
-    current job). Only one worker runs at a time: a second one exits with code 2."""
+    current job). Only one worker runs at a time: a second one exits with code 2.
+
+    Exit codes: 0 stopped normally (also when jobs failed: see `catcher jobs list`); 1 the worker lost
+    its one-worker lock, or with --once a claim hit a database error or a job could not be finished;
+    2 another worker runs, DATABASE_URL is malformed or the database cannot be reached."""
     lease_s = _positive_seconds("--lease-s", lease_s)
     poll_s = _positive_seconds("--poll-s", poll_s)
-    ctx = build_context(Settings(), ideas=ideas, docs=docs)
+    settings = Settings()
+    _check_database_url(settings.database_url)
+    ctx = build_context(settings, ideas=ideas, docs=docs)
     stop = threading.Event()
+    failed_once = False
     try:
         with WorkerLock(ctx.engine) as lock, _stop_on_signals(stop):
             runner = Worker(
@@ -440,9 +449,20 @@ def worker(
                     outcome = runner.run_once()
                     if outcome is None:
                         break
+                    if outcome == "claim_error":  # not idle: the queue could not be read
+                        typer.echo("could not claim a job: a database error (see the log)", err=True)
+                        failed_once = True
+                        break
                     counts[outcome] += 1
                 summary = " ".join(f"{name}={n}" for name, n in sorted(counts.items()))
                 typer.echo(f"ran {counts.total()} job(s){': ' + summary if summary else ''}")
+                if counts["error"]:
+                    typer.echo(
+                        f"{counts['error']} job(s) could not be finished (see the log); the reaper "
+                        "requeues them when their lease expires",
+                        err=True,
+                    )
+                    failed_once = True
             else:
                 runner.run_forever(stop)
             log.info("worker %s stopped", runner.worker_id)
@@ -459,6 +479,8 @@ def worker(
         raise typer.Exit(2) from e
     finally:
         ctx.engine.dispose()
+    if failed_once:
+        raise typer.Exit(1)
 
 
 jobs_app = typer.Typer(no_args_is_help=True, help="The job queue: add jobs by hand and look at them.")
@@ -479,7 +501,13 @@ def _param_value(raw: str) -> bool | int | str:
     return int(raw) if _INT.fullmatch(raw) else raw
 
 
+LIST_PARAMS = ("only", "requeue")  # always a list of names; a repeated --param adds one
+
+
 def _parse_params(pairs: list[str]) -> dict[str, Any]:
+    """`KEY=VALUE` pairs to job params. `only` and `requeue` always become a list of the names as typed
+    (never split on commas: a file name can hold one), and repeating them adds names. Any other key is
+    given once; true/false become booleans and whole numbers integers."""
     params: dict[str, Any] = {}
     for pair in pairs:
         key, sep, raw = pair.partition("=")
@@ -491,16 +519,36 @@ def _parse_params(pairs: list[str]) -> dict[str, Any]:
                 "dry runs never go through the queue: use `catcher run pipeline --dry-run` instead", err=True
             )
             raise typer.Exit(2)
+        if key in LIST_PARAMS:
+            params.setdefault(key, []).append(raw)
+            continue
         if key in params:
             raise typer.BadParameter(f"{key!r} is given twice", param_hint="--param")
         params[key] = _param_value(raw)
     return params
 
 
+def _check_database_url(url: str) -> None:
+    """Exit 2 with a short message when DATABASE_URL cannot be parsed (or names a driver that is not
+    installed). The message never shows the URL: it holds the password."""
+    try:
+        make_url(url).get_dialect()
+    except (ArgumentError, ValueError, ImportError) as e:
+        log.error("DATABASE_URL is not a valid database URL (%s)", type(e).__name__)
+        typer.echo(
+            "DATABASE_URL is not a valid database URL: use postgresql+psycopg://USER:PASSWORD@HOST:PORT/DB",
+            err=True,
+        )
+        raise typer.Exit(2) from None
+
+
 @contextmanager
 def _queue_session() -> Iterator[Session]:
-    """A session on DATABASE_URL; a database that cannot be reached ends the command with exit code 2."""
-    engine = make_worker_engine(Settings().database_url)
+    """A session on DATABASE_URL; a malformed URL or a database that cannot be reached ends the command
+    with exit code 2."""
+    url = Settings().database_url
+    _check_database_url(url)
+    engine = make_worker_engine(url)
     try:
         with session_scope(engine) as session:
             yield session
@@ -519,14 +567,20 @@ def jobs_add(
         typer.Option(
             "--param",
             help="KEY=VALUE for the job (true/false become booleans, whole numbers integers). "
-            "Repeat for more",
+            "only=NAME and requeue=NAME are lists: repeat them for more names. Repeat for more",
         ),
     ] = None,
     priority: Annotated[int, typer.Option("--priority", help="higher runs first")] = 0,
 ) -> None:
-    """Put one job on the queue, due now, and print its id. Dry runs are refused: they never go
-    through the queue."""
+    """Put one job on the queue, due now, and print its id. The type must have a handler and the
+    params must pass that handler's own check, or nothing is queued (exit 2). Dry runs are refused:
+    they never go through the queue."""
     params = _parse_params(param or [])
+    try:
+        check_job(job_type, params)
+    except ValueError as e:
+        typer.echo(f"cannot queue {job_type}: {e}", err=True)
+        raise typer.Exit(2) from None
     with _queue_session() as session:
         job, _ = queue.enqueue(session, type=job_type, now=utc_now(), priority=priority, params=params)
         job_id = job.id

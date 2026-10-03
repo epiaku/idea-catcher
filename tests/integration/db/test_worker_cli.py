@@ -11,13 +11,17 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import OperationalError
 from typer.testing import CliRunner
 
 from catcher import cli
 from catcher.cli import app
-from catcher.core.db import make_engine, session_scope
+from catcher.core.db import make_engine, session_scope, utc_now
+from catcher.modules.queue import queue
 from catcher.modules.queue.models import Job
+from catcher.modules.queue.queue import enqueue
 from catcher.modules.worker import app as worker_app
+from catcher.modules.worker import loop
 from catcher.modules.worker.guard import WorkerLock
 from catcher.modules.worker.handlers import Done, HandlerContext
 
@@ -39,6 +43,12 @@ def engine(fresh_database_url: str, runner: CliRunner):
         yield db
     finally:
         db.dispose()
+
+
+def _enqueue_raw(engine, job_type: str) -> None:
+    """Queue a job straight into the table: `jobs add` refuses a type with no handler."""
+    with session_scope(engine) as session:
+        enqueue(session, type=job_type, now=utc_now())
 
 
 def _jobs(engine) -> list[Job]:
@@ -82,10 +92,92 @@ def test_jobs_add_refuses_a_param_without_a_value(runner: CliRunner, engine) -> 
     assert _jobs(engine) == []
 
 
+COMMA_NAME = "youtube gemini summary - Unfortunately, YouTube Really Is This Simple.md"
+
+
+def test_jobs_add_only_and_requeue_are_always_lists_and_a_repeat_appends(runner: CliRunner, engine) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "jobs", "add", "pipeline.run",
+            "--param", "only=x",
+            "--param", f"only={COMMA_NAME}",
+            "--param", "requeue=7",
+            "--param", "requeue=true",
+            "--param", "limit=2",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    [job] = _jobs(engine)
+    assert job.params == {"only": ["x", COMMA_NAME], "requeue": ["7", "true"], "limit": 2}  # no comma split
+
+    one = runner.invoke(app, ["jobs", "add", "pipeline.run", "--param", "only=YouTube walks"])
+    assert one.exit_code == 0, one.output
+    assert _jobs(engine)[-1].params == {"only": ["YouTube walks"]}
+
+
+def test_jobs_add_still_refuses_a_repeated_plain_param(runner: CliRunner, engine) -> None:
+    result = runner.invoke(app, ["jobs", "add", "pipeline.run", "--param", "limit=1", "--param", "limit=2"])
+    assert result.exit_code == 2
+    assert "given twice" in result.output
+    assert _jobs(engine) == []
+
+
+def test_jobs_add_refuses_an_unknown_job_type(runner: CliRunner, engine) -> None:
+    result = runner.invoke(app, ["jobs", "add", "pipeline.rnu"])
+    assert result.exit_code == 2
+    assert "unknown job type 'pipeline.rnu'" in result.output
+    assert "pipeline.run" in result.output  # the known types are listed
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert _jobs(engine) == []
+
+
+@pytest.mark.parametrize(
+    ("job_type", "params", "message"),
+    [
+        ("pipeline.run", ["limit=-1"], "limit"),
+        ("pipeline.run", ["colour=blue"], "colour"),
+        ("pipeline.run", ["only=../x"], "only"),
+        ("pipeline.run", ["profile="], "profile"),
+        ("llm.reason", [], "calculated_name"),
+        ("llm.reason", ["calculated_name=../x.md"], "calculated_name"),
+        ("llm.reason", ["calculated_name=notes/x.md", "refresh_llm=maybe"], "refresh_llm"),
+        ("youtube.fetch", ["calculated_name=/etc/x.md"], "calculated_name"),
+        ("pipeline.publish", ["push=maybe"], "push"),
+        ("pipeline.publish", ["branch=main"], "branch"),
+    ],
+)
+def test_jobs_add_checks_the_params_with_the_handlers_own_parser(
+    runner: CliRunner, engine, job_type: str, params: list[str], message: str
+) -> None:
+    args = [arg for param in params for arg in ("--param", param)]
+    result = runner.invoke(app, ["jobs", "add", job_type, *args])
+    assert result.exit_code == 2, result.output
+    assert f"cannot queue {job_type}" in result.output and message in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert _jobs(engine) == []
+
+
+def test_jobs_add_accepts_good_params_for_every_handler(runner: CliRunner, engine) -> None:
+    for args in (
+        ["pipeline.run", "--param", "only=x", "--param", "retry_deferred=true"],
+        ["llm.reason", "--param", "calculated_name=20261002-abcdef-x.md", "--param", "profile=fake"],
+        ["youtube.fetch", "--param", "calculated_name=clippings/2026/20261002-abcdef-x.md"],
+        ["pipeline.publish", "--param", "push=false", "--param", "pull=false"],
+    ):
+        result = runner.invoke(app, ["jobs", "add", *args])
+        assert result.exit_code == 0, (args, result.output)
+    assert len(_jobs(engine)) == 4
+
+
 def test_jobs_list_filters_by_status(runner: CliRunner, engine) -> None:
     ids = []
-    for job_type in ("pipeline.run", "youtube.fetch", "llm.reason"):
-        result = runner.invoke(app, ["jobs", "add", job_type])
+    for job_type, params in (
+        ("pipeline.run", []),
+        ("youtube.fetch", ["--param", "calculated_name=clippings/x.md"]),
+        ("llm.reason", ["--param", "calculated_name=notes/x.md"]),
+    ):
+        result = runner.invoke(app, ["jobs", "add", job_type, *params])
         assert result.exit_code == 0, result.output
         ids.append(result.output.strip())
     with session_scope(engine) as session:
@@ -126,7 +218,7 @@ def test_worker_once_runs_a_registered_handler_and_exits(
     monkeypatch.setitem(worker_app.EXTRA_HANDLERS, "test.echo", echo)
     for word in ("one", "two"):
         assert runner.invoke(app, ["jobs", "add", "test.echo", "--param", f"word={word}"]).exit_code == 0
-    assert runner.invoke(app, ["jobs", "add", "test.unknown"]).exit_code == 0
+    _enqueue_raw(engine, "test.unknown")
 
     ideas, docs = tmp_path / "ideas", tmp_path / "docs"
     result = runner.invoke(app, ["worker", "--once", "--ideas", str(ideas), "--docs", str(docs)])
@@ -149,7 +241,7 @@ def test_worker_once_runs_a_registered_handler_and_exits(
 
 
 def test_a_second_worker_command_is_refused_with_exit_2(runner: CliRunner, engine) -> None:
-    assert runner.invoke(app, ["jobs", "add", "test.echo"]).exit_code == 0
+    _enqueue_raw(engine, "test.echo")
     with WorkerLock(engine):
         result = runner.invoke(app, ["worker", "--once"])
     assert result.exit_code == 2
@@ -242,3 +334,70 @@ def test_a_worker_that_loses_its_lock_stops_with_exit_1(
         if process.poll() is None:
             process.kill()
             process.wait()
+
+
+def test_worker_once_exits_1_when_a_claim_hits_a_database_error(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enqueue_raw(engine, "test.echo")
+
+    def broken_claim(session, **kwargs):
+        raise OperationalError("select ... for update", {}, Exception("connection refused"))
+
+    monkeypatch.setattr(queue, "claim", broken_claim)
+    result = runner.invoke(app, ["worker", "--once"])
+
+    assert result.exit_code == 1, result.output
+    assert "ran 0 job(s)" in result.output
+    assert "could not claim a job" in result.output
+    [job] = _jobs(engine)
+    assert job.status == "queued"
+
+
+def test_worker_once_exits_1_when_a_job_could_not_be_finished(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enqueue_raw(engine, "test.echo")
+
+    def broken_run_job(*args, **kwargs):
+        raise OperationalError("update jobs", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(loop, "run_job", broken_run_job)
+    result = runner.invoke(app, ["worker", "--once"])
+
+    assert result.exit_code == 1, result.output
+    assert "error=1" in result.output
+    assert "could not be finished" in result.output
+
+
+def test_worker_once_with_a_failed_job_still_exits_0(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enqueue_raw(engine, "test.unknown")  # no handler: the job fails, the worker did its work
+    result = runner.invoke(app, ["worker", "--once"])
+    assert result.exit_code == 0, result.output
+    assert "failed=1" in result.output
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql+psycopg://catcher:s3cr3t-pw@localhost:notaport/catcher",
+        "not a database url s3cr3t-pw",
+        "nosuchdriver://catcher:s3cr3t-pw@localhost/catcher",
+    ],
+)
+@pytest.mark.parametrize("command", [["worker", "--once"], ["jobs", "list"], ["jobs", "add", "pipeline.run"]])
+def test_a_malformed_database_url_exits_2_with_a_short_message_and_no_password(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, url: str, command: list[str]
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", url)
+    result = runner.invoke(app, command)
+    assert result.exit_code == 2, result.output
+    assert "DATABASE_URL is not a valid database URL" in result.output
+    assert "s3cr3t-pw" not in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_typer_never_shows_local_variables_in_a_traceback() -> None:
+    assert app.pretty_exceptions_show_locals is False  # older Typer versions default to True

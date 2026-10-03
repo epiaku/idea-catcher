@@ -23,7 +23,7 @@ from catcher.modules.worker.handlers import Handler, HandlerContext
 
 log = logging.getLogger("catcher.worker")
 
-RunOnceResult = Outcome | Literal["error"] | None
+RunOnceResult = Outcome | Literal["error", "claim_error"] | None
 MAX_CLAIM_BACKOFF_S = 60.0
 
 
@@ -137,9 +137,10 @@ class Worker:
     def run_once(self) -> RunOnceResult:
         """Claim the most urgent due job (in its own committed session) and run it. Returns the outcome
         of `run_job` (after a "failed" one, its item is failed too: `fail_item_of`), "error" when
-        `run_job` raised (logged; the job stays running until the reaper requeues it), or None when no
-        job is due or the claim hit a database error (logged; the next idle wait backs off). Any other
-        error from the claim (a bad `lease_s`) propagates, as do KeyboardInterrupt and SystemExit.
+        `run_job` raised (logged; the job stays running until the reaper requeues it), "claim_error" when
+        the claim hit a database error (logged; the next idle wait backs off), or None when no job is
+        due. Any other error from the claim (a bad `lease_s`) propagates, as do KeyboardInterrupt and
+        SystemExit.
 
         Before the claim, `lock_check` (when given) makes sure this is still the one worker; its
         WorkerLockLost propagates and stops the worker."""
@@ -158,7 +159,7 @@ class Worker:
                     self._claim_failures,
                     type(error).__name__,
                 )
-            return None
+            return "claim_error"
         if self._claim_failures:
             log.info("worker %s recovered after %d failed claim(s)", self.worker_id, self._claim_failures)
             self._claim_failures = 0
@@ -229,5 +230,5 @@ class Worker:
                 self.check_lock()
                 self.reap_safely()
                 next_reap = time.monotonic() + self.reap_every_s
-            if self.run_once() is None and not stop.is_set():
+            if self.run_once() in (None, "claim_error") and not stop.is_set():
                 wait(self.idle_wait_s())
