@@ -13,6 +13,17 @@ def make_engine(url: str) -> Engine:
     return create_engine(url, pool_pre_ping=True)
 
 
+WORKER_LOCK_TIMEOUT_MS = 10000
+
+
+def make_worker_engine(url: str) -> Engine:
+    """An engine for the worker: every session waits at most 10 s for a row lock, then raises, so a
+    stuck lock never hangs a claim, a heartbeat or a finish."""
+    return create_engine(
+        url, pool_pre_ping=True, connect_args={"options": f"-c lock_timeout={WORKER_LOCK_TIMEOUT_MS}"}
+    )
+
+
 @contextmanager
 def session_scope(engine: Engine) -> Iterator[Session]:
     """One unit of work: commit when the block ends, roll back when it raises."""
