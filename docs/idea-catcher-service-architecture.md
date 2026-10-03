@@ -722,10 +722,10 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 **Built (2026-10-03): B3, the worker and its handlers.** What exists:
 
-- **The worker** (`modules/worker/`): `catcher worker [--once] [--ideas] [--docs] [--lease-s] [--poll-s]` claims one job at a time and runs its handler; a heartbeat thread renews the lease while the handler runs; the reaper runs at the start and every 60 seconds between jobs; Ctrl-C or SIGTERM ends it after the current job. A Postgres advisory lock allows **one worker per database** (a second exits with code 2). Worker sessions have a `lock_timeout`.
+- **The worker** (`modules/worker/`): `catcher worker [--once] [--ideas] [--docs] [--lease-s] [--poll-s]` claims one job at a time and runs its handler; a heartbeat thread renews the lease while the handler runs; the reaper runs at the start and every 60 seconds between jobs; Ctrl-C or SIGTERM ends it after the current job. A Postgres advisory lock allows **one worker per database** (a second exits with code 2); the worker checks before every claim and reap that its lock connection still holds the lock and stops with exit code 1 when it does not (a Postgres restart, a dropped connection). Worker sessions have a `lock_timeout`.
 - **The handlers** (`handlers_pipeline.py`): `pipeline.run` (stage the inbox, then queue the next job per document), `youtube.fetch` (saved facts, else one paced fetch through the Stage A gate; a closed gate defers the job to the gate's time without counting an attempt), `llm.reason` (saved facts only, the saved reply before the model, the page), `pipeline.publish` (the only handler that runs git). A handler returns `Done`, `Defer` or `Fail`.
 - **The item API** (`modules/queue/items.py`): one `job_items` row per calculated name, with the status of the document (`staging`, `waiting_youtube`, `waiting_llm`, `published`, `deferred`, `failed`, `duplicate`...).
-- **`catcher jobs add TYPE [--param KEY=VALUE] [--priority N]`** and **`catcher jobs list [--status] [--limit]`**. How to use them: [How to Run](../idea-catcher-how-to-run/#worker-stage-b).
+- **`catcher jobs add TYPE [--param KEY=VALUE] [--priority N]`** and **`catcher jobs list [--status] [--limit]`**. `jobs add` refuses an unknown type and params the handler's own parser refuses (exit 2); `only` and `requeue` are lists (repeat `--param` for more). How to use them: [How to Run](../idea-catcher-how-to-run/#worker-stage-b).
 - **Tests:** a database harness with a frozen clock and fake services (`tests/support/`), the worker publishing the frozen real run of the test data with the same pages as Stage A, and crash injection at each step of each handler.
 
 **The transaction rules.**
@@ -743,6 +743,10 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - **The reaper fails the items of a job it fails** and moves their working copy to `failed/` (after its commit, best effort), except items that were handed off to another queued or running job.
 - **The `Done` counts of `pipeline.run` have a sixth key, `errors`** (`staged`, `adopted`, `duplicates`, `artifacts`, `unreadable`, `errors`).
 - **Job and item outcomes are separate.** A deferred or failed document ends its job as `succeeded`; an unexpected exception in a handler fails the item (moved to `failed/`) **and** the job (no retry).
+- **Any failed job fails its item** (final fix wave). After a job ends `failed` for any reason (a handler's `Fail`, a parameter error, an exception `run_job` caught), the worker runs the reaper's `fail_items_of` on it and moves the working copy to `failed/`, unless another queued or running job carries the item (the same hand-off guard). So a document is never left active with no job.
+- **A requeue judges "in use" by the jobs, not the status.** `requeue` leaves an item alone while a queued or running job carries its calculated name; an active item that no job carries is a stuck leftover: it is marked `stuck` and requeued (a `staging` row is left to the adoption of the next `pipeline.run`).
+- **Calculated names may have 1 or more folder parts.** A capture directly in `inbox/` is `<name>.md`, a nested one `clippings/2026/<name>.md`; `llm.reason` and `youtube.fetch` accept every name `assign_name` makes and refuse only what could leave the ideas folder (absolute, empty, `.`/`..` or dot parts, backslashes, NUL).
+- **The publish commit set is all of `inbox/`** (`git add -A`, so new captures that arrived after the last `pipeline.run` are committed too: intended, the capture is then safe in the repo) **plus `llm/`** (the saved replies), on top of decision 6's `archive/ output/ failed/ duplicates/ facts/`.
 
 **Size check (decision 11).** `wc -l`: `queue.py` is **222 lines**; the whole `queue` package is **377 lines** (`queue.py` 222, `models.py` 155, an empty `__init__.py`). The rule "queue core about 300 lines" is about the queue logic, which is `queue.py`; `models.py` is the schema. **Verdict: under the threshold, so Procrastinate stays the fallback and we continue with our own queue.** No flaky concurrency test was reported in review, and the fencing holes found there were fixed (see above); the concurrency test does not yet force the blocking path or the rollback-by-winner path deterministically. B3 to B5 will add code to the queue, so look at the count again at B5.
 
@@ -800,16 +804,17 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 - A reset of an item does not clear `stage_reason` (and `failed_path`, `warnings`).
 - A `waiting_youtube` item's `updated_at` is not refreshed while its fetch is deferred: reconcile must not call it `stuck` while a fetch is queued.
-- An item whose handler could not commit its own status stays active until reconcile; nothing marks `stuck` yet.
+- An item whose handler could not commit its own status, or whose failed job could not fail it (a database error), stays active until reconcile; a `requeue` of it marks it `stuck` and runs it again.
 
 *Robustness*
 
-- A down LLM backend is called once per queued `llm.reason` job (Stage A stops after the first failure in a run).
+- **A down LLM backend is called once per queued `llm.reason` job** (final review F4, not fixed in B3). Each job gets a fresh `RunState`, so `blocked_backends` is always empty: with 43 queued jobs and a backend that refuses connections that is about 30 s per job (about 21 minutes before a `pipeline.publish` behind them runs), with one that hangs much longer, and a 429 is hit again for every job. Fix: a worker-lifetime blocked-backend memo with an expiry (Stage A's `blocked_backends` semantics) fed into `ProcessOptions.blocked_backends`, until B5's per-backend `resources` row replaces it. **A prerequisite before B6 schedules runs.**
 - `os.killpg` is POSIX only: fall back to `terminate()`/`kill()` on Windows.
 - The ssh-config probe uses a plain `subprocess.run`, so a timeout or `OSError` there is not a `GitError`.
-- `worker --once` spins on a handler that defers to a time already due, and exits 0 with `ran 0 job(s)` on a database error during a claim.
-- A malformed `DATABASE_URL` gives a Typer traceback that can show local variables, the URL with its password among them: set `pretty_exceptions_show_locals=False` (or catch it).
-- `only` and `requeue` of `pipeline.run` are lists, which `catcher jobs add --param` cannot give (found on 2026-10-03 while checking the how-to-run recipe).
+- `worker --once` spins on a handler that defers to a time already due (only with a gate time in the past).
+- **Decision 6's "once a worker exists, the CLI refuses to run against the live remote" is not built.** Stage A's `run pipeline` and a worker on the same checkout would race on `inbox/` and git; until it is built, do not run both on one checkout.
+- `refresh_llm=true` skips the saved reply by design, so a rerun after a crash pays the model again ("the model is paid once" holds without `refresh_llm`).
+- Git's stderr goes into `job.error` and the logs (up to 500 characters): with a token in the remote URL (Stage C) use a credential helper, or redact `//user:secret@`.
 
 *Tests*
 
