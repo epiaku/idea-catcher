@@ -220,3 +220,15 @@ def reap(session: Session, *, now: datetime) -> list[Job]:
             )
             changed.extend(session.scalars(statement))
     return changed
+
+
+def live_job_carries(session: Session, calculated_name: str, *, besides: uuid.UUID | None = None) -> bool:
+    """True when a queued or running job (other than `besides`) carries the item `calculated_name` in its
+    `calculated_name` param: that job owns the item and will move it on."""
+    statement = select(Job.id).where(
+        Job.status.in_(("queued", "running")),
+        Job.params["calculated_name"].astext == calculated_name,
+    )
+    if besides is not None:
+        statement = statement.where(Job.id != besides)
+    return session.scalars(statement.limit(1)).first() is not None

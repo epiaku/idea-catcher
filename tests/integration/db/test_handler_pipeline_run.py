@@ -11,6 +11,7 @@ from catcher.modules.pipeline import inbox
 from catcher.modules.pipeline.inbox import load_staged_note, mark_deferred
 from catcher.modules.queue.items import set_item_status, stage_item
 from catcher.modules.queue.models import Job, JobItem
+from catcher.modules.queue.queue import claim
 from catcher.modules.worker import handlers_pipeline
 from catcher.modules.worker.app import build_handlers
 from catcher.modules.worker.handlers import Done, Fail
@@ -318,6 +319,40 @@ def test_requeue_leaves_an_active_item_alone(harness):
     assert item_named(harness, "notes", "YouTube walks.md").status == "waiting_llm"
     assert (harness.ideas / "output" / item.calculated_name).exists()
     assert (harness.ideas / "archive" / item.calculated_name).exists()
+    assert len(next_jobs(harness)) == 1
+
+
+def test_requeue_resets_a_stuck_active_item_that_no_job_carries(harness):
+    run(harness, only=["YouTube walks"])
+    stuck = item_named(harness, "notes", "YouTube walks.md")
+    _finish_jobs(harness)  # its llm.reason ended without moving the item on: it is a leftover
+    assert stuck.status == "waiting_llm"
+
+    harness.clock.advance(60)
+    assert run(harness, requeue=["YouTube walks"]) == Done(counts(staged=1))
+
+    again = item_named(harness, "notes", "YouTube walks.md")
+    assert (again.id, again.calculated_name, again.status) == (stuck.id, stuck.calculated_name, "waiting_llm")
+    assert again.updated_at > stuck.updated_at
+    queued = [j for j in next_jobs(harness) if j.status == "queued"]
+    assert [(j.type, j.params["calculated_name"]) for j in queued] == [("llm.reason", stuck.calculated_name)]
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_requeue_leaves_an_item_a_live_job_carries_alone(harness, status):
+    run(harness, only=["YouTube walks"])
+    item = item_named(harness, "notes", "YouTube walks.md")
+    if status == "running":
+        with session_scope(harness.ctx.engine) as session:
+            assert claim(session, worker="other", now=harness.clock(), lease_s=60, types=["llm.reason"])
+    with session_scope(harness.ctx.engine) as session:
+        set_item_status(session, item.calculated_name, "published", now=harness.clock())  # even if final
+
+    assert run(harness, requeue=["YouTube walks"]) == Done(counts())
+
+    assert item_named(harness, "notes", "YouTube walks.md").status == "published"
+    assert (harness.ideas / "output" / item.calculated_name).exists()
+    assert not (harness.ideas / "inbox" / item.calculated_name).exists()
     assert len(next_jobs(harness)) == 1
 
 

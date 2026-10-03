@@ -3,13 +3,13 @@
 import logging
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -40,12 +40,7 @@ class FailedItem:
 def _other_active_job(session: Session, job: Job, name: str) -> bool:
     """True when another queued or running job carries item `name`: the handler handed it on (fetch to
     reason, or back) before it died, and that job owns the item now."""
-    statement = select(Job.id).where(
-        Job.id != job.id,
-        Job.status.in_(("queued", "running")),
-        Job.params["calculated_name"].astext == name,
-    )
-    return session.scalars(statement.limit(1)).first() is not None
+    return queue.live_job_carries(session, name, besides=job.id)
 
 
 def fail_items_of(session: Session, jobs: Sequence[Job], *, now: datetime) -> list[FailedItem]:
@@ -139,10 +134,10 @@ class Worker:
 
     def run_once(self) -> RunOnceResult:
         """Claim the most urgent due job (in its own committed session) and run it. Returns the outcome
-        of `run_job`, "error" when `run_job` raised (logged; the job stays running until the reaper
-        requeues it), or None when no job is due or the claim hit a database error (logged; the next
-        idle wait backs off). Any other error from the claim (a bad `lease_s`) propagates, as do
-        KeyboardInterrupt and SystemExit."""
+        of `run_job` (after a "failed" one, its item is failed too: `fail_item_of`), "error" when
+        `run_job` raised (logged; the job stays running until the reaper requeues it), or None when no
+        job is due or the claim hit a database error (logged; the next idle wait backs off). Any other
+        error from the claim (a bad `lease_s`) propagates, as do KeyboardInterrupt and SystemExit."""
         try:
             with session_scope(self.ctx.engine) as session:
                 job = queue.claim(session, worker=self.worker_id, now=self.ctx.clock(), lease_s=self.lease_s)
@@ -165,10 +160,31 @@ class Worker:
             return None
         # The Job that claim returned carries the claim token (expire_on_commit=False keeps it loaded).
         try:
-            return run_job(self.ctx, job, self.handlers, lease_s=self.lease_s, heartbeat_s=self.heartbeat_s)
+            outcome = run_job(
+                self.ctx, job, self.handlers, lease_s=self.lease_s, heartbeat_s=self.heartbeat_s
+            )
         except Exception:
             log.exception("job %s (%s) could not be finished; the reaper will requeue it", job.id, job.type)
             return "error"
+        if outcome == "failed":
+            self.fail_item_of(job.id)
+        return outcome
+
+    def fail_item_of(self, job_id: uuid.UUID) -> None:
+        """After a job ended `failed` (a handler's `Fail`, or an exception `run_job` turned into one), its
+        item must not stay active with nothing to move it: the reaper's `fail_items_of` fails it with the
+        job's error (unless another queued or running job carries it, or it is already final), in one
+        commit, and `file_failed_items` then moves its working copy to `failed/`. An error is logged, never
+        raised: the job is already finished, and the worker goes on."""
+        try:
+            with session_scope(self.ctx.engine) as session:
+                now = self.ctx.clock()
+                job = session.get(Job, job_id)
+                failed = fail_items_of(session, [job] if job is not None else [], now=now)
+        except Exception:
+            log.exception("job %s failed, and could not fail the item it carries", job_id)
+            return
+        file_failed_items(self.ctx.ideas, failed, now=now)
 
     def reap_safely(self) -> int:
         """Requeue (or fail) every job whose lease expired, and fail the item of a job it failed

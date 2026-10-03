@@ -9,14 +9,14 @@ from typing import Any
 import pytest
 from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.exc import OperationalError
-from worker_harness import YOUTUBE_GAP_S
+from worker_harness import NOTES, YOUTUBE_GAP_S
 
 from catcher.core.db import make_worker_engine, session_scope
 from catcher.modules.queue import queue
 from catcher.modules.queue.items import get_item, set_item_status, stage_item
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.queue.queue import claim, enqueue
-from catcher.modules.worker import loop
+from catcher.modules.worker import handlers_pipeline, loop
 from catcher.modules.worker.handlers import Defer, Done, Handler, HandlerContext, HandlerResult
 from catcher.modules.worker.handlers_pipeline import handle_llm_reason, handle_youtube_fetch
 from catcher.modules.worker.loop import Worker
@@ -649,3 +649,80 @@ def test_an_idle_worker_stops_at_once_by_default(
     thread.join(WAIT_S)
 
     assert not thread.is_alive()
+
+
+def _staged_note(harness) -> str:
+    """The note staged by a real pipeline.run: waiting_llm, its llm.reason queued, working copy in output/."""
+    harness.add_job("pipeline.run", only=["YouTube walks"])
+    assert harness.worker.run_once() == "succeeded"
+    item = _harness_item(harness, "YouTube walks.md")
+    assert item.status == "waiting_llm"
+    return item.calculated_name
+
+
+def _assert_filed_as_failed(harness, name: str, *reason_parts: str) -> None:
+    item = _harness_item(harness, "YouTube walks.md")
+    assert item.status == "failed"
+    for part in reason_parts:
+        assert part in (item.error or "")
+    assert not (harness.ideas / "output" / name).exists()
+    assert (harness.ideas / "failed" / name).is_file()
+    error = (harness.ideas / "failed" / name).with_suffix(".error.txt").read_text(encoding="utf-8")
+    assert all(part in error for part in reason_parts)
+
+
+def test_a_handler_that_raises_after_the_page_fails_the_item_and_files_it(
+    harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = _staged_note(harness)
+
+    def broken_finish(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("a bug after write_page")
+
+    monkeypatch.setattr(handlers_pipeline, "finish", broken_finish)
+
+    assert harness.drain(max_jobs=2) == ["failed"]
+
+    assert len(list((harness.docs / NOTES).glob("2*.md"))) == 1  # the page was written before the bug
+    _assert_filed_as_failed(harness, name, "llm.reason", "RuntimeError: a bug after write_page")
+
+
+def test_a_param_error_fails_the_item_and_files_it(harness) -> None:
+    name = _staged_note(harness)
+    with session_scope(harness.ctx.engine) as s:
+        [job] = [j for j in harness.jobs(s) if j.type == "llm.reason"]
+        job.params = {**job.params, "colour": "blue"}
+
+    assert harness.drain(max_jobs=2) == ["failed"]
+
+    _assert_filed_as_failed(harness, name, "llm.reason", "unknown parameter(s) for llm.reason: colour")
+
+
+def test_a_failed_job_leaves_an_item_another_live_job_carries_alone(harness) -> None:
+    name = _staged_note(harness)
+    harness.add_job("llm.reason", priority=5, calculated_name=name, colour="blue")  # runs first, fails
+
+    assert harness.drain(max_jobs=3) == ["failed", "succeeded"]
+
+    assert _harness_item(harness, "YouTube walks.md").status == "published"
+    assert not (harness.ideas / "failed" / name).exists()
+
+
+def test_an_item_error_after_a_failed_job_is_logged_and_the_worker_goes_on(
+    harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    name = _staged_note(harness)
+    with session_scope(harness.ctx.engine) as s:
+        [job] = [j for j in harness.jobs(s) if j.type == "llm.reason"]
+        job.params = {**job.params, "colour": "blue"}
+
+    def broken(*args: Any, **kwargs: Any):
+        raise OperationalError("update job_items", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(loop, "fail_items_of", broken)
+    with caplog.at_level("ERROR", logger="catcher.worker"):
+        assert harness.drain(max_jobs=2) == ["failed"]
+
+    assert _harness_item(harness, "YouTube walks.md").status == "waiting_llm"  # B5's reconcile, or a requeue
+    assert (harness.ideas / "output" / name).is_file()
+    assert any("could not fail the item" in r.getMessage() for r in caplog.records)

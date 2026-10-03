@@ -76,7 +76,7 @@ from catcher.modules.queue.items import (
     stage_item,
 )
 from catcher.modules.queue.models import Job
-from catcher.modules.queue.queue import enqueue
+from catcher.modules.queue.queue import enqueue, live_job_carries
 from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
 from catcher.modules.youtube.facts import FactsDeferred
@@ -251,8 +251,11 @@ def _adopt(ctx: HandlerContext, row: Leftover, params: RunParams) -> tuple[str, 
 
 
 def _requeue(ctx: HandlerContext, queries: list[str]) -> None:
-    """Move the named archived documents back into `inbox/` (Stage A's requeue), except those whose item is
-    still active: their files are in use by a queued job and stay where they are."""
+    """Move the named archived documents back into `inbox/` (Stage A's requeue), except those a queued or
+    running job carries (`live_job_carries`): their files are in use and stay where they are. An item
+    still `staging` belongs to this run's adoption and is left alone too. Any other active item is a
+    leftover that nothing will move on (its job ended without moving it): it is marked `stuck`, so the
+    scan stages it again under its name."""
     if not queries:
         return
     found, not_found = requeue_from_archive(ctx.ideas, queries, dry_run=True)
@@ -263,9 +266,15 @@ def _requeue(ctx: HandlerContext, queries: list[str]) -> None:
         for item in found:
             rel = item.rel.as_posix()
             row = get_item(session, rel)
-            if row is not None and row.status in ACTIVE_STATUSES:
-                log.warning("not requeued: %s is still being processed (status %s)", rel, row.status)
+            if live_job_carries(session, rel):
+                status = row.status if row is not None else "no item"
+                log.warning("not requeued: %s is still being processed by a job (status %s)", rel, status)
+            elif row is not None and row.status == "staging":
+                log.warning("not requeued: %s is still staging; the next pipeline.run adopts it", rel)
             else:
+                if row is not None and row.status in ACTIVE_STATUSES:
+                    log.warning("%s was left %s with no job to move it: requeued", rel, row.status)
+                    set_item_status(session, rel, "stuck", now=ctx.clock())
                 keep.append(rel)
     if keep:
         requeue_from_archive(ctx.ideas, keep)
