@@ -9,6 +9,7 @@ from catcher.modules.llm.profiles import Profile
 from catcher.modules.llm.service import BackendUnavailable
 from catcher.modules.worker.handlers import Done, HandlerContext
 from catcher.modules.worker.loop import Worker
+from catcher.modules.youtube.facts import FactsDeferred
 
 
 def test_the_harness_builds_two_git_repos_and_an_idle_worker(harness, sh):
@@ -35,6 +36,12 @@ def test_the_harness_builds_two_git_repos_and_an_idle_worker(harness, sh):
     assert facts.video_id == "AAAAAAAAAAA"
     assert harness.fetch_calls == ["AAAAAAAAAAA"]
     assert harness.state_dir in youtube.gate.state_file.parents  # never the real state folder
+    with pytest.raises(FactsDeferred):  # the real gate holds a second fetch inside the gap ...
+        youtube.get("BBBBBBBBBBB", facts_dir=None)
+    assert harness.fetch_calls == ["AAAAAAAAAAA"]  # ... and a held fetch is not a call
+    harness.clock.advance(601)  # the gate reads the frozen clock: the next slot has come
+    assert youtube.get("BBBBBBBBBBB", facts_dir=None).video_id == "BBBBBBBBBBB"
+    assert harness.fetch_calls == ["AAAAAAAAAAA", "BBBBBBBBBBB"]
 
     # The fake backends: the notes profile gets the note backend, the openai ones the chat backend.
     assert harness.ctx.services.backends(Profile(backend="fake")) is harness.backends.note
@@ -74,4 +81,14 @@ def test_the_frozen_harness_starts_with_the_committed_inbox_facts_and_replies(fr
     with pytest.raises(AssertionError, match="must not call YouTube"):
         youtube.get("BBBBBBBBBBB", facts_dir=None)
     assert frozen_harness.fetch_calls == ["BBBBBBBBBBB"]
-    assert frozen_harness.drain() == []
+
+
+def test_drain_fails_when_the_worker_never_goes_idle(harness, monkeypatch):
+    def requeue_itself(ctx, job):
+        harness.add_job("test.loop")
+        return Done()
+
+    monkeypatch.setitem(harness.worker.handlers, "test.loop", requeue_itself)
+    harness.add_job("test.loop")
+    with pytest.raises(AssertionError, match=r"worker did not go idle after 3 jobs: \['succeeded', "):
+        harness.drain(max_jobs=3)

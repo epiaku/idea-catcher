@@ -10,6 +10,16 @@ The fixtures `harness` and `frozen_harness` in `tests/integration/db/conftest.py
   saved facts and saved replies), with a model and a YouTube that record the attempt and raise.
 
 Nothing here touches the network, the real CATCHER_STATE_DIR or `tests/data` (reset copies it).
+
+Two things to know when writing tests on these:
+
+- The frozen repos have **no git remote** (`reset_test_repos` makes them so): a handler that pulls or pushes
+  needs the test to handle that (give the repos a bare remote, or expect the failure). The seeded harness has
+  bare + clone repos, so pull and push work there.
+- The raising fakes are swallowed like any other error: the pipeline treats the model's refusal as an outage
+  (the item is deferred), and a handler or `run_job` catches the YouTube `ExternalCall` with
+  `except Exception` (the job fails). So a frozen test proves "no external call" with `model_calls == []`
+  and `fetch_calls == []`, never by waiting for the exception to reach it.
 """
 
 import uuid
@@ -153,14 +163,16 @@ class WorkerHarness:
         return self.fetcher(video_id)
 
     def drain(self, max_jobs: int = 50) -> list[str]:
-        """Run due jobs until none is left (or `max_jobs` ran); the label of each: its `run_once` outcome."""
+        """Run due jobs until none is left; the label of each is its `run_once` outcome. Raises AssertionError
+        when `max_jobs` jobs ran and the worker still did not go idle (a job loop, or a deferral that stays
+        due under the frozen clock). A test that truly runs N jobs passes `max_jobs=N + 1`."""
         labels: list[str] = []
         while len(labels) < max_jobs:
             outcome = self.worker.run_once()
             if outcome is None:
-                break
+                return labels
             labels.append(outcome)
-        return labels
+        raise AssertionError(f"worker did not go idle after {max_jobs} jobs: {labels}")
 
     def add_job(self, type: str, *, priority: int = 0, **params: Any) -> uuid.UUID:
         """Queue a job now (committed) and return its id."""

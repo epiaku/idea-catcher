@@ -1,14 +1,13 @@
 import os
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from alembic import command
 from sqlalchemy import Engine, inspect, text
 from sqlalchemy.engine import make_url
-from worker_harness import FrozenHarness, WorkerHarness, seeded_harness
+from worker_harness import FrozenClock, FrozenHarness, WorkerHarness, seeded_harness
 from worker_harness import frozen_harness as build_frozen_harness
 
 from catcher.core.db import alembic_config, make_engine, make_worker_engine, session_scope
@@ -89,20 +88,10 @@ def session(pg_engine: Engine):
     _truncate_all(pg_engine)
 
 
-class Clock:
-    def __init__(self) -> None:
-        self.now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
-
-    def __call__(self) -> datetime:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += timedelta(seconds=seconds)
-
-
 @pytest.fixture
-def clock() -> Clock:
-    return Clock()
+def clock() -> FrozenClock:
+    """An aware UTC clock frozen at 2026-10-02 12:00 that moves only with `advance(seconds)`."""
+    return FrozenClock()
 
 
 @pytest.fixture
