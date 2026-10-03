@@ -4,12 +4,15 @@ import subprocess
 import threading
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger("catcher.git")
 
 # Process-local and held only by the worker's `pipeline.publish` (around commit, pull and push). Not
 # reentrant, and no protection against another process (a `catcher run pipeline` at the same time).
 GIT_LOCK = threading.Lock()
+# The unattended settings below apply only to calls with `unattended=True` (the worker's pipeline.publish).
+# Stage A's CLI keeps git interactive: password and passphrase prompts, no timeouts.
 LOCAL_TIMEOUT_S = 30  # status, add, commit, rebase --abort ...: a hang there is a bug or a stuck lock
 NETWORK_TIMEOUT_S = 600  # pull, push, fetch: a backstop; a stalled transfer is stopped by git itself first
 NETWORK_COMMANDS = frozenset({"pull", "push", "fetch"})
@@ -42,24 +45,22 @@ def _identity(author: tuple[str, str] | None) -> tuple[str, ...]:
     return ("-c", f"user.name={name}", "-c", f"user.email={email}")
 
 
-def git(repo: Path, *args: str) -> str:
-    """Run git in `repo` with no prompt (no terminal, GIT_TERMINAL_PROMPT=0, ssh in batch mode unless the
-    environment sets its own GIT_SSH_COMMAND) and a timeout: NETWORK_TIMEOUT_S for pull, push and fetch,
-    LOCAL_TIMEOUT_S for the rest. Raises GitError."""
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    env.setdefault("GIT_SSH_COMMAND", SSH_COMMAND)
-    command = _command(args)
-    timeout = NETWORK_TIMEOUT_S if command and command[0] in NETWORK_COMMANDS else LOCAL_TIMEOUT_S
+def git(repo: Path, *args: str, unattended: bool = False) -> str:
+    """Run git in `repo`; raises GitError. By default as an interactive user would (the terminal stays
+    available for a password or passphrase prompt, no timeout). `unattended=True` (the worker) runs with no
+    prompt (no terminal, GIT_TERMINAL_PROMPT=0, ssh in batch mode unless the environment sets its own
+    GIT_SSH_COMMAND) and a timeout: NETWORK_TIMEOUT_S for pull, push and fetch, LOCAL_TIMEOUT_S for the
+    rest."""
+    extra: dict[str, Any] = {}
+    timeout: float | None = None
+    if unattended:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        env.setdefault("GIT_SSH_COMMAND", SSH_COMMAND)
+        command = _command(args)
+        timeout = NETWORK_TIMEOUT_S if command and command[0] in NETWORK_COMMANDS else LOCAL_TIMEOUT_S
+        extra = {"stdin": subprocess.DEVNULL, "env": env, "timeout": timeout}
     try:
-        out = subprocess.run(
-            ["git", *args],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            env=env,
-            timeout=timeout,
-        )
+        out = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, **extra)
     except subprocess.TimeoutExpired as e:
         message = f"git {_shown(args)} timed out after {timeout} s in {repo}"
         log.error(message)
@@ -71,19 +72,26 @@ def git(repo: Path, *args: str) -> str:
     return out.stdout
 
 
-def has_remote(repo: Path) -> bool:
-    return bool(git(repo, "remote").strip())
+def _network(unattended: bool) -> tuple[str, ...]:
+    return NETWORK_OPTIONS if unattended else ()
 
 
-def _git_path(repo: Path, name: str) -> Path:
-    return repo / git(repo, "rev-parse", "--git-path", name).strip()
+def has_remote(repo: Path, *, unattended: bool = False) -> bool:
+    return bool(git(repo, "remote", unattended=unattended).strip())
 
 
-def _rebase_in_progress(repo: Path) -> bool:
-    return _git_path(repo, "rebase-merge").exists() or _git_path(repo, "rebase-apply").exists()
+def _git_path(repo: Path, name: str, unattended: bool) -> Path:
+    return repo / git(repo, "rev-parse", "--git-path", name, unattended=unattended).strip()
 
 
-def _pull_rebase(repo: Path, author: tuple[str, str] | None = None) -> None:
+def _rebase_in_progress(repo: Path, unattended: bool) -> bool:
+    return (
+        _git_path(repo, "rebase-merge", unattended).exists()
+        or _git_path(repo, "rebase-apply", unattended).exists()
+    )
+
+
+def _pull_rebase(repo: Path, author: tuple[str, str] | None = None, *, unattended: bool = False) -> None:
     """`git pull --rebase --autostash`, rebasing with `author` as the committer when given (no global
     identity needed) and without directory-rename detection (a capture another device adds to a folder the
     worker emptied stays where it was added). A failed rebase is aborted (the branch, the commits and the
@@ -92,19 +100,20 @@ def _pull_rebase(repo: Path, author: tuple[str, str] | None = None) -> None:
     try:
         git(
             repo,
-            *NETWORK_OPTIONS,
+            *_network(unattended),
             *_identity(author),
             "-c",
             "merge.directoryRenames=false",
             "pull",
             "--rebase",
             "--autostash",
+            unattended=unattended,
         )
     except GitError as e:
-        if not _rebase_in_progress(repo):
+        if not _rebase_in_progress(repo, unattended):
             raise
         try:
-            git(repo, "rebase", "--abort")
+            git(repo, "rebase", "--abort", unattended=unattended)
         except GitError as abort_error:
             log.error("rebase --abort failed in %s: %s", repo, abort_error)
             raise GitError(
@@ -115,17 +124,17 @@ def _pull_rebase(repo: Path, author: tuple[str, str] | None = None) -> None:
             f"{e} -- the rebase was aborted: the local commits are kept and not pushed; "
             "settle the conflict with the remote by hand"
         ) from e
-    if git(repo, "ls-files", "-u").strip():
+    if git(repo, "ls-files", "-u", unattended=unattended).strip():
         raise GitError(
             f"pull in {repo}: the uncommitted changes git stashed for the pull conflict with the pulled "
             "commits; they are in the working tree and in `git stash list`: settle them by hand"
         )
 
 
-def pull(repo: Path, *, author: tuple[str, str] | None = None) -> None:
-    if has_remote(repo):
+def pull(repo: Path, *, author: tuple[str, str] | None = None, unattended: bool = False) -> None:
+    if has_remote(repo, unattended=unattended):
         log.info("pull %s", repo.name)
-        _pull_rebase(repo, author)
+        _pull_rebase(repo, author, unattended=unattended)
 
 
 def _relative(repo: Path, paths: Iterable[Path]) -> list[str]:
@@ -148,14 +157,13 @@ def commit_paths(repo: Path, paths: Iterable[Path], message: str, *, author: tup
     return True
 
 
-def _commit(repo: Path, message: str, paths: Sequence[str], *, author: tuple[str, str]) -> None:
+def _commit(
+    repo: Path, message: str, paths: Sequence[str], *, author: tuple[str, str], unattended: bool = False
+) -> None:
     name, email = author
     git(
         repo,
-        "-c",
-        f"user.name={name}",
-        "-c",
-        f"user.email={email}",
+        *_identity(author),
         "commit",
         "--only",
         f"--author={name} <{email}>",
@@ -163,72 +171,79 @@ def _commit(repo: Path, message: str, paths: Sequence[str], *, author: tuple[str
         message,
         "--",
         *paths,
+        unattended=unattended,
     )
 
 
-def require_on_branch(repo: Path) -> None:
+def require_on_branch(repo: Path, *, unattended: bool = False) -> None:
     """Raise GitError unless `repo` is on a branch with no rebase or merge going on and no unmerged file."""
-    if _rebase_in_progress(repo) or _git_path(repo, "MERGE_HEAD").exists():
+    if _rebase_in_progress(repo, unattended) or _git_path(repo, "MERGE_HEAD", unattended).exists():
         raise GitError(f"{repo} is in the middle of a rebase or a merge: finish or abort it by hand")
     try:
-        git(repo, "symbolic-ref", "-q", "HEAD")
+        git(repo, "symbolic-ref", "-q", "HEAD", unattended=unattended)
     except GitError as e:
         raise GitError(f"{repo} is not on a branch (detached HEAD): check out the branch by hand") from e
-    if git(repo, "ls-files", "-u").strip():
+    if git(repo, "ls-files", "-u", unattended=unattended).strip():
         raise GitError(f"{repo} has unmerged files: settle them by hand")
 
 
-def _in_head(repo: Path, path: str) -> bool:
+def _in_head(repo: Path, path: str, unattended: bool) -> bool:
     """True when HEAD has files under `path` (a deletion staged by a failed commit is only there)."""
     try:
-        return bool(git(repo, "ls-tree", "-r", "--name-only", "HEAD", "--", path).strip())
+        return bool(
+            git(repo, "ls-tree", "-r", "--name-only", "HEAD", "--", path, unattended=unattended).strip()
+        )
     except GitError:  # no commit yet
         return False
 
 
-def commit_managed(repo: Path, pathspecs: Sequence[str], message: str, *, author: tuple[str, str]) -> bool:
+def commit_managed(
+    repo: Path, pathspecs: Sequence[str], message: str, *, author: tuple[str, str], unattended: bool = False
+) -> bool:
     """Commit everything under `pathspecs` (folders relative to `repo`): new, changed and deleted files, so a
     note moved out of `inbox/` is committed as a deletion. Only pathspecs git knows are used (tracked files,
     or untracked files that are not ignored): a missing, empty or ignored-only folder is skipped. Changes
     outside `pathspecs` (in the working tree or the index) are left as they are. Returns False, and makes no
     commit, when nothing under `pathspecs` changed. A path in HEAD is kept too, so a deletion a failed commit
     left staged is committed by the next call. Raises GitError when the repo is not on a clean branch."""
-    require_on_branch(repo)
+    require_on_branch(repo, unattended=unattended)
     known = [
         p
         for p in dict.fromkeys(pathspecs)
-        if git(repo, "ls-files", "--cached", "--others", "--exclude-standard", "--", p).strip()
-        or _in_head(repo, p)
+        if git(
+            repo, "ls-files", "--cached", "--others", "--exclude-standard", "--", p, unattended=unattended
+        ).strip()
+        or _in_head(repo, p, unattended)
     ]
     if not known:
         return False
-    git(repo, "add", "-A", "--", *known)
-    changed = git(repo, "diff", "--cached", "--name-only", "--", *known).splitlines()
+    git(repo, "add", "-A", "--", *known, unattended=unattended)
+    changed = git(repo, "diff", "--cached", "--name-only", "--", *known, unattended=unattended).splitlines()
     if not changed:
         return False
     log.info("commit %s: %s (%d file(s))", repo.name, message, len(changed))
-    _commit(repo, message, known, author=author)
+    _commit(repo, message, known, author=author, unattended=unattended)
     return True
 
 
-def ahead_of_upstream(repo: Path) -> bool:
+def ahead_of_upstream(repo: Path, *, unattended: bool = False) -> bool:
     """True when the branch has commits its upstream lacks. Raises GitError when it has no upstream."""
     try:
-        git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+        git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}", unattended=unattended)
     except GitError as e:
         raise GitError(
             f"the branch in {repo} has no upstream to push to: set one with `git push -u origin <branch>`"
         ) from e
-    return git(repo, "rev-list", "--count", "@{upstream}..HEAD").strip() != "0"
+    return git(repo, "rev-list", "--count", "@{upstream}..HEAD", unattended=unattended).strip() != "0"
 
 
-def push(repo: Path, *, author: tuple[str, str] | None = None) -> None:
-    if not has_remote(repo):
+def push(repo: Path, *, author: tuple[str, str] | None = None, unattended: bool = False) -> None:
+    if not has_remote(repo, unattended=unattended):
         return
     log.info("push %s", repo.name)
     try:
-        git(repo, *NETWORK_OPTIONS, "push")
+        git(repo, *_network(unattended), "push", unattended=unattended)
     except GitError:
         log.warning("push %s was rejected, retrying once after a rebase", repo.name)
-        _pull_rebase(repo, author)
-        git(repo, *NETWORK_OPTIONS, "push")
+        _pull_rebase(repo, author, unattended=unattended)
+        git(repo, *_network(unattended), "push", unattended=unattended)

@@ -314,3 +314,21 @@ def test_a_capture_pushed_into_a_folder_the_worker_emptied_is_pulled_in(harness,
     assert not (harness.ideas / "archive/notes/new.md").exists()
     assert_clean_branch(sh, harness.ideas)
     assert sh(harness.ideas, "rev-parse", "HEAD") == sh(bare(harness.ideas), "rev-parse", "main")
+
+
+def test_every_git_call_of_publish_runs_unattended(harness, monkeypatch):
+    from catcher.core import git as gitmod
+
+    seen: list[bool] = []
+    real_git = gitmod.git
+
+    def recording_git(repo, *args, unattended=False):
+        seen.append(unattended)
+        return real_git(repo, *args, unattended=unattended)
+
+    monkeypatch.setattr(gitmod, "git", recording_git)
+    (harness.ideas / "facts").mkdir()
+    (harness.ideas / "facts/v.json").write_text("{}\n")
+
+    assert publish(harness) == Done({"committed": {"docs": False, "ideas": True}, "pushed": True})
+    assert seen and all(seen)

@@ -631,18 +631,18 @@ def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
     with GIT_LOCK:
         try:
             if do_push:
-                no_remote = [str(repo) for _, repo, _, _ in repos if not has_remote(repo)]
+                no_remote = [str(repo) for _, repo, _, _ in repos if not has_remote(repo, unattended=True)]
                 if no_remote:
                     return Fail(
                         f"no git remote to push to in {', '.join(no_remote)}: "
                         "add a remote, or run pipeline.publish with push=false"
                     )
             for key, repo, managed, message in repos:
-                committed[key] = commit_managed(repo, managed, message, author=author)
+                committed[key] = commit_managed(repo, managed, message, author=author, unattended=True)
                 if do_pull:  # after the commit: the autostash only ever holds changes outside the managed set
-                    pull(repo, author=author)
-                if do_push and ahead_of_upstream(repo):
-                    push(repo, author=author)
+                    pull(repo, author=author, unattended=True)
+                if do_push and ahead_of_upstream(repo, unattended=True):
+                    push(repo, author=author, unattended=True)
                     pushed = True
         except GitError as e:
             log.error("publish failed (committed so far: %s): %s", committed, e)

@@ -1,4 +1,4 @@
-"""The git runner used by publish: timeouts per kind of command, no prompts, and the pull's own identity."""
+"""The git runner: interactive by default (Stage A's CLI); unattended (the worker): timeouts, no prompts."""
 
 import subprocess
 from pathlib import Path
@@ -20,42 +20,63 @@ class Recorder:
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
 
-def test_local_commands_get_a_short_timeout_and_network_commands_a_long_one(monkeypatch, tmp_path):
+def test_the_default_runner_is_interactive_as_in_stage_a(monkeypatch, tmp_path):
+    """Stage A's CLI: no timeout, no environment override, the terminal stays available for prompts."""
     rec = Recorder()
     monkeypatch.setattr(gitmod.subprocess, "run", rec)
     gitmod.git(tmp_path, "status", "--porcelain")
-    gitmod.git(tmp_path, "-c", "user.name=x", "commit", "-m", "m")
+    gitmod.git(tmp_path, "push")
+    for cmd, kwargs in rec.calls:
+        assert kwargs == {"cwd": tmp_path, "capture_output": True, "text": True}, cmd
+
+
+def test_unattended_local_commands_get_a_short_timeout_and_network_commands_a_long_one(monkeypatch, tmp_path):
+    rec = Recorder()
+    monkeypatch.setattr(gitmod.subprocess, "run", rec)
+    gitmod.git(tmp_path, "status", "--porcelain", unattended=True)
+    gitmod.git(tmp_path, "-c", "user.name=x", "commit", "-m", "m", unattended=True)
     for net in ("pull", "push", "fetch"):
-        gitmod.git(tmp_path, "-c", "http.lowSpeedLimit=1000", net)
+        gitmod.git(tmp_path, "-c", "http.lowSpeedLimit=1000", net, unattended=True)
     timeouts = [kwargs["timeout"] for _, kwargs in rec.calls]
     assert timeouts == [gitmod.LOCAL_TIMEOUT_S] * 2 + [gitmod.NETWORK_TIMEOUT_S] * 3
     assert gitmod.LOCAL_TIMEOUT_S == 30 and gitmod.NETWORK_TIMEOUT_S == 600
 
 
-def test_git_never_prompts_and_keeps_the_users_ssh_command(monkeypatch, tmp_path):
+def test_unattended_git_never_prompts_and_keeps_the_users_ssh_command(monkeypatch, tmp_path):
     rec = Recorder()
     monkeypatch.setattr(gitmod.subprocess, "run", rec)
     monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
-    gitmod.git(tmp_path, "status")
+    gitmod.git(tmp_path, "status", unattended=True)
     env = rec.calls[-1][1]["env"]
     assert env["GIT_TERMINAL_PROMPT"] == "0"
     assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes -o ServerAliveInterval=15"
     assert rec.calls[-1][1]["stdin"] is subprocess.DEVNULL
 
     monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i my-key")
-    gitmod.git(tmp_path, "status")
+    gitmod.git(tmp_path, "status", unattended=True)
     assert rec.calls[-1][1]["env"]["GIT_SSH_COMMAND"] == "ssh -i my-key"
 
 
-def test_network_commands_stop_a_stalled_http_transfer(monkeypatch, tmp_path):
+def pull_command(monkeypatch, tmp_path, **kwargs) -> list[str]:
     rec = Recorder()
     monkeypatch.setattr(gitmod.subprocess, "run", rec)
-    monkeypatch.setattr(gitmod, "has_remote", lambda repo: True)
-    pull(tmp_path)
+    pull(tmp_path, **kwargs)
     [(cmd, _)] = [c for c in rec.calls if "pull" in c[0]]
+    return cmd
+
+
+def test_an_unattended_pull_stops_a_stalled_http_transfer(monkeypatch, tmp_path):
+    monkeypatch.setattr(gitmod, "has_remote", lambda repo, **kwargs: True)
+    cmd = pull_command(monkeypatch, tmp_path, unattended=True)
     assert cmd[:5] == ["git", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60"]
     assert "merge.directoryRenames=false" in cmd
     assert cmd[-3:] == ["pull", "--rebase", "--autostash"]
+
+
+def test_the_default_pull_keeps_only_the_correctness_options(monkeypatch, tmp_path):
+    monkeypatch.setattr(gitmod, "has_remote", lambda repo, **kwargs: True)
+    cmd = pull_command(monkeypatch, tmp_path)
+    assert cmd == ["git", "-c", "merge.directoryRenames=false", "pull", "--rebase", "--autostash"]
 
 
 def diverged(make_repo, sh, tmp_path: Path) -> Path:
@@ -95,10 +116,10 @@ def test_a_failed_abort_keeps_the_pull_error(make_repo, sh, tmp_path, monkeypatc
 
     real_git = gitmod.git
 
-    def git_with_a_failing_abort(repo, *args):
+    def git_with_a_failing_abort(repo, *args, **kwargs):
         if "--abort" in args:
             raise GitError("git rebase --abort failed: index.lock exists")
-        return real_git(repo, *args)
+        return real_git(repo, *args, **kwargs)
 
     monkeypatch.setattr(gitmod, "git", git_with_a_failing_abort)
     with pytest.raises(GitError) as raised:
