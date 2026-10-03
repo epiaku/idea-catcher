@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import Engine, inspect, select, text
+from sqlalchemy.exc import OperationalError
 
 from catcher.core.db import make_worker_engine, session_scope
 from catcher.modules.queue import queue
@@ -317,3 +318,106 @@ def test_worker_sessions_have_a_lock_timeout(pg_url: str) -> None:
             assert connection.execute(text("show lock_timeout")).scalar_one() == "10s"
     finally:
         engine.dispose()
+
+
+def _claim_failing(monkeypatch: pytest.MonkeyPatch, times: int) -> list[int]:
+    """Make the first `times` claims raise a database error; later claims are real."""
+    real_claim = queue.claim
+    calls: list[int] = []
+
+    def flaky_claim(session, **kwargs):
+        calls.append(1)
+        if len(calls) <= times:
+            raise OperationalError("select ... for update", {}, Exception("connection refused"))
+        return real_claim(session, **kwargs)
+
+    monkeypatch.setattr(queue, "claim", flaky_claim)
+    return calls
+
+
+def _sleeps_until(stop: threading.Event, count: int) -> tuple[list[float], Any]:
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        if len(slept) == count:
+            stop.set()
+
+    return slept, sleep
+
+
+def test_a_claim_error_backs_off_then_resets_and_logs_the_recovery(
+    pg_engine: Engine, clock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    job_id = _enqueue(pg_engine, clock)
+    _claim_failing(monkeypatch, times=3)
+    stop = threading.Event()
+    slept, sleep = _sleeps_until(stop, 4)
+
+    with caplog.at_level("INFO", logger="catcher.worker"):
+        _worker(pg_engine, clock, {"note": lambda ctx, j: Done()}, poll_s=2, sleep=sleep).run_forever(stop)
+
+    assert slept == [2, 4, 8, 2]  # doubles while the claim fails, back to poll_s once it works
+    assert _row(pg_engine, job_id).status == "succeeded"
+    records = [r for r in caplog.records if r.name == "catcher.worker"]
+    failures = [r for r in records if "could not claim" in r.getMessage()]
+    assert [(r.levelname, r.exc_info is not None) for r in failures] == [
+        ("ERROR", True),
+        ("WARNING", False),
+        ("WARNING", False),
+    ]
+    assert len([r for r in records if "recovered" in r.getMessage() and r.levelname == "INFO"]) == 1
+
+
+def test_the_claim_backoff_is_capped(pg_engine: Engine, clock, monkeypatch: pytest.MonkeyPatch) -> None:
+    _claim_failing(monkeypatch, times=10)
+    stop = threading.Event()
+    slept, sleep = _sleeps_until(stop, 5)
+
+    _worker(pg_engine, clock, {}, poll_s=20, sleep=sleep).run_forever(stop)
+
+    assert slept == [20, 40, 60, 60, 60]
+
+
+def test_run_once_returns_none_after_a_claim_error_and_works_on_the_next_call(
+    pg_engine: Engine, clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enqueue(pg_engine, clock)
+    _claim_failing(monkeypatch, times=1)
+    worker = _worker(pg_engine, clock, {"note": lambda ctx, j: Done()})
+
+    assert worker.run_once() is None
+    assert worker.run_once() == "succeeded"
+
+
+def test_a_bad_lease_fails_fast_instead_of_retrying(pg_engine: Engine, clock) -> None:
+    _enqueue(pg_engine, clock)
+    stop = threading.Event()
+    slept, sleep = _sleeps_until(stop, 1)  # ends the loop if the error were swallowed
+
+    with pytest.raises(ValueError, match="lease_s"):
+        _worker(pg_engine, clock, {}, lease_s=0, sleep=sleep).run_forever(stop)
+    assert slept == []
+
+
+def test_an_idle_worker_stops_at_once_by_default(
+    pg_engine: Engine, clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    polled = threading.Event()
+    real_run_once = Worker.run_once
+
+    def run_once(self: Worker):
+        result = real_run_once(self)
+        polled.set()  # the loop is about to wait poll_s
+        return result
+
+    monkeypatch.setattr(Worker, "run_once", run_once)
+    stop = threading.Event()
+    worker = _worker(pg_engine, clock, {}, poll_s=3600)  # the default wait is the stop event
+    thread = threading.Thread(target=worker.run_forever, args=(stop,), daemon=True)
+    thread.start()
+    assert polled.wait(WAIT_S)
+    stop.set()
+    thread.join(WAIT_S)
+
+    assert not thread.is_alive()
