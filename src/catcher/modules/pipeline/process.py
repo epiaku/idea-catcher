@@ -23,14 +23,21 @@ from catcher.modules.llm.trace import TraceStore
 from catcher.modules.pipeline.context import load_context
 from catcher.modules.pipeline.doctypes import gemini_video_id
 from catcher.modules.pipeline.glossary import Glossary, load_glossary
-from catcher.modules.pipeline.inbox import Note, note_label
+from catcher.modules.pipeline.inbox import Note, move_to_failed, note_label
 from catcher.modules.pipeline.inputs import capture_tags, prompt_input
 from catcher.modules.pipeline.render import PageContext, page_name, render_page
 from catcher.modules.pipeline.tags import TagList, load_tags, normalize_tags
 from catcher.modules.pipeline.validate import validate_page
 from catcher.modules.youtube.access import YoutubeAccess, build_access
+from catcher.modules.youtube.cache import FactsCache
 from catcher.modules.youtube.checks import SummaryWarning, check_summary, verified_links
-from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, YoutubeFacts, fetch_facts
+from catcher.modules.youtube.facts import (
+    FactsFetcher,
+    FactsUnavailable,
+    FetchSkipped,
+    YoutubeFacts,
+    fetch_facts,
+)
 from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.process")
@@ -62,6 +69,7 @@ class ProcessOptions:
     wait_youtube: bool = False  # sleep through a short gap instead of deferring
     llm_dir: Path | None = None  # where the LLM traces go (`llm/` in idea-bucket); None: no trace
     refresh_llm: bool = False  # call the model even when a good reply is saved in `llm_dir`
+    allow_fetch: bool = True  # False: saved facts only, YouTube is never asked (the `llm.reason` job)
 
 
 @dataclass
@@ -98,6 +106,11 @@ def check_not_blocked(profile: Profile, opts: ProcessOptions) -> None:
 def facts_for(note: Note, vid: str, svc: Services, opts: ProcessOptions) -> YoutubeFacts:
     log.info("%s: getting the YouTube facts for %s", note_label(note), vid)
     if svc.youtube is None:
+        if not opts.allow_fetch:  # no access layer (tests): only the saved facts, never the fetcher
+            saved = FactsCache(opts.facts_dir).get(vid) if opts.facts_dir else None
+            if saved is None:
+                raise FetchSkipped(f"no saved facts for {vid}: this step does not call YouTube")
+            return saved
         facts = svc.facts(vid)
     else:  # saved facts first, then the gap and the breaker, then YouTube
         facts = svc.youtube.get(
@@ -106,7 +119,7 @@ def facts_for(note: Note, vid: str, svc: Services, opts: ProcessOptions) -> Yout
             refresh=opts.refresh_facts,
             write_cache=not opts.dry_run,
             wait=opts.wait_youtube,
-            fetch_allowed=not opts.dry_run,  # a dry run never costs YouTube a request
+            fetch_allowed=opts.allow_fetch and not opts.dry_run,  # a dry run never costs YouTube a request
         )
     log.info(
         "%s: facts fetched (views=%s transcript=%s)",
@@ -302,3 +315,40 @@ def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPa
         refresh_llm=opts.refresh_llm,
     )
     return build_page(note, svc, result, facts)
+
+
+def mark_unusable(
+    llm_dir: Path, note: Note, processed: ProcessedPage, svc: Services, reason: str
+) -> list[Path]:
+    """A reply that made an invalid page is not a good one: mark the trace it came from, so a plain requeue
+    asks the model again. That is the file a saved reply was read from (maybe another document's), else this
+    document's own trace, which the store only marks when it holds this very reply. With LLM_TRACE=false
+    nothing in `llm/` is written. Returns the marked file, to commit."""
+    llm = processed.llm
+    if not svc.settings.llm_trace or llm.content_key is None:
+        return []
+    path = llm.saved_from or TraceStore(llm_dir).path_for(note.target_rel)
+    output = llm.output.model_dump(mode="json")
+    marked = TraceStore(llm_dir).mark_unusable(
+        path, reason=reason, output=output, content_key=llm.content_key, backend=llm.backend
+    )
+    return [path] if marked else []
+
+
+def reject_invalid_page(
+    ideas: Path,
+    llm_dir: Path,
+    note: Note,
+    processed: ProcessedPage,
+    svc: Services,
+    reason: str,
+    now: datetime | None = None,
+) -> list[Path]:
+    """The page did not validate: mark the trace of the reply that made it (`mark_unusable`) and move the
+    working copy in `output/` to `failed/` with `reason`. Shared by `catcher run pipeline` and the
+    `llm.reason` job. Returns the touched idea-bucket paths."""
+    touched = mark_unusable(llm_dir, note, processed, svc, reason)
+    touched += move_to_failed(
+        ideas, note.output_path(ideas), reason, doc_id=note.doc_id, doc_class=note.doctype.name, now=now
+    )
+    return touched

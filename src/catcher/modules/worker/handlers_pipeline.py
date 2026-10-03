@@ -1,9 +1,17 @@
-"""The `pipeline.run` handler: stage the inbox documents, database row first, then the file move.
+"""The `pipeline.run` and `llm.reason` handlers.
+
+`pipeline.run` stages the inbox documents, database row first, then the file move.
 
 Per note: (1) its calculated name and a `staging` item row, committed; (2) `start_work` (archive copy, working
 copy in `output/`, out of `inbox/`); (3) the item waits for YouTube or the LLM and its next job is queued, in
 one commit. A crash between those steps leaves a `staging` row, which the next run adopts under the same
-name. The handler runs no git command (publishing is `pipeline.publish`) and holds no long transaction."""
+name. The handler runs no git command (publishing is `pipeline.publish`) and holds no long transaction.
+
+`llm.reason` turns one staged working copy in `output/` into its page: saved facts only (it never calls
+YouTube), the saved LLM reply before the model, then the file effects of Stage A, then the item status (and
+a new fetch job) in one commit. The model call runs outside any transaction. It is safe to run twice: a
+committed outcome is not redone, and a final page already in `output/` (a crash before the commit) is only
+recorded as published; a crash before `finish` reruns from the saved reply, so the model is paid once."""
 
 import logging
 from dataclasses import dataclass
@@ -13,7 +21,10 @@ from typing import Any
 
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import FrontmatterError
+from catcher.modules.llm.trace import LLM_DIR
 from catcher.modules.pipeline.inbox import (
+    STAGE_ANALYZED,
+    STAGE_DEFERRED,
     Note,
     assign_name,
     deferred_in_output,
@@ -27,10 +38,23 @@ from catcher.modules.pipeline.inbox import (
     start_work,
     with_filename_fields,
 )
-from catcher.modules.pipeline.run import RunOptions, RunReport, copy_artifacts
+from catcher.modules.pipeline.outcome import classify
+from catcher.modules.pipeline.process import ProcessOptions, process_note, reject_invalid_page
+from catcher.modules.pipeline.publish import write_page
+from catcher.modules.pipeline.run import (
+    ItemReport,
+    RunOptions,
+    RunReport,
+    RunState,
+    apply_outcome,
+    copy_artifacts,
+    finish,
+    log_outcome,
+)
 from catcher.modules.pipeline.steps import order_notes, split_duplicates
 from catcher.modules.queue.items import (
     ACTIVE_STATUSES,
+    TERMINAL_STATUSES,
     ItemExists,
     get_item,
     items_in_status,
@@ -307,3 +331,137 @@ def _stage(ctx: HandlerContext, job: Job, note: Note) -> str | None:
         log.warning("%s: %s; it stays in inbox/", note_label(note), e)
         return None
     return name
+
+
+@dataclass(frozen=True)
+class ReasonParams:
+    calculated_name: str
+    profile: str | None = None
+    refresh_llm: bool = False
+
+
+def parse_reason_params(params: dict[str, Any]) -> ReasonParams:
+    """The `llm.reason` job's params, checked. Raises ValueError with a message that names the bad one."""
+    unknown = sorted(set(params) - set(ReasonParams.__dataclass_fields__))
+    if unknown:
+        raise ValueError(f"unknown parameter(s) for llm.reason: {', '.join(unknown)}")
+    name = params.get("calculated_name")
+    path = Path(name) if isinstance(name, str) else None
+    plain = path is not None and not path.is_absolute() and ".." not in path.parts
+    if path is None or not plain or len(path.parts) != 2 or path.suffix != ".md":
+        raise ValueError(f"calculated_name must be <subfolder>/<name>.md, not {name!r}")
+    if not isinstance(params.get("refresh_llm", False), bool):
+        raise ValueError(f"refresh_llm must be true or false, not {params['refresh_llm']!r}")
+    profile = params.get("profile")
+    if profile is not None and not (isinstance(profile, str) and profile.strip()):
+        raise ValueError(f"profile must be a profile name, not {profile!r}")
+    return ReasonParams(**params)
+
+
+def _item_outcome(ctx: HandlerContext, name: str, status: str, reason: str | None = None) -> HandlerResult:
+    """The item's new status (with the reason for `failed`/`deferred`), in one commit after the file effects.
+    The job succeeds: an LLM or facts problem is an item state (decision 3)."""
+    with session_scope(ctx.engine) as session:
+        item = set_item_status(session, name, status, now=ctx.clock(), reason=reason)
+    if item is None:
+        return Fail(f"no item {name!r}: it was removed while the job ran")
+    return Done({"item": status})
+
+
+def _wait_for_youtube(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+    """No saved facts: the item waits for YouTube and its fetch job is queued again, in one commit. The
+    dedupe key makes this a no-op while a fetch of this item is already queued or running."""
+    job_params: dict[str, Any] = {"calculated_name": name}
+    if params.profile is not None:
+        job_params["profile"] = params.profile
+    if params.refresh_llm:
+        job_params["refresh_llm"] = True
+    now = ctx.clock()
+    with session_scope(ctx.engine) as session:
+        item = set_item_status(session, name, "waiting_youtube", now=now)
+        if item is None:
+            return Fail(f"no item {name!r}: it was removed while the job ran")
+        enqueue(session, type="youtube.fetch", now=now, params=job_params, dedupe_key=f"fetch:{name}")
+    return Done({"item": "waiting_youtube"})
+
+
+def _failed_reason(failed: Path) -> str:
+    """The reason in the `.error.txt` next to a document in `failed/`, for a rerun after a crash."""
+    try:
+        for line in failed.with_suffix(".error.txt").read_text(encoding="utf-8").splitlines():
+            if line.startswith("reason: "):
+                return line.removeprefix("reason: ")
+    except OSError:
+        pass
+    return f"moved to failed/{failed.name} by an earlier run"
+
+
+def handle_llm_reason(ctx: HandlerContext, job: Job) -> HandlerResult:
+    """Make the page of one staged document (param `calculated_name`) and record the item's outcome."""
+    try:
+        params = parse_reason_params(dict(job.params or {}))
+    except ValueError as e:
+        return Fail(str(e))
+    name = params.calculated_name
+    with session_scope(ctx.engine) as session:  # short: no transaction stays open during the model call
+        item = get_item(session, name)
+        status = item.status if item is not None else None
+    if status is None:
+        return Fail(f"no item {name!r}")
+    if status in TERMINAL_STATUSES:  # this job ran before and its outcome is committed: nothing to redo
+        log.info("%s: already %s, nothing to do", name, status)
+        return Done({"item": status})
+
+    ideas, now = ctx.ideas, ctx.clock()
+    out = ideas / "output" / name
+    if not out.is_file():
+        failed = ideas / "failed" / name
+        if failed.is_file():  # a crash after the move to failed/, before the status was committed
+            return _item_outcome(ctx, name, "failed", _failed_reason(failed))
+        log.error("%s: no working copy in output/; marked failed", name)
+        return _item_outcome(ctx, name, "failed", f"no working copy in output/{name}")
+    try:
+        note = load_staged_note(ideas, out, now)
+    except (FrontmatterError, UnicodeDecodeError, ValueError) as e:
+        reason = f"cannot read output/{name}: {e}"
+        log.error("%s: %s", name, reason)
+        move_to_failed(ideas, out, reason, now=now)
+        return _item_outcome(ctx, name, "failed", reason)
+    note.name = Path(name).name
+    if note.doc.fm.get("stage") not in (STAGE_ANALYZED, STAGE_DEFERRED):
+        # the final page is already in output/: a crash came after `finish`, before the status commit
+        log.info("%s: the page was already made, marking it published", note_label(note))
+        return _item_outcome(ctx, name, "published")
+
+    opts = ProcessOptions(
+        profile=params.profile,
+        refresh_llm=params.refresh_llm,
+        allow_fetch=False,  # facts come from youtube.fetch; this job never calls YouTube
+        facts_dir=ideas / FACTS_DIR,
+        llm_dir=ideas / LLM_DIR,
+    )
+    who = note_label(note)
+    try:
+        processed = process_note(note, ctx.services, opts)
+    except Exception as e:  # an LLM or facts problem is the item's outcome, as in Stage A
+        outcome = classify(e)
+        log_outcome(who, outcome, outcome.message, e)
+        if outcome.kind in ("would_fetch", "waiting"):  # no saved facts: back to youtube.fetch
+            return _wait_for_youtube(ctx, name, params)
+        state = RunState(blocked=set(), budget_blocked={}, attempted=1, seen_ids=set())
+        report = ItemReport(note.doc_id, note.doctype.name, "skipped")
+        apply_outcome(ideas, note, outcome, state, report, dry_run=False, now=now)
+        result = _item_outcome(ctx, name, outcome.kind, report.message)
+        if outcome.unexpected and isinstance(result, Done):  # a bug, not an item state: the job fails too
+            return Fail(outcome.message)
+        return result
+
+    if processed.problems:
+        reason = f"page is invalid: {'; '.join(processed.problems)}"
+        log.error("%s: failed, %s", who, reason)
+        reject_invalid_page(ideas, ideas / LLM_DIR, note, processed, ctx.services, reason, now)
+        return _item_outcome(ctx, name, "failed", reason)
+    write_page(ctx.docs, note.doctype, note.doc_id, processed.filename, processed.page)
+    finish(ideas, note, processed)
+    log.info("%s: published %s", who, processed.filename)
+    return _item_outcome(ctx, name, "published")

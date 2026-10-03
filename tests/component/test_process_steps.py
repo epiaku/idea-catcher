@@ -79,3 +79,33 @@ def test_build_page_needs_no_backend(name, make_note, make_services, make_result
         result = make_result(YoutubeSummary(**CANNED["youtube-gemini"]), version="youtube-gemini-7")
     built = build_page(note, svc, result, None)
     assert built.problems == [] and built.llm is result
+
+
+@pytest.mark.parametrize("with_access", [True, False])
+def test_allow_fetch_false_never_calls_youtube_even_outside_a_dry_run(
+    with_access, make_note, make_services, yt_facts, tmp_path
+):
+    from catcher.modules.youtube.access import YoutubeAccess
+    from catcher.modules.youtube.cache import FactsCache
+    from catcher.modules.youtube.facts import FetchSkipped
+    from catcher.modules.youtube.gate import YoutubeGate
+
+    calls: list[str] = []
+
+    def fetch(vid):
+        calls.append(vid)
+        return yt_facts
+
+    svc = make_services(facts=fetch)
+    if with_access:
+        svc.youtube = YoutubeAccess(fetch, YoutubeGate(tmp_path / "state", jitter_s=0), wait_max_s=0)
+    note = make("youtube", make_note, tmp_path)
+    opts = ProcessOptions(allow_fetch=False, facts_dir=tmp_path / "facts")
+    assert opts.dry_run is False
+    with pytest.raises(FetchSkipped):
+        get_facts(note, svc, opts)
+    assert calls == []
+
+    FactsCache(tmp_path / "facts").put(yt_facts)  # saved facts are still used
+    assert get_facts(note, svc, opts) == yt_facts
+    assert calls == []

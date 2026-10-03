@@ -1,6 +1,7 @@
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -24,7 +25,13 @@ from catcher.modules.pipeline.inbox import (
     start_work,
 )
 from catcher.modules.pipeline.outcome import Outcome, classify
-from catcher.modules.pipeline.process import ProcessedPage, ProcessOptions, Services, process_note
+from catcher.modules.pipeline.process import (
+    ProcessedPage,
+    ProcessOptions,
+    Services,
+    process_note,
+    reject_invalid_page,
+)
 from catcher.modules.pipeline.publish import write_output, write_page
 from catcher.modules.pipeline.steps import order_notes, split_duplicates
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
@@ -134,7 +141,14 @@ def log_outcome(who: str, outcome: Outcome, message: str, error: BaseException) 
 
 
 def apply_outcome(
-    ideas: Path, note: Note, outcome: Outcome, state: RunState, item: ItemReport, *, dry_run: bool
+    ideas: Path,
+    note: Note,
+    outcome: Outcome,
+    state: RunState,
+    item: ItemReport,
+    *,
+    dry_run: bool,
+    now: datetime | None = None,
 ) -> list[Path]:
     """A document did not get published: record why in its report item and in the run state, and put the
     document where it belongs (a dry run moves nothing). Returns the touched idea-bucket paths."""
@@ -150,32 +164,14 @@ def apply_outcome(
     if dry_run:
         return []
     if outcome.kind == "deferred":  # a temporary error: the working copy stays in output/ and says why
-        return mark_deferred(ideas, note, message)
+        return mark_deferred(ideas, note, message, now)
     if outcome.kind == "failed":
         return move_to_failed(
-            ideas, note.output_path(ideas), message, doc_id=note.doc_id, doc_class=note.doctype.name
+            ideas, note.output_path(ideas), message, doc_id=note.doc_id, doc_class=note.doctype.name, now=now
         )
     if outcome.kind in ("waiting", "interrupted"):  # leave it where the next run finds it
         return return_to_inbox(ideas, note)
     return []  # would_fetch: a dry run only
-
-
-def mark_unusable(
-    llm_dir: Path, note: Note, processed: ProcessedPage, svc: Services, reason: str
-) -> list[Path]:
-    """A reply that made an invalid page is not a good one: mark the trace it came from, so a plain requeue
-    asks the model again. That is the file a saved reply was read from (maybe another document's), else this
-    document's own trace, which the store only marks when it holds this very reply. With LLM_TRACE=false
-    nothing in `llm/` is written. Returns the marked file, to commit."""
-    llm = processed.llm
-    if not svc.settings.llm_trace or llm.content_key is None:
-        return []
-    path = llm.saved_from or TraceStore(llm_dir).path_for(note.target_rel)
-    output = llm.output.model_dump(mode="json")
-    marked = TraceStore(llm_dir).mark_unusable(
-        path, reason=reason, output=output, content_key=llm.content_key, backend=llm.backend
-    )
-    return [path] if marked else []
 
 
 def finish(ideas: Path, note: Note, processed: ProcessedPage) -> list[Path]:
@@ -409,15 +405,8 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             item.status, item.message = "failed", "; ".join(processed.problems)
             log.error("%s: failed, page is invalid: %s", who, item.message)
             if not opts.dry_run:
-                touched_ideas += mark_unusable(
-                    llm_dir, note, processed, svc, f"page is invalid: {item.message}"
-                )
-                touched_ideas += move_to_failed(
-                    ideas,
-                    note.output_path(ideas),
-                    f"page is invalid: {item.message}",
-                    doc_id=note.doc_id,
-                    doc_class=note.doctype.name,
+                touched_ideas += reject_invalid_page(
+                    ideas, llm_dir, note, processed, svc, f"page is invalid: {item.message}"
                 )
         elif opts.dry_run:
             item.status = "would_publish"
