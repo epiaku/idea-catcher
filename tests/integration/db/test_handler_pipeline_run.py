@@ -30,7 +30,8 @@ def run(harness, **params):
 
 
 def counts(**changed: int) -> dict[str, int]:
-    return {"staged": 0, "adopted": 0, "duplicates": 0, "artifacts": 0, "unreadable": 0, **changed}
+    zero = {"staged": 0, "adopted": 0, "duplicates": 0, "artifacts": 0, "unreadable": 0, "errors": 0}
+    return {**zero, **changed}
 
 
 def items(harness) -> dict[str, JobItem]:
@@ -96,13 +97,14 @@ def test_run_stages_a_note_and_enqueues_llm_reason(harness, sh):
     assert sh(harness.ideas, "status", "--porcelain") != ""
 
 
-def test_profile_and_refresh_llm_are_copied_into_the_llm_reason_params(harness):
-    run(harness, only=["YouTube walks"], profile="fake", refresh_llm=True)
-    [job] = next_jobs(harness)
-    assert job.params == {
-        "calculated_name": item_named(harness, "notes", "YouTube walks.md").calculated_name,
-        "profile": "fake",
-        "refresh_llm": True,
+def test_profile_and_refresh_llm_are_copied_into_the_llm_reason_and_fetch_params(harness):
+    run(harness, only=["YouTube walks", "yt"], profile="fake", refresh_llm=True)
+    note = item_named(harness, "notes", "YouTube walks.md").calculated_name
+    clip = item_named(harness, "clippings", "yt.md").calculated_name
+    extra = {"profile": "fake", "refresh_llm": True}
+    assert {j.type: j.params for j in next_jobs(harness)} == {
+        "llm.reason": {"calculated_name": note, **extra},
+        "youtube.fetch": {"calculated_name": clip, **extra},
     }
 
 
@@ -117,7 +119,7 @@ def test_a_youtube_clip_is_staged_waiting_youtube_with_a_fetch_job(harness):
     [job] = next_jobs(harness)
     assert (job.type, job.params, job.dedupe_key) == (
         "youtube.fetch",
-        {"calculated_name": item.calculated_name},
+        {"calculated_name": item.calculated_name, "profile": "fake"},  # passed on to llm.reason later
         f"fetch:{item.calculated_name}",
     )
     assert harness.fetch_calls == []
@@ -359,6 +361,7 @@ def test_limit_counts_the_staged_notes(harness):
         ({"limit": -1}, "limit"),
         ({"limit": True}, "limit"),
         ({"profile": 3}, "profile"),
+        ({"profile": ""}, "profile"),
         ({"refresh_llm": 1}, "refresh_llm"),
         ({"dry_run": True}, "dry_run"),
     ],
@@ -368,3 +371,125 @@ def test_bad_params_fail_the_job_and_touch_nothing(harness, params, message):
     assert isinstance(result, Fail) and message in result.error
     assert items(harness) == {} and next_jobs(harness) == []
     assert (harness.ideas / "inbox/notes/YouTube walks.md").exists()
+
+
+def _crash_before_the_unlink(monkeypatch, replacement: bytes | None = None) -> list[str]:
+    """`start_work` runs for real once, then the inbox file is back (the unlink never happened, or a new
+    capture landed at the same path when `replacement` is given) and the worker dies before step 3."""
+    real_start_work = handlers_pipeline.start_work
+    crashed: list[str] = []
+
+    def crash_once(ideas, note, now=None):
+        if crashed:
+            return real_start_work(ideas, note, now)
+        original = note.path.read_bytes()
+        real_start_work(ideas, note, now)
+        note.path.write_bytes(original if replacement is None else replacement)
+        crashed.append(note.target_rel.as_posix())
+        raise RuntimeError("worker killed")
+
+    monkeypatch.setattr(handlers_pipeline, "start_work", crash_once)
+    return crashed
+
+
+def test_a_crash_between_the_output_copy_and_the_unlink_is_adopted_once(harness, monkeypatch):
+    crashed = _crash_before_the_unlink(monkeypatch)
+    with pytest.raises(RuntimeError, match="worker killed"):
+        run(harness, only=["YouTube walks"])
+    [leftover] = items(harness).values()
+    assert leftover.status == "staging" and leftover.calculated_name == crashed[0]
+    assert (harness.ideas / "inbox/notes/YouTube walks.md").exists()
+    assert (harness.ideas / "output" / crashed[0]).exists()
+
+    assert run(harness, only=["YouTube walks"]) == Done(counts(adopted=1))
+
+    assert not (harness.ideas / "inbox/notes/YouTube walks.md").exists()
+    assert [p.name for p in in_folder(harness.ideas, "archive", "YouTube walks.md")] == [
+        Path(crashed[0]).name
+    ]
+    [out] = in_folder(harness.ideas, "output", "YouTube walks.md")
+    item = items(harness)[crashed[0]]
+    assert item.status == "waiting_llm" and len(items(harness)) == 1
+    assert load(out).fm["id"] == item.doc_id == leftover.doc_id  # the id on the row is kept
+    assert [j.params["calculated_name"] for j in next_jobs(harness)] == [crashed[0]]
+
+
+def test_a_new_capture_at_the_same_inbox_path_does_not_overwrite_the_adopted_document(harness, monkeypatch):
+    other = b"A different idea that was captured under the same file name\n"
+    crashed = _crash_before_the_unlink(monkeypatch, replacement=other)
+    with pytest.raises(RuntimeError, match="worker killed"):
+        run(harness, only=["YouTube walks"])
+    archived = (harness.ideas / "archive" / crashed[0]).read_bytes()
+    output = (harness.ideas / "output" / crashed[0]).read_bytes()
+
+    assert run(harness, only=["YouTube walks"]) == Done(counts(adopted=1, staged=1))
+
+    assert (harness.ideas / "archive" / crashed[0]).read_bytes() == archived  # the first document is kept
+    assert (harness.ideas / "output" / crashed[0]).read_bytes() == output
+    assert items(harness)[crashed[0]].status == "waiting_llm"
+    names = sorted(
+        p.relative_to(harness.ideas / "archive").as_posix()
+        for p in in_folder(harness.ideas, "archive", "YouTube walks.md")
+    )
+    assert len(names) == 2 and crashed[0] in names  # the new capture got its own name
+    [new] = [n for n in names if n != crashed[0]]
+    assert b"A different idea" in (harness.ideas / "archive" / new).read_bytes()
+    assert items(harness)[new].status == "waiting_llm"
+    assert not (harness.ideas / "inbox/notes/YouTube walks.md").exists()
+
+
+def _start_work_fails_for(monkeypatch, original: str) -> None:
+    real_start_work = handlers_pipeline.start_work
+
+    def failing(ideas, note, now=None):
+        if note.original_name == original:
+            inbox.archive_copy(ideas, note)  # it got as far as the archive copy
+            raise PermissionError(13, "Permission denied", str(note.path))
+        return real_start_work(ideas, note, now)
+
+    monkeypatch.setattr(handlers_pipeline, "start_work", failing)
+
+
+def test_a_file_error_in_start_work_fails_that_document_and_the_run_goes_on(harness, monkeypatch):
+    _start_work_fails_for(monkeypatch, "systeme.md")
+
+    assert run(harness) == Done(counts(staged=2, errors=1))
+
+    failed = item_named(harness, "clippings", "systeme.md")
+    assert failed.status == "failed" and "could not start work" in (failed.error or "")
+    back = harness.ideas / "inbox/clippings/systeme.md"
+    assert back.exists() and load(back).fm["calculated_filename"] == Path(failed.calculated_name).name
+    assert not (harness.ideas / "archive" / failed.calculated_name).exists()  # as Stage A's return_to_inbox
+    assert not (harness.ideas / "output" / failed.calculated_name).exists()
+    assert sorted(j.type for j in next_jobs(harness)) == ["llm.reason", "youtube.fetch"]
+
+    monkeypatch.undo()
+    assert run(harness) == Done(counts(staged=1))  # a later run is not blocked: same name, row reset
+    again = item_named(harness, "clippings", "systeme.md")
+    assert (again.id, again.calculated_name, again.status) == (
+        failed.id,
+        failed.calculated_name,
+        "waiting_llm",
+    )
+
+
+def test_a_file_error_while_adopting_does_not_block_the_other_documents(harness, monkeypatch):
+    real_start_work = handlers_pipeline.start_work
+
+    def crash_once(ideas, note, now=None):
+        raise RuntimeError("worker killed")
+
+    monkeypatch.setattr(handlers_pipeline, "start_work", crash_once)
+    with pytest.raises(RuntimeError, match="worker killed"):
+        run(harness)
+    [leftover] = items(harness).values()
+    assert leftover.original_filename == "systeme.md" and leftover.status == "staging"
+    monkeypatch.setattr(handlers_pipeline, "start_work", real_start_work)
+    _start_work_fails_for(monkeypatch, "systeme.md")
+
+    assert run(harness) == Done(counts(staged=2, errors=1))  # tried once in this run, not again by the scan
+
+    item = items(harness)[leftover.calculated_name]
+    assert item.status == "failed" and "could not start work" in (item.error or "")
+    assert (harness.ideas / "inbox/clippings/systeme.md").exists()
+    assert len(items(harness)) == 3 and len(next_jobs(harness)) == 2

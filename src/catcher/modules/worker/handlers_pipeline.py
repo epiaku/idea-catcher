@@ -22,8 +22,10 @@ from catcher.modules.pipeline.inbox import (
     move_to_failed,
     note_label,
     requeue_from_archive,
+    return_to_inbox,
     scan_inbox,
     start_work,
+    with_filename_fields,
 )
 from catcher.modules.pipeline.run import RunOptions, RunReport, copy_artifacts
 from catcher.modules.pipeline.steps import order_notes, split_duplicates
@@ -72,7 +74,7 @@ def parse_params(params: dict[str, Any]) -> RunParams:
     if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
         raise ValueError(f"limit must be a whole number of 0 or more, not {limit!r}")
     profile = params.get("profile")
-    if profile is not None and not isinstance(profile, str):
+    if profile is not None and not (isinstance(profile, str) and profile.strip()):
         raise ValueError(f"profile must be a profile name, not {profile!r}")
     return RunParams(**params)
 
@@ -87,27 +89,24 @@ def _facts_saved(ctx: HandlerContext, vid: str) -> bool:
 
 def _queue_next(ctx: HandlerContext, name: str, note: Note, params: RunParams) -> None:
     """Step 3: the item waits for YouTube (a clip without saved facts) or for the LLM, and its next job is
-    queued, in one commit. The dedupe key makes a second call a no-op while that job is active."""
+    queued, in one commit. The dedupe key makes a second call a no-op while that job is active. Both jobs
+    carry `profile` and `refresh_llm` when set: the fetch handler passes them on to its `llm.reason` job."""
     vid = video_id(str(note.doc.fm.get("source") or "")) if note.doctype.name == "youtube" else None
+    fetch = vid is not None and not _facts_saved(ctx, vid)  # file IO before the transaction
+    job_params: dict[str, Any] = {"calculated_name": name}
+    if params.profile is not None:
+        job_params["profile"] = params.profile
+    if params.refresh_llm:
+        job_params["refresh_llm"] = True
+    status, job_type, key = (
+        ("waiting_youtube", "youtube.fetch", f"fetch:{name}")
+        if fetch
+        else ("waiting_llm", "llm.reason", f"reason:{name}")
+    )
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
-        if vid is not None and not _facts_saved(ctx, vid):
-            set_item_status(session, name, "waiting_youtube", now=now)
-            enqueue(
-                session,
-                type="youtube.fetch",
-                now=now,
-                params={"calculated_name": name},
-                dedupe_key=f"fetch:{name}",
-            )
-            return
-        set_item_status(session, name, "waiting_llm", now=now)
-        llm_params: dict[str, Any] = {"calculated_name": name}
-        if params.profile is not None:
-            llm_params["profile"] = params.profile
-        if params.refresh_llm:
-            llm_params["refresh_llm"] = True
-        enqueue(session, type="llm.reason", now=now, params=llm_params, dedupe_key=f"reason:{name}")
+        set_item_status(session, name, status, now=now)
+        enqueue(session, type=job_type, now=now, params=job_params, dedupe_key=key)
 
 
 def _inbox_note(ideas: Path, inbox_path: str, now: datetime) -> Note | None:
@@ -122,36 +121,80 @@ def _inbox_note(ideas: Path, inbox_path: str, now: datetime) -> Note | None:
     return next((n for n in scan.notes if n.inbox_rel == rel), None)
 
 
-def _adopt(ctx: HandlerContext, name: str, inbox_path: str | None, params: RunParams) -> bool:
-    """Finish what a crash left of one `staging` row. True when it was adopted, False when it is failed.
+def _same_document(ideas: Path, name: str, note: Note) -> bool:
+    """True when the inbox file is the document archived as `archive/<name>`: its bytes plus the two file
+    name fields, exactly what `start_work` archived. False for another capture that landed at that path."""
+    try:
+        raw = note.path.read_bytes().decode("utf-8")
+        archived = (ideas / "archive" / name).read_bytes()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return archived == with_filename_fields(raw, note.original_name, Path(name).name).encode("utf-8")
 
-    The inbox file comes first: when it is still there the move did not finish (or never began), and
-    `start_work` under the same name overwrites a partial archive or output copy and takes it out of
-    `inbox/`. Else the working copy in `output/` means the move finished. Neither: nothing to adopt."""
-    now = ctx.clock()
-    note = _inbox_note(ctx.ideas, inbox_path, now) if inbox_path else None
+
+def _start(ctx: HandlerContext, name: str, note: Note) -> bool:
+    """Step 2, with Stage A's handling of a file error: the document goes back to `inbox/` (`return_to_inbox`,
+    under its calculated name), the item is `failed` with the reason, and the run goes on. A later run stages
+    it again under the same name (the failed row is reset). False when it failed."""
+    try:
+        start_work(ctx.ideas, note, ctx.clock())
+        return True
+    except OSError as e:
+        message = f"could not start work: {e}"
+    log.error("%s: %s", note_label(note), message)
+    try:
+        return_to_inbox(ctx.ideas, note)
+    except OSError as e:
+        log.error("%s: could not put it back in inbox/ either: %s", note_label(note), e)
+    with session_scope(ctx.engine) as session:
+        set_item_status(session, name, "failed", now=ctx.clock(), reason=message)
+    return False
+
+
+@dataclass(frozen=True)
+class Leftover:
+    """A `staging` row: a crash came between its commit and its step 3."""
+
+    name: str
+    doc_id: str
+    inbox_path: str | None
+
+
+def _adopt(ctx: HandlerContext, row: Leftover, params: RunParams) -> tuple[str, Path | None]:
+    """Finish what a crash left of one `staging` row: "adopted", "failed" or "error", and the inbox path used.
+
+    The inbox file is used when `output/<name>` is missing (the move did not finish or never began), or when
+    it is the very document archived under the name (the crash came between the output copy and the
+    unlink): `start_work` under the same name and with the row's id overwrites the copies and takes it out of
+    `inbox/`. Another document at that path is left for the scan, and the working copy in `output/` goes on
+    to step 3. Neither file: the item is failed."""
+    name, now = row.name, ctx.clock()
+    out = ctx.ideas / "output" / name
+    note = _inbox_note(ctx.ideas, row.inbox_path, now) if row.inbox_path else None
     if note is not None:
         note.name = Path(name).name
-        if note.target_rel.as_posix() == name:
-            start_work(ctx.ideas, note, now)
+        if note.target_rel.as_posix() == name and (
+            not out.is_file() or _same_document(ctx.ideas, name, note)
+        ):
+            note.doc_id = note.doc.fm["id"] = row.doc_id  # a class without a derivable id got a new one
+            if not _start(ctx, name, note):
+                return "error", note.inbox_rel
             _queue_next(ctx, name, note, params)
             log.info("adopted %s: started again from inbox/", name)
-            return True
-        note = None
-    out = ctx.ideas / "output" / name
+            return "adopted", note.inbox_rel
     if out.is_file():
         try:
-            note = load_staged_note(ctx.ideas, out, now)
+            staged = load_staged_note(ctx.ideas, out, now)
         except (FrontmatterError, UnicodeDecodeError, ValueError) as e:
             log.error("adopting %s: cannot read output/%s: %s", name, name, e)
         else:
-            _queue_next(ctx, name, note, params)
+            _queue_next(ctx, name, staged, params)
             log.info("adopted %s: its working copy was already in output/", name)
-            return True
+            return "adopted", None
     with session_scope(ctx.engine) as session:
         set_item_status(session, name, "failed", now=ctx.clock(), reason=NO_DOCUMENT)
     log.error("item %s: %s; marked failed", name, NO_DOCUMENT)
-    return False
+    return "failed", None
 
 
 def _requeue(ctx: HandlerContext, queries: list[str]) -> None:
@@ -185,12 +228,25 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
     for what, folder in (("idea-bucket inbox/", ideas / "inbox"), ("epiaku-docs", ctx.docs)):
         if not folder.is_dir():
             return Fail(f"{what} not found at {folder}")
-    counts = {"staged": 0, "adopted": 0, "duplicates": 0, "artifacts": 0, "unreadable": 0}
+    counts = {"staged": 0, "adopted": 0, "duplicates": 0, "artifacts": 0, "unreadable": 0, "errors": 0}
 
     with session_scope(ctx.engine) as session:  # a single worker: every staging row is a crash leftover
-        leftovers = [(i.calculated_name, i.inbox_path) for i in items_in_status(session, "staging")]
-    for name, inbox_path in leftovers:
-        counts["adopted"] += _adopt(ctx, name, inbox_path, params)
+        leftovers = [
+            Leftover(i.calculated_name, i.doc_id, i.inbox_path) for i in items_in_status(session, "staging")
+        ]
+    tried: set[Path] = set()  # inbox files adoption already worked on: the scan leaves them alone this run
+    for row in leftovers:
+        try:
+            outcome, used = _adopt(ctx, row, params)
+        except OSError as e:  # one document's file problem must not stop the run; the row stays staging
+            log.error("adopting %s: %s; trying again next run", row.name, e)
+            outcome, used = "error", None
+        if used is not None:
+            tried.add(used)
+        if outcome == "adopted":
+            counts["adopted"] += 1
+        elif outcome == "error":
+            counts["errors"] += 1
 
     explicit = params.requeue or []
     _requeue(ctx, [*explicit, *(deferred_in_output(ideas) if params.retry_deferred else [])])
@@ -209,13 +265,17 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         log.info("%s: moved to duplicates/, an earlier clip of %s", note_label(note), note_label(winner))
 
     for note in to_process:
+        if note.inbox_rel in tried:
+            continue
         if params.limit is not None and counts["staged"] >= params.limit:
             log.info("%s: run limit reached, stays in inbox/", note_label(note))
             continue
         name = _stage(ctx, job, note)
         if name is None:
             continue
-        start_work(ideas, note, ctx.clock())
+        if not _start(ctx, name, note):
+            counts["errors"] += 1
+            continue
         _queue_next(ctx, name, note, params)
         counts["staged"] += 1
 
