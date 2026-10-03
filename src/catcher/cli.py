@@ -1,17 +1,27 @@
 import logging
+import math
 import os
+import re
 import secrets
 import signal
+import socket
+import threading
+from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from alembic import command as alembic_command
 from dotenv import load_dotenv
+from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from catcher import __version__
 from catcher.core.config import Settings
-from catcher.core.db import alembic_config
+from catcher.core.db import alembic_config, make_worker_engine, session_scope, utc_now
 from catcher.core.log import configure_logging
 from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError, reset_test_repos
 from catcher.modules.llm.backends import make_backend
@@ -33,6 +43,11 @@ from catcher.modules.pipeline.process import ProcessOptions, default_services, p
 from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.pipeline.tags import load_tags
+from catcher.modules.queue import queue
+from catcher.modules.queue.models import JOB_STATUSES, Job
+from catcher.modules.worker.app import build_context, build_handlers
+from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock
+from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import build_access
 from catcher.modules.youtube.cache import FACTS_DIR
 from catcher.modules.youtube.facts import FactsUnavailable
@@ -351,6 +366,188 @@ def db_downgrade(
     if revision == "base" and not yes:
         typer.confirm("Downgrade to base drops every table and all its rows. Continue?", abort=True)
     alembic_command.downgrade(alembic_config(Settings().database_url), revision)
+
+
+def _positive_seconds(option: str, value: float) -> float:
+    if not (math.isfinite(value) and value > 0):
+        raise typer.BadParameter(f"must be a number of seconds above 0, not {value}", param_hint=option)
+    return value
+
+
+def _worker_id() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+@contextmanager
+def _stop_on_signals(stop: threading.Event) -> Iterator[None]:
+    """SIGTERM and SIGINT set `stop`: the worker finishes the job it runs, then exits. A second signal
+    raises KeyboardInterrupt at once (the job stays running; the reaper requeues it after its lease).
+    Signal handlers can only be installed from the main thread; elsewhere nothing is installed. The
+    previous handlers come back when the block ends."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def handle(signum: int, frame: object) -> None:
+        if stop.is_set():
+            raise KeyboardInterrupt
+        log.info("signal %s: the worker stops after the current job", signal.Signals(signum).name)
+        stop.set()
+
+    previous = {signum: signal.signal(signum, handle) for signum in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+@app.command()
+def worker(
+    once: Annotated[
+        bool, typer.Option("--once", help="run the jobs that are due now, then exit (no waiting)")
+    ] = False,
+    ideas: IdeasOpt = None,
+    docs: DocsOpt = None,
+    lease_s: Annotated[
+        float, typer.Option("--lease-s", help="seconds a claimed job is ours without a heartbeat")
+    ] = 120.0,
+    poll_s: Annotated[float, typer.Option("--poll-s", help="seconds to wait when no job is due")] = 2.0,
+) -> None:
+    """Run the jobs in the queue, one at a time, until stopped (Ctrl-C or SIGTERM ends it after the
+    current job). Only one worker runs at a time: a second one exits with code 2."""
+    lease_s = _positive_seconds("--lease-s", lease_s)
+    poll_s = _positive_seconds("--poll-s", poll_s)
+    ctx = build_context(Settings(), ideas=ideas, docs=docs)
+    stop = threading.Event()
+    try:
+        with WorkerLock(ctx.engine), _stop_on_signals(stop):
+            runner = Worker(
+                ctx,
+                build_handlers(),
+                worker_id=_worker_id(),
+                lease_s=lease_s,
+                heartbeat_s=lease_s / 3,
+                poll_s=poll_s,
+            )
+            log.info("worker %s started (once=%s)", runner.worker_id, once)
+            if once:
+                counts: Counter[str] = Counter()
+                runner.reap_safely()
+                while not stop.is_set():
+                    outcome = runner.run_once()
+                    if outcome is None:
+                        break
+                    counts[outcome] += 1
+                summary = " ".join(f"{name}={n}" for name, n in sorted(counts.items()))
+                typer.echo(f"ran {counts.total()} job(s){': ' + summary if summary else ''}")
+            else:
+                runner.run_forever(stop)
+            log.info("worker %s stopped", runner.worker_id)
+    except WorkerAlreadyRunning as e:
+        log.error("%s", e)
+        typer.echo(str(e), err=True)
+        raise typer.Exit(2) from e
+    except OperationalError as e:
+        log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
+        raise typer.Exit(2) from e
+    finally:
+        ctx.engine.dispose()
+
+
+jobs_app = typer.Typer(no_args_is_help=True, help="The job queue: add jobs by hand and look at them.")
+app.add_typer(jobs_app, name="jobs")
+
+
+@jobs_app.callback()
+def jobs_group() -> None:
+    """The job queue: add jobs by hand and look at them."""
+
+
+_INT = re.compile(r"[+-]?\d+")
+
+
+def _param_value(raw: str) -> bool | int | str:
+    if raw.lower() in ("true", "false"):
+        return raw.lower() == "true"
+    return int(raw) if _INT.fullmatch(raw) else raw
+
+
+def _parse_params(pairs: list[str]) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    for pair in pairs:
+        key, sep, raw = pair.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise typer.BadParameter(f"{pair!r} is not KEY=VALUE", param_hint="--param")
+        if re.sub(r"[-_\s]", "", key.lower()) == "dryrun":
+            typer.echo(
+                "dry runs never go through the queue: use `catcher run pipeline --dry-run` instead", err=True
+            )
+            raise typer.Exit(2)
+        if key in params:
+            raise typer.BadParameter(f"{key!r} is given twice", param_hint="--param")
+        params[key] = _param_value(raw)
+    return params
+
+
+@contextmanager
+def _queue_session() -> Iterator[Session]:
+    """A session on DATABASE_URL; a database that cannot be reached ends the command with exit code 2."""
+    engine = make_worker_engine(Settings().database_url)
+    try:
+        with session_scope(engine) as session:
+            yield session
+    except OperationalError as e:
+        log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
+        raise typer.Exit(2) from e
+    finally:
+        engine.dispose()
+
+
+@jobs_app.command("add")
+def jobs_add(
+    job_type: Annotated[str, typer.Argument(metavar="TYPE", help="the job type, e.g. pipeline.run")],
+    param: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--param",
+            help="KEY=VALUE for the job (true/false become booleans, whole numbers integers). "
+            "Repeat for more",
+        ),
+    ] = None,
+    priority: Annotated[int, typer.Option("--priority", help="higher runs first")] = 0,
+) -> None:
+    """Put one job on the queue, due now, and print its id. Dry runs are refused: they never go
+    through the queue."""
+    params = _parse_params(param or [])
+    with _queue_session() as session:
+        job, _ = queue.enqueue(session, type=job_type, now=utc_now(), priority=priority, params=params)
+        job_id = job.id
+    typer.echo(str(job_id))
+
+
+@jobs_app.command("list")
+def jobs_list(
+    status: Annotated[
+        str | None, typer.Option("--status", help=f"only jobs with this status: {', '.join(JOB_STATUSES)}")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, help="show at most N jobs (newest first)")] = 50,
+) -> None:
+    """List jobs, newest first: id, type, status, priority, run_after, reason (or error)."""
+    if status is not None and status not in JOB_STATUSES:
+        raise typer.BadParameter(f"must be one of {', '.join(JOB_STATUSES)}", param_hint="--status")
+    statement = select(Job).order_by(Job.created_at.desc(), Job.id).limit(limit)
+    if status is not None:
+        statement = statement.where(Job.status == status)
+    with _queue_session() as session:
+        jobs = list(session.scalars(statement))
+    for job in jobs:
+        run_after = job.run_after.isoformat(timespec="seconds")
+        reason = job.error or job.reason or ""
+        typer.echo(
+            f"{job.id}  {job.type:<16} {job.status:<9} {job.priority:>4}  {run_after}  {reason}".rstrip()
+        )
 
 
 testdata_app = typer.Typer(no_args_is_help=True, help="Test data for trying the Idea Catcher on copies.")
