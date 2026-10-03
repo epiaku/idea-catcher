@@ -98,6 +98,16 @@ class RunParams:
     refresh_llm: bool = False
 
 
+def _plain_query(query: str) -> bool:
+    """True for a name `only`/`requeue` may hold: a file name, a name without `.md`, or a path under
+    `inbox/`/`archive/` (`clippings/x.md`). The names are only compared with the files found there, never
+    joined to a path; still, an absolute path, a `..` part, an empty name or a NUL is refused. A backslash
+    counts as `/`, as in `name_matches`."""
+    cleaned = query.strip().replace("\\", "/")
+    parts = cleaned.split("/")
+    return bool(cleaned) and "\x00" not in cleaned and not cleaned.startswith("/") and ".." not in parts
+
+
 def parse_params(params: dict[str, Any]) -> RunParams:
     """The job's params, checked. Raises ValueError with a message that names the bad parameter."""
     unknown = sorted(set(params) - set(RunParams.__dataclass_fields__))
@@ -107,6 +117,9 @@ def parse_params(params: dict[str, Any]) -> RunParams:
         value = params.get(key)
         if value is not None and not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
             raise ValueError(f"{key} must be a list of names, not {value!r}")
+        for query in value or []:
+            if not _plain_query(query):
+                raise ValueError(f"{key}: {query!r} is not a document name inside the ideas folder")
     for key in ("retry_deferred", "refresh_llm"):
         if not isinstance(params.get(key, False), bool):
             raise ValueError(f"{key} must be true or false, not {params[key]!r}")
@@ -349,6 +362,18 @@ def _stage(ctx: HandlerContext, job: Job, note: Note) -> str | None:
     return name
 
 
+def check_calculated_name(name: object) -> str:
+    """`name` when it is a name `assign_name` can make: `<name>.md` for a capture directly in `inbox/`, or
+    `<folder>/.../<name>.md` for one in (nested) folders. It is joined to `output/`, `archive/` and `failed/`,
+    so anything that could point outside them is refused: an absolute path, a backslash, a NUL, an empty,
+    `.` or `..` part, or a part that starts with a dot (the scan skips those). Raises ValueError."""
+    if isinstance(name, str) and "\\" not in name and "\x00" not in name:
+        parts = name.split("/")  # "/x.md" gives an empty first part, "a//b.md" an empty middle one
+        if all(part and not part.startswith(".") for part in parts) and parts[-1].endswith(".md"):
+            return name
+    raise ValueError(f"calculated_name must be [<folder>/...]<name>.md inside the ideas folder, not {name!r}")
+
+
 @dataclass(frozen=True)
 class ReasonParams:
     calculated_name: str
@@ -362,11 +387,7 @@ def parse_reason_params(params: dict[str, Any], job_type: str = "llm.reason") ->
     unknown = sorted(set(params) - set(ReasonParams.__dataclass_fields__))
     if unknown:
         raise ValueError(f"unknown parameter(s) for {job_type}: {', '.join(unknown)}")
-    name = params.get("calculated_name")
-    path = Path(name) if isinstance(name, str) else None
-    plain = path is not None and not path.is_absolute() and ".." not in path.parts
-    if path is None or not plain or len(path.parts) != 2 or path.suffix != ".md":
-        raise ValueError(f"calculated_name must be <subfolder>/<name>.md, not {name!r}")
+    check_calculated_name(params.get("calculated_name"))
     if not isinstance(params.get("refresh_llm", False), bool):
         raise ValueError(f"refresh_llm must be true or false, not {params['refresh_llm']!r}")
     profile = params.get("profile")

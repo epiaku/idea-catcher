@@ -373,6 +373,24 @@ def test_bad_params_fail_the_job_and_touch_nothing(harness, params, message):
     assert (harness.ideas / "inbox/notes/YouTube walks.md").exists()
 
 
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        ({"only": ["../x"]}, "only"),
+        ({"only": ["notes/../../x.md"]}, "only"),
+        ({"only": ["..\\x.md"]}, "only"),
+        ({"only": [""]}, "only"),
+        ({"requeue": ["/etc/passwd"]}, "requeue"),
+        ({"requeue": ["notes/../../../x"]}, "requeue"),
+    ],
+)
+def test_a_name_that_could_leave_the_ideas_folder_fails_the_job_and_touches_nothing(harness, params, message):
+    result = run(harness, **params)
+    assert isinstance(result, Fail) and message in result.error
+    assert items(harness) == {} and next_jobs(harness) == []
+    assert (harness.ideas / "inbox/notes/YouTube walks.md").exists()
+
+
 def _crash_before_the_unlink(monkeypatch, replacement: bytes | None = None) -> list[str]:
     """`start_work` runs for real once, then the inbox file is back (the unlink never happened, or a new
     capture landed at the same path when `replacement` is given) and the worker dies before step 3."""

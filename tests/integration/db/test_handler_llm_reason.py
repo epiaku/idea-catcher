@@ -6,6 +6,7 @@ command; running it twice gives one page and, thanks to the saved reply, one mod
 import json
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select, update
 from worker_harness import CLIPPING, NOTES, RaisingBackend
 
@@ -392,3 +393,76 @@ def test_a_rerun_of_a_deferred_working_copy_publishes(harness):
     assert rerun(harness, name) == Done({"item": "published"})
     assert "stage" not in load(harness.ideas / "output" / name).fm
     assert len(pages(harness.docs, NOTES)) == 1
+
+
+GOOD_NAMES = [
+    "20261002-abcdef-x.md",  # a capture directly in inbox/
+    "notes/20261002-abcdef-x.md",
+    "clippings/2026/20261002-abcdef-x.md",  # a capture in a nested folder
+    "clippings/a b/2026/deep/20261002-abcdef-x.md",
+]
+TRAVERSAL_NAMES = [
+    "../x.md",
+    "notes/../x.md",
+    "notes/../../../outside.md",
+    "/etc/x.md",
+    "/x.md",
+    "notes//x.md",
+    "notes/./x.md",
+    "./x.md",
+    "notes\\..\\..\\x.md",
+    "..\\x.md",
+    "notes/x.md/",
+    ".hidden/x.md",
+    "notes/.x.md",
+    "notes/x.txt",
+    "notes/.md",
+    "notes/x\x00.md",
+    "",
+    3,
+    None,
+]
+
+
+@pytest.mark.parametrize("name", GOOD_NAMES)
+def test_every_name_assign_name_can_make_is_accepted(name):
+    assert handlers_pipeline.parse_reason_params({"calculated_name": name}).calculated_name == name
+
+
+@pytest.mark.parametrize("name", TRAVERSAL_NAMES)
+def test_a_name_that_could_leave_the_ideas_folder_is_refused(harness, name):
+    with pytest.raises(ValueError, match="calculated_name"):
+        handlers_pipeline.parse_reason_params({"calculated_name": name})
+    job = Job(type="llm.reason", params={"calculated_name": name})  # Postgres cannot even store a NUL
+    result = handle_llm_reason(harness.ctx, job)
+    assert isinstance(result, Fail) and "calculated_name" in result.error
+    assert harness.backends.note.prompts == [] and harness.backends.chat.prompts == []
+
+
+def test_a_top_level_and_a_nested_capture_publish_through_the_worker(harness, sh):
+    """A capture directly in inbox/ and one in a nested folder: pipeline.run, drain, publish."""
+    (harness.ideas / "inbox/clippings/2026").mkdir(parents=True)
+    (harness.ideas / "inbox/top.md").write_text("A capture right in the inbox\n", encoding="utf-8")
+    (harness.ideas / "inbox/clippings/2026/nested.md").write_text("A capture in a nested folder\n")
+    sh(harness.ideas, "add", "-A")
+    sh(harness.ideas, "commit", "-qm", "two more captures")
+    sh(harness.ideas, "push", "-q")
+
+    harness.add_job("pipeline.run", only=["top", "nested"])
+    assert harness.drain(max_jobs=4) == ["succeeded"] * 3
+    top, nested = item_of(harness, "top.md"), item_of(harness, "nested.md")
+    assert "/" not in top.calculated_name
+    assert nested.calculated_name.startswith("clippings/2026/")
+    assert (top.status, nested.status) == ("published", "published")
+    for item in (top, nested):
+        assert (harness.ideas / "output" / item.calculated_name).is_file()
+        assert (harness.ideas / "archive" / item.calculated_name).is_file()
+    assert len(pages(harness.docs, NOTES)) == 2
+
+    harness.add_job("pipeline.publish")
+    assert harness.drain(max_jobs=2) == ["succeeded"]
+    for repo in (harness.ideas, harness.docs):
+        assert sh(repo, "status", "--porcelain") == ""
+    assert sh(harness.ideas, "rev-list", "--count", "HEAD", "^origin/main").strip() == "0"  # pushed
+    published = sh(harness.ideas, "ls-files", "output").splitlines()
+    assert f"output/{top.calculated_name}" in published and f"output/{nested.calculated_name}" in published

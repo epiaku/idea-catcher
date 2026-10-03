@@ -293,3 +293,26 @@ def test_bad_params_or_a_missing_item_fail_the_job(harness):
             job = session.get(Job, job_id)
         result = handle_youtube_fetch(harness.ctx, job)
         assert isinstance(result, Fail), params
+
+
+@pytest.mark.parametrize(
+    "name", ["../x.md", "clippings/../../x.md", "/etc/x.md", "clippings//x.md", "..\\x.md", ".git/x.md", ""]
+)
+def test_a_name_that_could_leave_the_ideas_folder_fails_the_job(harness, name):
+    result = handle_youtube_fetch(harness.ctx, Job(type="youtube.fetch", params={"calculated_name": name}))
+    assert isinstance(result, Fail) and "calculated_name" in result.error
+    assert harness.fetch_calls == []
+
+
+def test_a_clip_in_a_nested_folder_is_fetched_and_handed_to_llm_reason(harness, sh):
+    nested = harness.ideas / "inbox/clippings/2026/yt.md"
+    nested.parent.mkdir(parents=True)
+    (harness.ideas / "inbox/clippings/yt.md").rename(nested)
+    stage(harness, only=["clippings/2026/yt.md"])
+    item = item_of(harness, "yt.md")
+    assert item.status == "waiting_youtube" and item.calculated_name.startswith("clippings/2026/")
+
+    assert harness.drain(max_jobs=3) == ["succeeded", "succeeded"]
+
+    assert harness.fetch_calls == [VID]
+    assert item_of(harness, "yt.md").status == "published"
