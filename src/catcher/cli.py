@@ -277,7 +277,8 @@ def run_pipeline_cmd(
         ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
     )
     for item in report.items:
-        detail = " ".join(part for part in (item.page or "", item.message) if part)
+        page = f"{item.page} (saved reply)" if item.page and item.llm_saved else item.page or ""
+        detail = " ".join(part for part in (page, item.message) if part)
         typer.echo(f"{item.status:<14} {item.doc_class:<15} {item.doc_id:<24} {detail}")
     for problem in report.problems:
         typer.echo(f"{'error':<14} {problem}")

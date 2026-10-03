@@ -58,6 +58,7 @@ class ItemReport:
     page: str | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
+    llm_saved: bool = False  # the page was made from a saved LLM reply: the tokens are recorded, not spent
 
 
 @dataclass
@@ -403,6 +404,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
 
         item.tokens_in, item.tokens_out = processed.llm.usage.tokens_in, processed.llm.usage.tokens_out
         item.page = processed.filename
+        item.llm_saved = processed.llm.from_saved
         if processed.problems:
             item.status, item.message = "failed", "; ".join(processed.problems)
             log.error("%s: failed, page is invalid: %s", who, item.message)

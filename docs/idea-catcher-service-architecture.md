@@ -915,7 +915,6 @@ Aggregation endpoints on the MVP tables, so the React dashboards stay simple:
 - **Notifications** for stuck notes (for example a push message), instead of only the log and metrics.
 - **`catcher cleanup`** for old `facts/`, `llm/`, `archive/` and `output/` records: a dry run first, by age and status. It must warn that deleting saved facts causes a YouTube refetch on a requeue, and that deleting saved replies costs LLM calls.
 - **Saved replies, deferred items:**
-  - `ItemReport` needs an `llm_saved` flag (or tokens 0) before the Stage B metrics, so the recorded tokens of a reply that was not paid for are not counted.
   - `TraceStore.find` scans all trace files on each call. Add an index, or look at the document's own path first, when there are thousands.
   - The output guard of `mark_unusable` for a replay compares the stored output; it should compare the replies.
   - An interrupted call is recorded as `backend_error` with no error text.
