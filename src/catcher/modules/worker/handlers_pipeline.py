@@ -1,4 +1,4 @@
-"""The `pipeline.run` and `llm.reason` handlers.
+"""The `pipeline.run`, `llm.reason`, `youtube.fetch` and `pipeline.publish` handlers.
 
 `pipeline.run` stages the inbox documents, database row first, then the file move.
 
@@ -16,7 +16,11 @@ recorded as published; a crash before `finish` reruns from the saved reply, so t
 `youtube.fetch` gets the facts of one staged clip and queues its `llm.reason`. The YouTube call runs with
 no session open and never sleeps: a closed gate (the gap, or the breaker after a 429) defers the job to the
 gate's time (no attempt counted) and the item keeps waiting. No facts to be had (no transcript, a gone video,
-a yt-dlp failure) defers the item, as in Stage A, and the job succeeds. Saved facts mean no second call."""
+a yt-dlp failure) defers the item, as in Stage A, and the job succeeds. Saved facts mean no second call.
+
+`pipeline.publish` is the only handler that runs git: pull both repos, then commit the managed folders of the
+idea-bucket and push, then the same for epiaku-docs (the pages and `idea-bucket/artifacts`). Changes outside
+those folders are left alone. A push that fails leaves the commit local; the next publish pushes it."""
 
 import logging
 from dataclasses import dataclass
@@ -26,8 +30,11 @@ from typing import Any
 
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import FrontmatterError
+from catcher.core.git import GIT_LOCK, GitError, ahead_of_upstream, commit_managed, has_remote, pull, push
 from catcher.modules.llm.trace import LLM_DIR
+from catcher.modules.pipeline.doctypes import DOC_TYPES
 from catcher.modules.pipeline.inbox import (
+    ARTIFACTS_DIR,
     STAGE_ANALYZED,
     STAGE_DEFERRED,
     Note,
@@ -582,3 +589,61 @@ def _fetch(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResul
         return result
     log.info("%s: facts saved, on to the LLM", who)
     return _wait_for_llm(ctx, name, params)
+
+
+IDEAS_MANAGED = ("inbox", "archive", "output", "failed", "duplicates", FACTS_DIR, LLM_DIR)
+DOCS_MANAGED = (*sorted({t.out_dir for t in DOC_TYPES.values()}), f"idea-bucket/{ARTIFACTS_DIR}")
+IDEAS_MESSAGE = "idea-catcher: process the inbox (pipeline.publish)"
+DOCS_MESSAGE = "idea-catcher: publish pages (pipeline.publish)"
+
+
+def parse_publish_params(params: dict[str, Any]) -> tuple[bool, bool]:
+    """`(pull, push)` from the job's params. Raises ValueError with a message that names the bad parameter."""
+    unknown = sorted(set(params) - {"pull", "push"})
+    if unknown:
+        raise ValueError(f"unknown parameter(s) for pipeline.publish: {', '.join(unknown)}")
+    for key in ("pull", "push"):
+        if not isinstance(params.get(key, True), bool):
+            raise ValueError(f"{key} must be true or false, not {params[key]!r}")
+    return params.get("pull", True), params.get("push", True)
+
+
+def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
+    """Pull both repos, then per repo (idea-bucket first) commit the managed folders and push right after.
+
+    A repo is pushed when it is ahead of its remote, so a rerun pushes a commit a failed push left behind.
+    A git error fails the job with git's message: a failed pull before anything is committed, a failed push
+    with the commit kept locally. `push=true` on a repo without a remote fails before any git change."""
+    try:
+        do_pull, do_push = parse_publish_params(dict(job.params or {}))
+    except ValueError as e:
+        return Fail(str(e))
+    repos = (
+        ("ideas", ctx.ideas, IDEAS_MANAGED, IDEAS_MESSAGE),
+        ("docs", ctx.docs, DOCS_MANAGED, DOCS_MESSAGE),
+    )
+    author = (ctx.settings.git_author_name, ctx.settings.git_author_email)
+    committed = {"docs": False, "ideas": False}
+    pushed = False
+    with GIT_LOCK:
+        try:
+            if do_push:
+                no_remote = [str(repo) for _, repo, _, _ in repos if not has_remote(repo)]
+                if no_remote:
+                    return Fail(
+                        f"no git remote to push to in {', '.join(no_remote)}: "
+                        "add a remote, or run pipeline.publish with push=false"
+                    )
+            if do_pull:
+                for _, repo, _, _ in repos:
+                    pull(repo)
+            for key, repo, managed, message in repos:
+                committed[key] = commit_managed(repo, managed, message, author=author)
+                if do_push and ahead_of_upstream(repo):
+                    push(repo)
+                    pushed = True
+        except GitError as e:
+            log.error("publish failed (committed so far: %s): %s", committed, e)
+            return Fail(str(e))
+    log.info("publish: committed=%s pushed=%s", committed, pushed)
+    return Done({"committed": committed, "pushed": pushed})

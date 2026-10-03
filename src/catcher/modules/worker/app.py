@@ -10,6 +10,7 @@ from catcher.modules.pipeline.process import default_services
 from catcher.modules.worker.handlers import Handler, HandlerContext
 from catcher.modules.worker.handlers_pipeline import (
     handle_llm_reason,
+    handle_pipeline_publish,
     handle_pipeline_run,
     handle_youtube_fetch,
 )
@@ -24,6 +25,7 @@ def build_handlers() -> dict[str, Handler]:
         "pipeline.run": handle_pipeline_run,
         "youtube.fetch": handle_youtube_fetch,
         "llm.reason": handle_llm_reason,
+        "pipeline.publish": handle_pipeline_publish,
     }
     handlers.update(EXTRA_HANDLERS)
     return handlers

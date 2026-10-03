@@ -1,9 +1,13 @@
 import logging
 import subprocess
-from collections.abc import Iterable
+import threading
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 log = logging.getLogger("catcher.git")
+
+# One git writer per process: the worker's publish holds it around pull, commit and push.
+GIT_LOCK = threading.Lock()
 
 
 class GitError(RuntimeError):
@@ -44,8 +48,13 @@ def commit_paths(repo: Path, paths: Iterable[Path], message: str, *, author: tup
     in_index = [rel for rel in git(repo, "ls-files", "-z", "--", *rels).split("\0") if rel]
     if not in_index or not git(repo, "status", "--porcelain", "--", *in_index).strip():
         return False
-    name, email = author
     log.info("commit %s: %s (%d file(s))", repo.name, message, len(in_index))
+    _commit(repo, message, in_index, author=author)
+    return True
+
+
+def _commit(repo: Path, message: str, paths: Sequence[str], *, author: tuple[str, str]) -> None:
+    name, email = author
     git(
         repo,
         "-c",
@@ -58,9 +67,33 @@ def commit_paths(repo: Path, paths: Iterable[Path], message: str, *, author: tup
         "-m",
         message,
         "--",
-        *in_index,
+        *paths,
     )
+
+
+def commit_managed(repo: Path, pathspecs: Sequence[str], message: str, *, author: tuple[str, str]) -> bool:
+    """Commit everything under `pathspecs` (folders relative to `repo`): new, changed and deleted files, so a
+    note moved out of `inbox/` is committed as a deletion. A pathspec that is neither on disk nor tracked is
+    skipped. Changes outside `pathspecs` (in the working tree or the index) are left as they are. Returns
+    False, and makes no commit, when nothing under `pathspecs` changed."""
+    present = [p for p in dict.fromkeys(pathspecs) if (repo / p).exists() or git(repo, "ls-files", "--", p)]
+    if not present:
+        return False
+    git(repo, "add", "-A", "--", *present)
+    changed = git(repo, "diff", "--cached", "--name-only", "--", *present).splitlines()
+    if not changed:
+        return False
+    log.info("commit %s: %s (%d file(s))", repo.name, message, len(changed))
+    _commit(repo, message, present, author=author)
     return True
+
+
+def ahead_of_upstream(repo: Path) -> bool:
+    """True when the branch has commits its upstream lacks, or has no upstream to compare with."""
+    try:
+        return git(repo, "rev-list", "--count", "@{upstream}..HEAD").strip() != "0"
+    except GitError:
+        return True
 
 
 def push(repo: Path) -> None:
