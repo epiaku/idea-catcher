@@ -157,3 +157,15 @@ def test_a_handler_receives_the_claimed_job_and_the_context(pg_engine: Engine, c
 
     assert _run(ctx, job, handler) == "succeeded"
     assert seen == [(ctx, job.id, {"path": "a.md"})]
+
+
+@pytest.mark.parametrize(("returned", "name"), [(None, "NoneType"), ({"a": 1}, "dict")])
+def test_a_handler_returning_a_non_result_fails_the_job(pg_engine: Engine, clock, returned, name) -> None:
+    job = _claimed(pg_engine, clock)
+    handler: Any = lambda ctx, j: returned  # noqa: E731
+
+    outcome = _run(_ctx(pg_engine, clock), job, handler)
+
+    assert outcome == "failed"
+    row = _row(pg_engine, job.id)
+    assert (row.status, row.error) == ("failed", f"handler returned {name}, not a HandlerResult")

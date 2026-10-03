@@ -26,10 +26,15 @@ def _run_handler(ctx: HandlerContext, job: Job, handlers: Mapping[str, Handler])
     if handler is None:
         return Fail(f"no handler for {job.type}")
     try:
-        return handler(ctx, job)
+        result = handler(ctx, job)
     except Exception as e:  # KeyboardInterrupt and SystemExit are not Exceptions: they propagate
         log.exception("handler for job %s (%s) raised", job.id, job.type)
         return Fail(f"{type(e).__name__}: {e}")
+    if not isinstance(result, (Done, Defer, Fail)):
+        error = f"handler returned {type(result).__name__}, not a HandlerResult"
+        log.error("job %s (%s): %s", job.id, job.type, error)
+        return Fail(error)
+    return result
 
 
 def run_job(
@@ -41,7 +46,9 @@ def run_job(
     heartbeat_s: float,
 ) -> Outcome:
     """Run `job`'s handler, then finish the job in a fresh session. "lost" when the lease was no
-    longer ours (the result is discarded)."""
+    longer ours (the result is discarded). An error while finishing the job (a database error, or a handler
+    that modified the Job it was given) propagates; the job then stays running and the reaper requeues it
+    when its lease expires."""
     with _heartbeat(ctx, job, lease_s=lease_s, heartbeat_s=heartbeat_s):
         result = _run_handler(ctx, job, handlers)
     now = ctx.clock()
