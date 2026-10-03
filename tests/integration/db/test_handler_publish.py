@@ -37,6 +37,31 @@ def head_count(sh, repo: Path) -> int:
     return int(sh(repo, "rev-list", "--count", "HEAD").strip())
 
 
+def assert_clean_branch(sh, repo: Path) -> None:
+    """Not mid-rebase, on a branch (not detached), no unmerged file and no stash entry left behind."""
+    for state in ("rebase-merge", "rebase-apply", "MERGE_HEAD"):
+        assert not (repo / sh(repo, "rev-parse", "--git-path", state).strip()).exists(), state
+    assert sh(repo, "symbolic-ref", "--short", "HEAD").strip() == "main"
+    assert sh(repo, "ls-files", "-u") == ""
+    assert sh(repo, "stash", "list") == ""
+
+
+def push_from_another_clone(sh, repo: Path, tmp_path: Path, rel: str, text: str | None) -> None:
+    """Someone else changes `rel` (None deletes it) and pushes to the bare remote of `repo`."""
+    other = tmp_path / f"other-{repo.name}"
+    if not other.exists():
+        sh(tmp_path, "clone", str(bare(repo)), str(other))
+    sh(other, "pull")
+    if text is None:
+        (other / rel).unlink()
+    else:
+        (other / rel).parent.mkdir(parents=True, exist_ok=True)
+        (other / rel).write_text(text)
+    sh(other, "add", "-A")
+    sh(other, "commit", "-m", f"remote edit of {rel}")
+    sh(other, "push")
+
+
 def test_pipeline_publish_is_registered():
     assert build_handlers()["pipeline.publish"] is handle_pipeline_publish
 
@@ -63,17 +88,19 @@ def test_publish_commits_both_repos_and_pushes_to_the_remotes(harness, sh):
     assert all(line.split("\t")[1].split("/")[0] in IDEAS_MANAGED for line in ideas_files)
 
 
-def test_a_failed_pull_fails_the_job_and_changes_nothing(harness, sh, tmp_path):
+def test_a_failed_pull_fails_the_job_and_leaves_the_commit_on_the_branch(harness, sh, tmp_path):
     (harness.ideas / "output/notes").mkdir(parents=True)
     (harness.ideas / "output/notes/x.md").write_text("x\n")
-    sh(harness.docs, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    sh(harness.ideas, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
 
     result = publish(harness)
 
     assert isinstance(result, Fail) and "git pull" in result.error
-    assert head_count(sh, harness.ideas) == 1 and head_count(sh, harness.docs) == 1
-    assert sh(harness.ideas, "status", "--porcelain").splitlines() == ["?? output/"]
+    assert_clean_branch(sh, harness.ideas)
+    assert head_count(sh, harness.ideas) == 2  # committed first, then the pull failed: the commit stays
+    assert sh(harness.ideas, "status", "--porcelain") == ""
     assert remote_log(sh, harness.ideas) == ["seed"]
+    assert head_count(sh, harness.docs) == 1 and remote_log(sh, harness.docs) == ["seed"]  # never reached
 
 
 def test_publish_twice_makes_no_second_commit(harness, sh):
@@ -168,3 +195,107 @@ def test_bad_params_fail_the_job(harness, sh):
         result = publish(harness, **params)
         assert isinstance(result, Fail), params
     assert head_count(sh, harness.ideas) == 1
+
+
+def test_an_emptied_inbox_does_not_break_the_next_publish(harness, sh):
+    for path in sorted((harness.ideas / "inbox").rglob("*.md")):
+        target = harness.ideas / "archive" / path.relative_to(harness.ideas / "inbox")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        path.rename(target)
+    assert publish(harness) == Done({"committed": {"docs": False, "ideas": True}, "pushed": True})
+    assert (harness.ideas / "inbox/notes").is_dir()
+
+    (harness.ideas / "llm").mkdir()
+    (harness.ideas / "llm/t.json").write_text("{}\n")
+    assert publish(harness) == Done({"committed": {"docs": False, "ideas": True}, "pushed": True})
+    assert sh(harness.ideas, "status", "--porcelain") == ""
+
+
+def test_a_conflicting_remote_edit_in_ideas_aborts_the_rebase_and_fails(harness, sh, tmp_path):
+    rel = "inbox/notes/YouTube walks.md"
+    push_from_another_clone(sh, harness.ideas, tmp_path, rel, "edited elsewhere\n")
+    (harness.ideas / rel).write_text("edited by the worker\n")
+
+    result = publish(harness)
+
+    assert isinstance(result, Fail) and "rebase" in result.error
+    assert_clean_branch(sh, harness.ideas)
+    assert sh(harness.ideas, "log", "-1", "--format=%s").strip() == (
+        "idea-catcher: process the inbox (pipeline.publish)"
+    )
+    assert (harness.ideas / rel).read_text() == "edited by the worker\n"
+    assert remote_log(sh, harness.ideas)[0] == f"remote edit of {rel}"
+
+
+def test_a_conflicting_remote_edit_in_docs_aborts_the_rebase_and_fails(harness, sh, tmp_path):
+    rel = f"{NOTES}/_index.md"
+    push_from_another_clone(sh, harness.docs, tmp_path, rel, "---\ntitle: Remote\n---\n")
+    (harness.docs / rel).write_text("---\ntitle: Local\n---\n")
+
+    result = publish(harness)
+
+    assert isinstance(result, Fail) and "rebase" in result.error
+    assert_clean_branch(sh, harness.docs)
+    assert (
+        sh(harness.docs, "log", "-1", "--format=%s").strip()
+        == "idea-catcher: publish pages (pipeline.publish)"
+    )
+    assert (harness.docs / rel).read_text() == "---\ntitle: Local\n---\n"
+
+
+def test_a_remote_edit_of_a_capture_the_worker_moved_keeps_the_deletion(harness, sh, tmp_path):
+    rel = "inbox/notes/YouTube walks.md"
+    push_from_another_clone(sh, harness.ideas, tmp_path, rel, "edited on the phone\n")
+    (harness.ideas / "archive/notes").mkdir(parents=True)
+    (harness.ideas / rel).rename(harness.ideas / "archive/notes/YouTube walks.md")
+
+    result = publish(harness)
+
+    # committed before the pull, so nothing is autostashed; the rebase follows the move (a rename) and puts
+    # the remote edit on the archived copy: the deletion stays and the capture does not come back
+    assert result == Done({"committed": {"docs": False, "ideas": True}, "pushed": True})
+    assert_clean_branch(sh, harness.ideas)
+    assert not (harness.ideas / rel).exists()
+    assert (harness.ideas / "archive/notes/YouTube walks.md").read_text() == "edited on the phone\n"
+    assert sh(bare(harness.ideas), "ls-tree", "-r", "--name-only", "main", "inbox/notes").strip() == ""
+    assert sh(harness.ideas, "rev-parse", "HEAD") == sh(bare(harness.ideas), "rev-parse", "main")
+    assert sh(harness.ideas, "status", "--porcelain") == ""
+
+
+def test_an_unrelated_user_change_survives_a_pull_with_new_remote_commits(harness, sh, tmp_path):
+    push_from_another_clone(sh, harness.ideas, tmp_path, "notes-elsewhere.md", "remote\n")
+    (harness.ideas / "README.md").write_text("# edited by hand\n")
+    (harness.ideas / "staged.md").write_text("s\n")
+    sh(harness.ideas, "add", "staged.md")
+    (harness.ideas / "facts").mkdir()
+    (harness.ideas / "facts/v.json").write_text("{}\n")
+
+    assert publish(harness) == Done({"committed": {"docs": False, "ideas": True}, "pushed": True})
+
+    assert sh(harness.ideas, "show", "--name-only", "--format=", "HEAD").splitlines() == ["facts/v.json"]
+    assert sorted(sh(harness.ideas, "status", "--porcelain").splitlines()) == [" M README.md", "A  staged.md"]
+    assert sh(harness.ideas, "rev-parse", "HEAD") == sh(bare(harness.ideas), "rev-parse", "main")
+    assert_clean_branch(sh, harness.ideas)
+
+
+def test_a_branch_without_an_upstream_fails_clearly(harness, sh):
+    (harness.ideas / "facts").mkdir()
+    (harness.ideas / "facts/v.json").write_text("{}\n")
+    sh(harness.ideas, "branch", "--unset-upstream")
+
+    result = publish(harness, pull=False)
+
+    assert isinstance(result, Fail) and "no upstream" in result.error
+
+
+def test_a_rejected_push_whose_rebase_conflicts_is_aborted(harness, sh, tmp_path):
+    rel = "inbox/notes/YouTube walks.md"
+    push_from_another_clone(sh, harness.ideas, tmp_path, rel, "edited elsewhere\n")
+    sh(harness.ideas, "fetch")  # the clone knows the remote moved on, so it is not 'ahead' only
+    (harness.ideas / rel).write_text("edited by the worker\n")
+
+    result = publish(harness, pull=False)  # the push is rejected; its retry rebases and conflicts
+
+    assert isinstance(result, Fail) and "rebase" in result.error
+    assert_clean_branch(sh, harness.ideas)
+    assert (harness.ideas / rel).read_text() == "edited by the worker\n"

@@ -18,9 +18,11 @@ no session open and never sleeps: a closed gate (the gap, or the breaker after a
 gate's time (no attempt counted) and the item keeps waiting. No facts to be had (no transcript, a gone video,
 a yt-dlp failure) defers the item, as in Stage A, and the job succeeds. Saved facts mean no second call.
 
-`pipeline.publish` is the only handler that runs git: pull both repos, then commit the managed folders of the
-idea-bucket and push, then the same for epiaku-docs (the pages and `idea-bucket/artifacts`). Changes outside
-those folders are left alone. A push that fails leaves the commit local; the next publish pushes it."""
+`pipeline.publish` is the only handler that runs git. Per repo (the idea-bucket, then epiaku-docs with the
+pages and `idea-bucket/artifacts`): commit the managed folders, pull with a rebase, push. Committing first
+means the pull's autostash never holds the worker's own changes. Changes outside those folders are left
+alone. A failed rebase is aborted and fails the job; the commit stays local, and the next publish pulls and
+pushes it."""
 
 import logging
 from dataclasses import dataclass
@@ -609,11 +611,12 @@ def parse_publish_params(params: dict[str, Any]) -> tuple[bool, bool]:
 
 
 def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
-    """Pull both repos, then per repo (idea-bucket first) commit the managed folders and push right after.
+    """Per repo (idea-bucket first): commit the managed folders, pull (rebase), push right after.
 
-    A repo is pushed when it is ahead of its remote, so a rerun pushes a commit a failed push left behind.
-    A git error fails the job with git's message: a failed pull before anything is committed, a failed push
-    with the commit kept locally. `push=true` on a repo without a remote fails before any git change."""
+    A repo is pushed when it is ahead of its upstream, so a rerun pushes a commit a failed pull or push left
+    behind. A git error fails the job with git's message and stops it there; a commit already made stays
+    local, and a failed rebase is aborted first. `push=true` on a repo without a remote fails before any
+    git change."""
     try:
         do_pull, do_push = parse_publish_params(dict(job.params or {}))
     except ValueError as e:
@@ -634,11 +637,10 @@ def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
                         f"no git remote to push to in {', '.join(no_remote)}: "
                         "add a remote, or run pipeline.publish with push=false"
                     )
-            if do_pull:
-                for _, repo, _, _ in repos:
-                    pull(repo)
             for key, repo, managed, message in repos:
                 committed[key] = commit_managed(repo, managed, message, author=author)
+                if do_pull:  # after the commit: the autostash only ever holds changes outside the managed set
+                    pull(repo)
                 if do_push and ahead_of_upstream(repo):
                     push(repo)
                     pushed = True

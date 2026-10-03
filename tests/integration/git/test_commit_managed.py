@@ -66,3 +66,36 @@ def test_commit_managed_returns_false_when_nothing_changed(make_repo, sh):
     assert commit_managed(work, ["no-such-folder"], "noop", author=AUTHOR) is False
     assert sh(work, "rev-parse", "HEAD") == head
     assert sh(work, "status", "--porcelain").splitlines() == ["?? elsewhere.md"]
+
+
+def test_an_emptied_inbox_does_not_break_the_next_commit(make_repo, sh):
+    _, work = make_repo("ideas", {"inbox/notes/n.md": "n\n"})
+    (work / "archive/notes").mkdir(parents=True)
+    (work / "inbox/notes/n.md").rename(work / "archive/notes/n.md")
+    assert commit_managed(work, MANAGED, "process", author=AUTHOR) is True
+    assert (work / "inbox/notes").is_dir()  # Stage A never removes the emptied folder
+
+    (work / "llm").mkdir()
+    (work / "llm/t.json").write_text("{}\n")
+    assert commit_managed(work, MANAGED, "trace", author=AUTHOR) is True
+    assert sh(work, "show", "--name-only", "--format=", "HEAD").splitlines() == ["llm/t.json"]
+    assert sh(work, "status", "--porcelain") == ""
+
+
+def test_an_empty_managed_sub_folder_is_skipped(make_repo, sh):
+    _, work = make_repo("ideas", {})
+    (work / "failed/notes").mkdir(parents=True)
+    (work / "output/notes").mkdir(parents=True)
+    (work / "output/notes/p.md").write_text("p\n")
+    assert commit_managed(work, MANAGED, "output", author=AUTHOR) is True
+    assert sh(work, "show", "--name-only", "--format=", "HEAD").splitlines() == ["output/notes/p.md"]
+
+
+def test_a_folder_with_only_ignored_files_is_skipped(make_repo, sh):
+    _, work = make_repo("ideas", {".gitignore": "*.tmp\n"})
+    (work / "duplicates").mkdir()
+    (work / "duplicates/half.tmp").write_text("x\n")
+    (work / "facts").mkdir()
+    (work / "facts/v.json").write_text("{}\n")
+    assert commit_managed(work, MANAGED, "facts", author=AUTHOR) is True
+    assert sh(work, "show", "--name-only", "--format=", "HEAD").splitlines() == ["facts/v.json"]
