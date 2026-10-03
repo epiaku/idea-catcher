@@ -1,8 +1,8 @@
 name: CI
 
+# Manual only: start it from the Actions tab ("Run workflow"). It does not run on push or pull request.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   check:
