@@ -102,9 +102,10 @@ def test_allow_fetch_false_never_calls_youtube_even_outside_a_dry_run(
     note = make("youtube", make_note, tmp_path)
     opts = ProcessOptions(allow_fetch=False, facts_dir=tmp_path / "facts")
     assert opts.dry_run is False
-    with pytest.raises(FetchSkipped):
+    with pytest.raises(FetchSkipped) as raised:
         get_facts(note, svc, opts)
     assert calls == []
+    assert "dry run" not in str(raised.value) and "not allowed" in str(raised.value)
 
     FactsCache(tmp_path / "facts").put(yt_facts)  # saved facts are still used
     assert get_facts(note, svc, opts) == yt_facts

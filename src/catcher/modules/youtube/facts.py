@@ -67,7 +67,7 @@ class FactsDeferred(FactsUnavailable):
 
 
 class FetchSkipped(FactsUnavailable):
-    """A dry run does not call YouTube, and there are no saved facts to use instead."""
+    """Fetching is not allowed (a dry run, or the `llm.reason` job) and there are no saved facts."""
 
 
 _GONE = (

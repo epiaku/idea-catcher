@@ -109,7 +109,7 @@ def facts_for(note: Note, vid: str, svc: Services, opts: ProcessOptions) -> Yout
         if not opts.allow_fetch:  # no access layer (tests): only the saved facts, never the fetcher
             saved = FactsCache(opts.facts_dir).get(vid) if opts.facts_dir else None
             if saved is None:
-                raise FetchSkipped(f"no saved facts for {vid}: this step does not call YouTube")
+                raise FetchSkipped(f"no saved facts for {vid}: fetching from YouTube is not allowed here")
             return saved
         facts = svc.facts(vid)
     else:  # saved facts first, then the gap and the breaker, then YouTube

@@ -99,7 +99,7 @@ class YoutubeAccess:
         if self.offline:
             raise FactsUnavailable(f"YOUTUBE_OFFLINE is on and there are no saved facts for {video_id}")
         if not fetch_allowed:
-            raise FetchSkipped(f"no saved facts for {video_id}: a dry run does not call YouTube")
+            raise FetchSkipped(f"no saved facts for {video_id}: fetching from YouTube is not allowed here")
         self._pass_the_gate(wait)
         started = self.clock()
         try:

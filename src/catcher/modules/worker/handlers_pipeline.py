@@ -411,7 +411,18 @@ def handle_llm_reason(ctx: HandlerContext, job: Job) -> HandlerResult:
     if status in TERMINAL_STATUSES:  # this job ran before and its outcome is committed: nothing to redo
         log.info("%s: already %s, nothing to do", name, status)
         return Done({"item": status})
+    try:
+        return _reason(ctx, name, params)
+    except OSError as e:  # a file error must not leave the item active with no job to move it
+        reason = f"file error: {e}"
+        log.error("%s: %s; the item is failed (a requeue runs it again)", name, reason)
+        with session_scope(ctx.engine) as session:
+            set_item_status(session, name, "failed", now=ctx.clock(), reason=reason)
+        return Fail(reason)
 
+
+def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+    """The work of `handle_llm_reason` once the item is known to be active. File errors propagate."""
     ideas, now = ctx.ideas, ctx.clock()
     out = ideas / "output" / name
     if not out.is_file():

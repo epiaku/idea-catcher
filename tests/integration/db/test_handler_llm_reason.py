@@ -15,6 +15,7 @@ from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import BackendUnavailable
 from catcher.modules.queue.items import set_item_status
 from catcher.modules.queue.models import Job, JobItem
+from catcher.modules.worker import handlers_pipeline
 from catcher.modules.worker.app import build_handlers
 from catcher.modules.worker.handlers import Done, Fail
 from catcher.modules.worker.handlers_pipeline import handle_llm_reason, handle_pipeline_run
@@ -299,3 +300,95 @@ def test_an_unexpected_error_fails_the_item_and_the_job(harness):
     item = item_of(harness, "YouTube walks.md")
     assert item.status == "failed" and "a bug" in (item.error or "")
     assert (harness.ideas / "failed" / name).is_file() and not (harness.ideas / "output" / name).exists()
+
+
+def test_a_file_error_writing_the_page_fails_the_item_and_the_job_and_a_requeue_recovers(
+    harness, monkeypatch
+):
+    name = staged_note(harness)
+
+    def no_disk(*args, **kwargs):
+        raise PermissionError("epiaku-docs is read-only")
+
+    monkeypatch.setattr(handlers_pipeline, "write_page", no_disk)
+    result = reason(harness, name)
+
+    assert isinstance(result, Fail) and "epiaku-docs is read-only" in result.error
+    item = item_of(harness, "YouTube walks.md")
+    assert item.status == "failed" and "epiaku-docs is read-only" in (item.error or "")
+
+    monkeypatch.undo()
+    stage(harness, requeue=["YouTube walks"])  # a failed item can be requeued
+    assert item_of(harness, "YouTube walks.md").status == "waiting_llm"
+    assert reason(harness, name) == Done({"item": "published"})
+    assert len(pages(harness.docs, NOTES)) == 1
+
+
+def test_a_file_error_reading_the_working_copy_fails_the_item_and_the_job(harness, monkeypatch):
+    name = staged_note(harness)
+
+    def unreadable(*args, **kwargs):
+        raise OSError("disk error")
+
+    monkeypatch.setattr(handlers_pipeline, "load_staged_note", unreadable)
+    result = reason(harness, name)
+
+    assert isinstance(result, Fail) and "disk error" in result.error
+    item = item_of(harness, "YouTube walks.md")
+    assert item.status == "failed" and "disk error" in (item.error or "")
+
+
+def test_the_worker_records_a_file_error_as_a_failed_job(harness, monkeypatch):
+    def no_disk(*args, **kwargs):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(handlers_pipeline, "write_page", no_disk)
+    harness.add_job("pipeline.run", only=["YouTube walks"])
+    assert harness.drain(max_jobs=3) == ["succeeded", "failed"]
+    assert item_of(harness, "YouTube walks.md").status == "failed"
+
+
+def test_a_missing_working_copy_fails_the_item(harness):
+    name = staged_note(harness)
+    (harness.ideas / "output" / name).unlink()
+
+    assert reason(harness, name) == Done({"item": "failed"})
+    item = item_of(harness, "YouTube walks.md")
+    assert item.status == "failed" and item.error == f"no working copy in output/{name}"
+    assert harness.backends.note.prompts == []
+
+
+def test_a_working_copy_already_in_failed_keeps_its_reason(harness):
+    name = staged_note(harness)
+    out, failed = harness.ideas / "output" / name, harness.ideas / "failed" / name
+    failed.parent.mkdir(parents=True, exist_ok=True)
+    out.rename(failed)  # a crash after the move to failed/, before the status commit
+    failed.with_suffix(".error.txt").write_text("time: x\nreason: invalid output: nope\n", encoding="utf-8")
+
+    assert reason(harness, name) == Done({"item": "failed"})
+    item = item_of(harness, "YouTube walks.md")
+    assert (item.status, item.error) == ("failed", "invalid output: nope")
+    assert harness.backends.note.prompts == []
+
+
+def test_an_unreadable_working_copy_moves_to_failed(harness):
+    name = staged_note(harness)
+    (harness.ideas / "output" / name).write_text("---\nid: [unclosed\n---\nbody\n", encoding="utf-8")
+
+    assert reason(harness, name) == Done({"item": "failed"})
+    item = item_of(harness, "YouTube walks.md")
+    assert item.status == "failed" and (item.error or "").startswith(f"cannot read output/{name}")
+    assert (harness.ideas / "failed" / name).is_file() and not (harness.ideas / "output" / name).exists()
+
+
+def test_a_rerun_of_a_deferred_working_copy_publishes(harness):
+    harness.backends.note = FakeBackend([BackendUnavailable("down")])
+    name = staged_note(harness)
+    assert reason(harness, name) == Done({"item": "deferred"})
+    assert load(harness.ideas / "output" / name).fm["stage"] == "deferred"
+    with session_scope(harness.ctx.engine) as session:  # a crash before the deferred status was committed
+        set_item_status(session, name, "waiting_llm", now=harness.clock())
+
+    assert rerun(harness, name) == Done({"item": "published"})
+    assert "stage" not in load(harness.ideas / "output" / name).fm
+    assert len(pages(harness.docs, NOTES)) == 1
