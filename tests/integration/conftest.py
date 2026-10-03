@@ -1,3 +1,5 @@
+"""Git helpers for every integration suite (git/ and db/): a test identity, `sh`, and bare + clone repos."""
+
 import os
 import subprocess
 from pathlib import Path

@@ -8,8 +8,10 @@ import pytest
 from alembic import command
 from sqlalchemy import Engine, inspect, text
 from sqlalchemy.engine import make_url
+from worker_harness import FrozenHarness, WorkerHarness, seeded_harness
+from worker_harness import frozen_harness as build_frozen_harness
 
-from catcher.core.db import alembic_config, make_engine, session_scope
+from catcher.core.db import alembic_config, make_engine, make_worker_engine, session_scope
 
 IMAGE = "pgvector/pgvector:pg17"
 
@@ -101,3 +103,33 @@ class Clock:
 @pytest.fixture
 def clock() -> Clock:
     return Clock()
+
+
+@pytest.fixture
+def worker_engine(pg_engine: Engine) -> Iterator[Engine]:
+    """An engine like the worker's (a lock timeout on every session), on the migrated test database."""
+    engine = make_worker_engine(pg_engine.url.render_as_string(hide_password=False))
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def harness(make_repo, worker_engine, make_services, yt_facts, tmp_path) -> WorkerHarness:
+    """A worker on the test_run seed (a note, a Gemini chat, a YouTube clip); see worker_harness.py."""
+    return seeded_harness(
+        make_repo=make_repo,
+        engine=worker_engine,
+        services=make_services(),
+        state_dir=tmp_path / "state",
+        yt_facts=yt_facts,
+    )
+
+
+@pytest.fixture
+def frozen_harness(worker_engine, make_services, tmp_path) -> FrozenHarness:
+    """A worker on a copy of the committed tests/data; the model and YouTube record the attempt and raise."""
+    return build_frozen_harness(
+        target=tmp_path / "ic", engine=worker_engine, services=make_services(), state_dir=tmp_path / "state"
+    )

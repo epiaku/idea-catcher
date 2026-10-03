@@ -44,6 +44,7 @@ packages = ["src/catcher"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests/support"]  # test helper modules (worker_harness, blocknet) are importable by name
 addopts = "-ra --import-mode=importlib -m 'not live and not e2e'"
 markers = [
   "live: calls a real outside service (LLM API, real GitHub, YouTube). Manual only: uv run pytest -m live",
