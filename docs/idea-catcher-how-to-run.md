@@ -372,6 +372,11 @@ It lives in `tests/data/` in the idea-catcher repo and holds only the folders th
 - `tests/data/idea-bucket/inbox/`: the captures (notes, clippings, Gemini video chats, a web article, YouTube clips) and one tiny fake PDF (`sample-report.pdf`) to try artifacts.
 - `tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/`: the output folders (`notes/`, `clippings/`, `youtube/`, `web-clips/`). They start empty, each with a `.gitkeep` file because Git does not keep empty folders. The pages you make in `tmp/ic` appear here; the files in `tests/data/` are not needed for a run.
 - `tests/data/epiaku-docs/idea-bucket/artifacts/`: the folder in the root of epiaku-docs where artifacts (files that are not markdown) are sent. Empty apart from a `.gitkeep`.
+- `tests/data/idea-bucket/facts/`: the YouTube facts a real run saved, one file per video.
+- `tests/data/idea-bucket/llm/`: the LLM replies (traces) of that run, one per document.
+- `tests/data/expected/`: the pages that run made, as approved. The test compares against them; `testdata reset` does not copy this folder.
+
+The last three are the frozen real run: see [Recipes on test data](#recipes-on-test-data) for how they are used and refreshed.
 
 Nothing else from the real repos is needed: no Hugo theme or site config, no `README`, no templates, no `.obsidian`, and none of the result folders (`archive/`, `output/`, `failed/`, `duplicates/`), which the run creates.
 
@@ -453,7 +458,7 @@ Tests the full flow for one document: read it, fetch YouTube facts (`youtube` cl
 
 ```bash
 uv run catcher run pipeline --file "YouTube walks" --profile fake --dry-run     # free
-uv run catcher run pipeline --file "YouTube walks"                              # for real
+uv run catcher run pipeline --file "YouTube walks"                              # for real (free on a fresh tmp/ic: saved reply)
 uv run catcher run pipeline --requeue "YouTube walks"                           # requeue if it failed
 
 uv run catcher run pipeline --file "Start up brain"                             # bigger note
@@ -467,7 +472,7 @@ uv run catcher run pipeline --requeue "Notes in het Nederlands"
 
 #### Try a direct YouTube clip: the full flow
 
-A `youtube` document needs its facts (transcript, counts) before the LLM step. `run pipeline` does the whole flow: it fetches the facts, calls the LLM, writes the page into `tmp/ic/epiaku-docs`, archives the original in `archive/`, writes the working copy and the facts file (`.youtube.json`) to `output/`, and commits both repos locally. This calls the real `youtube` profile (OpenAI) and fetches the real transcript from YouTube. It is not free and not a dry run.
+A `youtube` document needs its facts (transcript, counts) before the LLM step. `run pipeline` does the whole flow: it fetches the facts, calls the LLM, writes the page into `tmp/ic/epiaku-docs`, archives the original in `archive/`, writes the working copy and the facts file (`.youtube.json`) to `output/`, and commits both repos locally. On a repo without saved facts and replies, this calls the real `youtube` profile (OpenAI) and fetches the real transcript from YouTube: it is not free and not a dry run. On a freshly reset `tmp/ic` the frozen `facts/` and `llm/` make it free: no model and no YouTube call (see [Saved LLM replies](#saved-llm-replies)).
 
 ```bash
 uv run catcher run pipeline --file "youtube source - RAG + Langchain Python"
