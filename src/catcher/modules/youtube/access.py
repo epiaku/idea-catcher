@@ -107,7 +107,7 @@ class YoutubeAccess:
         except Exception as e:
             if is_block_error(e):
                 until = self.gate.record_block(started)
-                raise FactsDeferred(Wait(until, blocked=True).message(self.clock())) from e
+                raise FactsDeferred(Wait(until, blocked=True).message(self.clock()), until) from e
             if is_gone_for_good(e):
                 self._remember_gone(video_id, cache, write_cache, e)
             raise
@@ -141,7 +141,7 @@ class YoutubeAccess:
             now = self.clock()
             seconds = blocked_by.until - now
             if blocked_by.blocked or not wait or seconds > self.wait_max_s:
-                raise FactsDeferred(blocked_by.message(now))
+                raise FactsDeferred(blocked_by.message(now), blocked_by.until)
             log.info("%s: waiting %d s for the next YouTube call", blocked_by.message(now), int(seconds))
             self.sleep(max(0.0, seconds) + 1.0)
 

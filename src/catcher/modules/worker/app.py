@@ -8,7 +8,11 @@ from catcher.core.config import Settings
 from catcher.core.db import make_worker_engine, utc_now
 from catcher.modules.pipeline.process import default_services
 from catcher.modules.worker.handlers import Handler, HandlerContext
-from catcher.modules.worker.handlers_pipeline import handle_llm_reason, handle_pipeline_run
+from catcher.modules.worker.handlers_pipeline import (
+    handle_llm_reason,
+    handle_pipeline_run,
+    handle_youtube_fetch,
+)
 
 # Test-only seam: handlers merged into the registry. Production code never writes to it.
 EXTRA_HANDLERS: dict[str, Handler] = {}
@@ -16,7 +20,11 @@ EXTRA_HANDLERS: dict[str, Handler] = {}
 
 def build_handlers() -> dict[str, Handler]:
     """The job type -> handler registry (plus EXTRA_HANDLERS)."""
-    handlers: dict[str, Handler] = {"pipeline.run": handle_pipeline_run, "llm.reason": handle_llm_reason}
+    handlers: dict[str, Handler] = {
+        "pipeline.run": handle_pipeline_run,
+        "youtube.fetch": handle_youtube_fetch,
+        "llm.reason": handle_llm_reason,
+    }
     handlers.update(EXTRA_HANDLERS)
     return handlers
 

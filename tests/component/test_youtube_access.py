@@ -308,3 +308,22 @@ def test_access_works_with_any_gate_that_follows_the_protocol(tmp_path):
 
     assert gate.events == ["reserve", "success", "reserve", "block"]
     assert list(tmp_path.iterdir()) == []  # nothing written anywhere
+
+
+def test_facts_deferred_carries_the_gate_time(tmp_path):
+    fetch = Fetcher()
+    access, clock, _ = make(tmp_path / "gap", fetch)
+    access.get("AAAAAAAAAAA", facts_dir=tmp_path / "facts")
+    with pytest.raises(FactsDeferred) as gap:
+        access.get("BBBBBBBBBBB", facts_dir=tmp_path / "facts")
+    assert gap.value.until == clock.now + 600  # the gate's next allowed time, in epoch seconds
+
+    blocked, block_clock, _ = make(tmp_path / "block", Fetcher(error=HttpError("429")))
+    with pytest.raises(FactsDeferred) as block:
+        blocked.get("AAAAAAAAAAA", facts_dir=tmp_path / "facts-b")
+    assert block.value.until == block_clock.now + 6 * 3600  # the end of the block
+    with pytest.raises(FactsDeferred) as still:  # the open breaker, seen at the gate
+        blocked.get("BBBBBBBBBBB", facts_dir=tmp_path / "facts-b")
+    assert still.value.until == block.value.until
+
+    assert FactsDeferred("later").until is None  # the old way to raise it still works

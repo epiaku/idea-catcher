@@ -63,7 +63,13 @@ class FactsUnavailable(Exception):
 
 
 class FactsDeferred(FactsUnavailable):
-    """Not now: the gap between two YouTube calls has not passed, or the breaker is open. Try again later."""
+    """Not now: the gap between two YouTube calls has not passed, or the breaker is open. Try again later.
+
+    `until` is when a call is allowed again (seconds since the epoch), when the gate knows it."""
+
+    def __init__(self, message: str, until: float | None = None) -> None:
+        super().__init__(message)
+        self.until = until
 
 
 class FetchSkipped(FactsUnavailable):

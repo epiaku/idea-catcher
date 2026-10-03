@@ -11,11 +11,16 @@ name. The handler runs no git command (publishing is `pipeline.publish`) and hol
 YouTube), the saved LLM reply before the model, then the file effects of Stage A, then the item status (and
 a new fetch job) in one commit. The model call runs outside any transaction. It is safe to run twice: a
 committed outcome is not redone, and a final page already in `output/` (a crash before the commit) is only
-recorded as published; a crash before `finish` reruns from the saved reply, so the model is paid once."""
+recorded as published; a crash before `finish` reruns from the saved reply, so the model is paid once.
+
+`youtube.fetch` gets the facts of one staged clip and queues its `llm.reason`. The YouTube call runs with
+no session open and never sleeps: a closed gate (the gap, or the breaker after a 429) defers the job to the
+gate's time (no attempt counted) and the item keeps waiting. No facts to be had (no transcript, a gone video,
+a yt-dlp failure) defers the item, as in Stage A, and the job succeeds. Saved facts mean no second call."""
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +44,7 @@ from catcher.modules.pipeline.inbox import (
     with_filename_fields,
 )
 from catcher.modules.pipeline.outcome import classify
-from catcher.modules.pipeline.process import ProcessOptions, process_note, reject_invalid_page
+from catcher.modules.pipeline.process import ProcessOptions, get_facts, process_note, reject_invalid_page
 from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import (
     ItemReport,
@@ -63,13 +68,15 @@ from catcher.modules.queue.items import (
 )
 from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import enqueue
-from catcher.modules.worker.handlers import Done, Fail, HandlerContext, HandlerResult
+from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
+from catcher.modules.youtube.facts import FactsDeferred
 from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.worker.pipeline")
 
 NO_DOCUMENT = "staging row without a document"
+DEFER_FALLBACK_S = 600  # a FactsDeferred without a time (a gate that does not say): ask again in 10 minutes
 
 
 @dataclass(frozen=True)
@@ -340,11 +347,12 @@ class ReasonParams:
     refresh_llm: bool = False
 
 
-def parse_reason_params(params: dict[str, Any]) -> ReasonParams:
-    """The `llm.reason` job's params, checked. Raises ValueError with a message that names the bad one."""
+def parse_reason_params(params: dict[str, Any], job_type: str = "llm.reason") -> ReasonParams:
+    """The params of an `llm.reason` or `youtube.fetch` job (the same three), checked. Raises ValueError
+    with a message that names the bad one."""
     unknown = sorted(set(params) - set(ReasonParams.__dataclass_fields__))
     if unknown:
-        raise ValueError(f"unknown parameter(s) for llm.reason: {', '.join(unknown)}")
+        raise ValueError(f"unknown parameter(s) for {job_type}: {', '.join(unknown)}")
     name = params.get("calculated_name")
     path = Path(name) if isinstance(name, str) else None
     plain = path is not None and not path.is_absolute() and ".." not in path.parts
@@ -368,14 +376,20 @@ def _item_outcome(ctx: HandlerContext, name: str, status: str, reason: str | Non
     return Done({"item": status})
 
 
-def _wait_for_youtube(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
-    """No saved facts: the item waits for YouTube and its fetch job is queued again, in one commit. The
-    dedupe key makes this a no-op while a fetch of this item is already queued or running."""
+def _next_params(name: str, params: ReasonParams) -> dict[str, Any]:
+    """The params of the item's next job: its name, plus `profile` and `refresh_llm` when set."""
     job_params: dict[str, Any] = {"calculated_name": name}
     if params.profile is not None:
         job_params["profile"] = params.profile
     if params.refresh_llm:
         job_params["refresh_llm"] = True
+    return job_params
+
+
+def _wait_for_youtube(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+    """No saved facts: the item waits for YouTube and its fetch job is queued again, in one commit. The
+    dedupe key makes this a no-op while a fetch of this item is already queued or running."""
+    job_params = _next_params(name, params)
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
         item = set_item_status(session, name, "waiting_youtube", now=now)
@@ -476,3 +490,95 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResu
     finish(ideas, note, processed)
     log.info("%s: published %s", who, processed.filename)
     return _item_outcome(ctx, name, "published")
+
+
+def _wait_for_llm(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+    """The facts are saved: the item waits for the LLM and its `llm.reason` job is queued, in one commit. The
+    dedupe key makes this a no-op while a reason job of this item is already queued or running."""
+    now = ctx.clock()
+    with session_scope(ctx.engine) as session:
+        item = set_item_status(session, name, "waiting_llm", now=now)
+        if item is None:
+            return Fail(f"no item {name!r}: it was removed while the job ran")
+        enqueue(
+            session,
+            type="llm.reason",
+            now=now,
+            params=_next_params(name, params),
+            dedupe_key=f"reason:{name}",
+        )
+    return Done({"item": "waiting_llm"})
+
+
+def handle_youtube_fetch(ctx: HandlerContext, job: Job) -> HandlerResult:
+    """Get the facts of one staged clip (param `calculated_name`), then queue its `llm.reason`."""
+    try:
+        params = parse_reason_params(dict(job.params or {}), "youtube.fetch")
+    except ValueError as e:
+        return Fail(str(e))
+    name = params.calculated_name
+    with session_scope(ctx.engine) as session:  # short: no transaction stays open during the YouTube call
+        item = get_item(session, name)
+        status = item.status if item is not None else None
+    if status is None:
+        return Fail(f"no item {name!r}")
+    if status != "waiting_youtube":  # this job ran before and its outcome is committed: nothing to redo
+        log.info("%s: already %s, nothing to fetch", name, status)
+        return Done({"item": status})
+    try:
+        return _fetch(ctx, name, params)
+    except OSError as e:  # a file error must not leave the item active with no job to move it
+        reason = f"file error: {e}"
+        log.error("%s: %s; the item is failed (a requeue runs it again)", name, reason)
+        with session_scope(ctx.engine) as session:
+            set_item_status(session, name, "failed", now=ctx.clock(), reason=reason)
+        return Fail(reason)
+
+
+def _fetch(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+    """The work of `handle_youtube_fetch` once the item is known to wait for YouTube. File errors
+    propagate."""
+    ideas, now = ctx.ideas, ctx.clock()
+    out = ideas / "output" / name
+    if not out.is_file():
+        failed = ideas / "failed" / name
+        if failed.is_file():  # a crash after the move to failed/, before the status was committed
+            return _item_outcome(ctx, name, "failed", _failed_reason(failed))
+        log.error("%s: no working copy in output/; marked failed", name)
+        return _item_outcome(ctx, name, "failed", f"no working copy in output/{name}")
+    try:
+        note = load_staged_note(ideas, out, now)
+    except (FrontmatterError, UnicodeDecodeError, ValueError) as e:
+        reason = f"cannot read output/{name}: {e}"
+        log.error("%s: %s", name, reason)
+        move_to_failed(ideas, out, reason, now=now)
+        return _item_outcome(ctx, name, "failed", reason)
+    note.name = Path(name).name
+
+    # saved facts first (no call), then the gate, then YouTube; never a sleep: a closed gate defers the job
+    opts = ProcessOptions(profile=params.profile, facts_dir=ideas / FACTS_DIR, wait_youtube=False)
+    who = note_label(note)
+    try:
+        get_facts(note, ctx.services, opts)
+    except FactsDeferred as e:  # the gap or the breaker: the job waits for the gate, the item keeps waiting
+        until = (
+            datetime.fromtimestamp(e.until, UTC)
+            if e.until is not None
+            else ctx.clock() + timedelta(seconds=DEFER_FALLBACK_S)
+        )
+        log.info("%s: %s; the fetch waits until %s", who, e, until.isoformat(timespec="seconds"))
+        return Defer(run_after=until, reason=str(e))
+    except (
+        Exception
+    ) as e:  # no facts to be had (deferred) or a bug (failed): the item's outcome, as in Stage A
+        outcome = classify(e)
+        log_outcome(who, outcome, outcome.message, e)
+        state = RunState(blocked=set(), budget_blocked={}, attempted=1, seen_ids=set())
+        report = ItemReport(note.doc_id, note.doctype.name, "skipped")
+        apply_outcome(ideas, note, outcome, state, report, dry_run=False, now=now)
+        result = _item_outcome(ctx, name, outcome.kind, report.message)
+        if outcome.unexpected and isinstance(result, Done):  # a bug, not an item state: the job fails too
+            return Fail(outcome.message)
+        return result
+    log.info("%s: facts saved, on to the LLM", who)
+    return _wait_for_llm(ctx, name, params)
