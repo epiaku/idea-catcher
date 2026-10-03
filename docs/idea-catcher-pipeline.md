@@ -9,7 +9,7 @@ A structured summary of a long Gemini brainstorm (137 messages, September 2026) 
 ## 📝 Summary {#summary}
 
 - **Problem:** Ideas for apps, SaaS products and YouTube videos come up on the go and get lost. They need to be captured with near-zero friction and then end up as structured, searchable pages.
-- **Chosen workflow:** Capture in **Obsidian** (phone or Mac) → **Obsidian Git** plugin pushes notes to the **idea-bucket** GitHub repo → the **Idea Catcher Service** on Proxmox picks up new notes and summarizes them through an LLM **API with an API key**, using one of three **profiles**: `notes` (FreeLLMApi), `clippings` (OpenAI API, for AI chats) and `youtube` (OpenAI API, for both YouTube classes), with a **reviewer** checking YouTube summaries → writes Hugo pages straight to `main` of `epiaku-docs`, into `hugo/content/en/docs/idea-bucket/<type>/` → you deploy the site to the home Proxmox web server with `deploy.sh`.
+- **Chosen workflow:** Capture in **Obsidian** (phone or Mac) → **Obsidian Git** plugin pushes notes to the **idea-bucket** GitHub repo → the **Idea Catcher Service** on Proxmox picks up new notes and summarizes them through an LLM **API with an API key**, using one of three **profiles**: `notes` (FreeLLMApi), `clippings` (OpenAI API, for AI chats) and `youtube` (OpenAI API, for both YouTube classes), with a **reviewer** checking YouTube summaries → writes Hugo pages straight to `main` of `epiaku-docs`, into `hugo/content/en/docs/idea-bucket/<destination>/` (`notes`, `youtube` or `web-clips`, see [Where a page goes](#destination)) → you deploy the site to the home Proxmox web server with `deploy.sh`.
 - **Key design principles:**
   - **Raw first, process later.** The captured text is never changed. The pipeline only adds metadata and context around it, and an untouched copy of every capture stays in `archive/`, so the pipeline can be replayed, tested and improved later.
   - **One stable ID per capture.** Every note carries an `id` in its frontmatter. The output page is named after it, so re-processing a note **overwrites** its page instead of creating a duplicate.
@@ -121,7 +121,8 @@ The ideas are not sensitive, so sending them to a cloud LLM is fine.
  │  • write or overwrite page by `id` →     │
  │      epiaku-docs (main)                  │
  │      hugo/content/en/docs/idea-bucket/   │
- │      <type>/                             │
+ │      <destination>/ (notes, youtube or   │
+ │      web-clips)                          │
  │  • the page → /output/ (over the working │
  │      copy); failures → /failed/;         │
  │      errors stall it in /output/         │
@@ -500,13 +501,31 @@ Captures fall into a few clear classes. Each gets its own prompt, target folder 
 | Class                | `type`                                                     | What it is                                                                                  | Processing                                                                                                                                                                                                                                                                             | Default profile      | Target in epiaku-docs                          | Folder in `inbox/` `archive/` `output/` `failed/` |
 | -------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------- | -------------------- |
 | **Notes**            | `note`                                                     | Dictated on the phone. Very short: a reminder or an idea captured before it's forgotten.    | Clean up speech fillers, keep the tone, add a title and tags. Don't pad a two-line idea into a long page.                                                                                                                                                                              | `notes`          | `idea-bucket/notes/`                           | `notes/` |
-| **AI chats**         | `ai-chat` (from a gemini.google.com or claude.ai `source`) | Web-clipped Gemini or Claude conversations. Can be very large (100+ messages, ~50K tokens). | Condense: drop fluff and detours, keep decisions and options, keep only the latest version of any code. Output a structured page like this one.                                                                                                                                        | `clippings` | `idea-bucket/clippings/` | `clippings/` |
+| **AI chats**         | `ai-chat` (from a gemini.google.com or claude.ai `source`) | Web-clipped Gemini or Claude conversations. Can be very large (100+ messages, ~50K tokens). | Condense: drop fluff and detours, keep decisions and options, keep only the latest version of any code. Output a structured page like this one.                                                                                                                                        | `clippings` | `idea-bucket/web-clips/` | `clippings/` |
 | **YouTube**          | `youtube`                                                  | A link to a video.                                                                          | Analyse with the [YouTube summary prompt](/docs/products/youtube/youtube-tech-stack/youtube-summary/#example-prompt-1-best--most-precise): purpose, examples, action plan, tools, tips and how to apply it to the channel. See [YouTube videos](#youtube-videos). One call, on Python's fetched transcript and facts. | `youtube` | `idea-bucket/youtube/`                         | `clippings/` |
 | **YouTube (Gemini)** | `youtube-gemini`                                           | A Gemini web chat that ran the YouTube summary prompt, clipped in Obsidian.                 | One call, on its own prompt: reformats Gemini's answer into the YouTube page format as it is. No YouTube API call of any kind — not `yt-dlp`, not the transcript endpoint.                    | `youtube` | `idea-bucket/youtube/`                         | `clippings/` |
 | _(missing)_          | –                                                          | A note without a template                                                                   | Treated as a short note, so nothing is dropped.                                                                                                                                                                                                                                        | `notes`          | `idea-bucket/notes/`                           | `notes/` |
 | **Web clips** | `web-clip` (any other `source` address) | An article, blog post, documentation page or tutorial clipped with the Web Clipper. | Condense: ignore menus, cookie notices and ads, keep the facts and steps, give key points and ideas to use it. Output: summary, key points, ideas to use it, details. | `clippings` | `idea-bucket/web-clips/` | `clippings/` |
 
 The volume is small: a few short notes a day and a few chats and videos a week. Processing them is a bit like a code review of the new files in a repo, which is what a single API call per note handles well.
+
+### Where a page goes: `destination` {#destination}
+
+The idea-bucket section of epiaku-docs (`hugo/content/en/docs/idea-bucket/`) has **three folders**, and every page goes into one of them:
+
+| Folder | What goes there |
+| ------ | --------------- |
+| `notes/` | All notes |
+| `youtube/` | YouTube pages: a clipped video (`youtube`) and a Gemini chat about a video (`youtube-gemini`) |
+| `web-clips/` | Every other page: web clips **and** AI chats that are not about a video |
+
+There is no `clippings/` folder in epiaku-docs (since 2026-10-03). The `inbox/clippings/` subfolder of idea-bucket and the LLM profile `clippings` keep their names: they are different things from the docs folders.
+
+- **The field:** when the pipeline analyses a document it writes `destination` into the working copy's frontmatter, next to `id`, `class` and `captured`. The value is `notes`, `youtube` or `web-clips`.
+- **Who sets it:** the pipeline, from the class: `note` → `notes`; `youtube` and `youtube-gemini` → `youtube`; `web-clip` and `ai-chat` → `web-clips`.
+- **Override:** a capture that already has a valid `destination` (exactly one of the three) keeps it, like `type:` or `class:` override the class. You can write it yourself, and a document requeued from `archive/` keeps the one it had. Any other value is ignored with a warning in the log and the pipeline sets it again.
+- **Only the folder changes.** An AI chat keeps its own prompt, template and the `clippings` profile. The published page has no `destination` field: its folder says it.
+- **Republishing** replaces the page with the same `id` in the target folder only. Pages that still sit in an old `clippings/` folder of epiaku-docs are not looked at and not committed: move them by hand once (to `web-clips/`, or `youtube/` for a Gemini video chat).
 
 ### One class, one prompt, one call {#one-prompt-per-class}
 
@@ -1034,14 +1053,14 @@ class DocType:
     schema: type[BaseModel]
     prompt: str  # file in prompts/
     template: str  # file in templates/
-    out_dir: str  # folder in epiaku-docs
+    destination: str  # default epiaku-docs folder: notes, youtube or web-clips (a valid `destination` in the capture wins)
     llm_profile: str  # default LLM profile, overridable per job message
     review: bool = False  # has a review prompt; the message's review.enabled (default true) applies
 
 
 DOCS = "hugo/content/en/docs/idea-bucket"
 DOC_TYPES = [
-    DocType("note", "note", (), NoteSummary, "note.md", "note.md.j2", f"{DOCS}/notes", llm_profile="notes"),
+    DocType("note", "note", (), NoteSummary, "note.md", "note.md.j2", "notes", llm_profile="notes"),
     DocType(
         "ai-chat",
         "ai-chat",
@@ -1049,7 +1068,7 @@ DOC_TYPES = [
         ChatSummary,
         "ai-chat.md",
         "ai-chat.md.j2",
-        f"{DOCS}/clippings",
+        "web-clips",  # an AI chat sits with the web clips
         llm_profile="clippings",
     ),
     DocType(
@@ -1059,7 +1078,7 @@ DOC_TYPES = [
         WebClipSummary,
         "web-clip.md",
         "web-clip.md.j2",
-        f"{DOCS}/web-clips",
+        "web-clips",
         llm_profile="clippings",
     ),
     DocType(
@@ -1069,7 +1088,7 @@ DOC_TYPES = [
         YoutubeSummary,
         "youtube.md",
         "youtube.md.j2",
-        f"{DOCS}/youtube",
+        "youtube",
         llm_profile="youtube",
         review=True,
     ),
@@ -1080,7 +1099,7 @@ DOC_TYPES = [
         YoutubeSummary,
         "youtube-from-gemini.md",
         "youtube.md.j2",
-        f"{DOCS}/youtube",
+        "youtube",
         llm_profile="youtube",
         review=True,
     ),
@@ -1207,7 +1226,7 @@ async def publish(ctx: JobContext, p: PublishParams) -> None:
         if problems := validate_page(page):  # frontmatter, required fields, tags, shortcodes
             ctx.item_failed(item, problems)  # output/<sub>/<name>.md → failed/<sub>/ + .error.txt
             continue
-        write_page(docs_repo / doctype.out_dir, item.doc_id, page)
+        write_page(docs_repo, item.destination, item.doc_id, page)  # DOCS/<notes|youtube|web-clips>
         finish(ideas_repo, item, page)  # the working copy in output/ becomes the final page (no stage)
         ctx.item(item.doc_id, item.doc_class, status="published")
     push(docs_repo)

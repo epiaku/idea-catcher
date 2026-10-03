@@ -422,7 +422,7 @@ The two `export` lines make every command in this terminal use the test repos, s
 It lives in `tests/data/` in the idea-catcher repo and holds only the folders the Idea Catcher reads and writes, not the full repos:
 
 - `tests/data/idea-bucket/inbox/`: the captures (notes, clippings, Gemini video chats, a web article, YouTube clips) and one tiny fake PDF (`sample-report.pdf`) to try artifacts.
-- `tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/`: the output folders (`notes/`, `clippings/`, `youtube/`, `web-clips/`). They start empty, each with a `.gitkeep` file because Git does not keep empty folders. The pages you make in `tmp/ic` appear here; the files in `tests/data/` are not needed for a run.
+- `tests/data/epiaku-docs/hugo/content/en/docs/idea-bucket/`: the output folders (`notes/`, `youtube/`, `web-clips/`). They start empty, each with a `.gitkeep` file because Git does not keep empty folders. The pages you make in `tmp/ic` appear here; the files in `tests/data/` are not needed for a run.
 - `tests/data/epiaku-docs/idea-bucket/artifacts/`: the folder in the root of epiaku-docs where artifacts (files that are not markdown) are sent. Empty apart from a `.gitkeep`.
 - `tests/data/idea-bucket/facts/`: the YouTube facts a real run saved, one file per video.
 - `tests/data/idea-bucket/llm/`: the LLM replies (traces) of that run, one per document.
@@ -631,6 +631,8 @@ uv run catcher run pipeline --push                # process the rest and push
 
 **Send a PDF or an image to epiaku-docs.** Drop the file in `inbox/` (not in `notes/` or `clippings/`) and run the pipeline. It is renamed `YYYYMMDD-<guid>-<original name>` and copied to `archive/artifacts/` and to `idea-bucket/artifacts/` in the root of epiaku-docs. To do it again, move it from `archive/artifacts/` back into `inbox/`: it keeps its name and overwrites the same files. Files over 25 MB (`ARTIFACT_MAX_MB`) stay in `inbox/` with a warning.
 
+**Send a page to another folder.** Add a `destination` line to the capture's frontmatter before the run, for example `destination: web-clips` (or `notes`, `youtube`). It wins over the folder the class would pick, and only the folder changes: the prompt and profile stay those of the class. Any other value is ignored with a warning. For a document that already ran, edit the line in its `archive/` copy and `--requeue` it; the old page in the previous folder is not removed, so delete it by hand.
+
 **Retry a stalled note** (`stage: deferred` in `output/`) **or redo one with another model:** `--requeue` moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again. A good saved LLM reply is reused, so add `--refresh-llm` to call the model again.
 
 ```bash
@@ -660,7 +662,7 @@ uv run catcher run pipeline --file "<the-file>"
 - **`output/`**: the working copy (`stage: analyzed` or `deferred`) while it is worked on or stalled, then the final page, the same text as in `epiaku-docs`. A run never reads it.
 - **`failed/`**: files that could not be processed, with the reason.
 - **`duplicates/`**: earlier snapshots of a longer clip.
-- **`epiaku-docs`**: the published pages, under `hugo/content/en/docs/idea-bucket/`. The site still needs your manual `deploy.sh`.
+- **`epiaku-docs`**: the published pages, under `hugo/content/en/docs/idea-bucket/`, in `notes/`, `youtube/` (YouTube clips and Gemini video chats) or `web-clips/` (web clips and the other AI chats). The working copy's `destination` field says which; see [Where a page goes](../idea-catcher-pipeline/#destination). There is no `clippings/` folder there any more (the idea-bucket `inbox/clippings/` and the profile `clippings` are other things). Pages still in an old `clippings/` folder are not touched or committed by the pipeline: move them by hand once. The site still needs your manual `deploy.sh`.
 
 ## When something is off
 

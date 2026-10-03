@@ -123,6 +123,7 @@ profiles:
 - **`model`** may use `${NAME}` or `${NAME:-default}`. It is filled from the environment, so from `.env`.
 - **To change the provider** of one kind of capture, edit its line. Chats and videos can use different models because they are separate profiles.
 - **The document class picks the default profile:** `note` uses `notes`, `ai-chat` and `web-clip` use `clippings`, and the YouTube classes use `youtube`. The flag `--profile` overrides it for a whole run.
+- **A profile is not a folder.** The profile `clippings` has nothing to do with where a page goes: the epiaku-docs folders are `notes/`, `youtube/` and `web-clips/` (an AI chat goes to `web-clips/`), set by the document's `destination` field. See [Where a page goes](../idea-catcher-pipeline/#destination).
 - **Unknown fields are rejected.** An old file with `when:` or `backend: claude-code` fails loudly.
 - **There is no fallback between providers.** If a provider is down or its budget is used up, its documents stall in `output/`. Change the profile's provider, or raise the budget, to continue.
 

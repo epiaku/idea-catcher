@@ -118,13 +118,13 @@ flowchart LR
   subgraph pipeline["modules/pipeline"]
     run["run.py<br/>the loop over the inbox"]
     inbox["inbox.py<br/>scan, names, archive,<br/>output, failed, requeue"]
-    doctypes["doctypes.py<br/>which class is it"]
+    doctypes["doctypes.py<br/>which class is it,<br/>its default destination"]
     process["process.py<br/>one document, per class"]
     inputs["inputs.py<br/>the LLM input"]
     ctx["tags, glossary, context<br/>the lists and files you edit"]
     render["render.py and templates<br/>the page"]
     validate["validate.py<br/>checks the page"]
-    publish["publish.py<br/>writes the files"]
+    publish["publish.py<br/>writes the page into<br/>notes/ youtube/ or web-clips/"]
   end
 
   subgraph llm["modules/llm"]

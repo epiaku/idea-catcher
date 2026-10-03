@@ -1,5 +1,7 @@
 # Idea Catcher Stage A Implementation Plan
 
+> **Note (2026-10-03):** the epiaku-docs layout changed after this plan: the idea-bucket pages go to `notes/`, `youtube/` or `web-clips/` only (no `clippings/`), chosen by a `destination` field. This plan is kept as written; see the decision of 2026-10-03 in `docs/idea-catcher-service-architecture.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A local Python CLI (`catcher`) that turns captures in the `idea-bucket` repo into validated Hugo pages in `epiaku-docs`: ingest, the LLM step through API-key backends (FreeLLMApi and the OpenAI API, three profiles), the YouTube reviewer, rendering, filing and committing. There is no database, Docker or API yet.

@@ -10,6 +10,8 @@ description: "⚠️ OBSOLETE — NOT IMPLEMENTED. Reference only. The folder st
 
 The current layout (`inbox/`, `archive/`, `output/`, `failed/`) is described in [Idea Catcher: Ingest & Stage](../idea-catcher-pipeline/#repo-layout).
 
+The epiaku-docs pages now go to three folders only, `notes/`, `youtube/` and `web-clips/` (no `clippings/` since 2026-10-03), by the document's `destination` field: see [Where a page goes](../idea-catcher-pipeline/#destination).
+
 {{% /alert %}}
 
 This page explains how the `idea-bucket` GitHub repo is structured and how a capture moves through the pipeline from the phone inbox to the final docs page. It covers every folder the pipeline touches, what happens in each stage, and how IDs and paths are computed.
@@ -198,7 +200,7 @@ YouTube docs go through an extra path (`_process_youtube`) because they need:
 
 ### What it does
 
-1. **Writes** the rendered page to the `epiaku-docs` repo at `hugo/content/en/docs/idea-bucket/<doctype>/`.
+1. **Writes** the rendered page to the `epiaku-docs` repo at `hugo/content/en/docs/idea-bucket/<destination>/` (`notes`, `youtube` or `web-clips`).
 2. **Overwrites** any existing page with the same `id` (found via [`find_pages_by_id()`](../../src/catcher/modules/pipeline/publish.py)).
 3. **Archives** the staged note (and its `.youtube.json` sidecar, if present) to `idea-bucket/archive/<doctype>/`.
 
@@ -291,7 +293,7 @@ The four supported classes are defined in [`doctypes.py`](../../src/catcher/modu
 | Class            | `type` field     | Source hosts                     | Default profile      | Archive folder      | Hugo output folder                          |
 | ---------------- | ---------------- | -------------------------------- | -------------------- | ------------------- | ------------------------------------------- |
 | `note`           | `note`           | _(any)_                          | `free-fast`          | `archive/notes`     | `hugo/content/en/docs/idea-bucket/notes`    |
-| `ai-chat`        | `ai-chat`        | `gemini.google.com`, `claude.ai` | `claude-sub-evening` | `archive/clippings` | `hugo/content/en/docs/idea-bucket/clipping` |
+| `ai-chat`        | `ai-chat`        | `gemini.google.com`, `claude.ai` | `claude-sub-evening` | `archive/clippings` | `hugo/content/en/docs/idea-bucket/web-clips` |
 | `youtube`        | `youtube`        | `youtube.com`, `youtu.be`        | `claude-sub-evening` | `archive/youtube`   | `hugo/content/en/docs/idea-bucket/youtube`  |
 | `youtube-gemini` | `youtube-gemini` | _(detected from body)_           | `claude-sub-evening` | `archive/youtube`   | `hugo/content/en/docs/idea-bucket/youtube`  |
 

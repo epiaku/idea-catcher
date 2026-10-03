@@ -35,7 +35,7 @@ flowchart TB
   llm{{"LLM<br/>FreeLLMApi or OpenAI"}}
 
   subgraph docs["3. epiaku-docs: the docs repo"]
-    pages["hugo/content/en/docs/idea-bucket/<br/>notes/ clippings/ web-clips/ youtube/"]
+    pages["hugo/content/en/docs/idea-bucket/<br/>notes/ youtube/ web-clips/"]
     artifacts["idea-bucket/artifacts/<br/>PDFs and images"]
   end
 
@@ -129,7 +129,7 @@ stateDiagram-v2
 | --- | --- | --- |
 | Capture | `inbox/…/Start up brain.md` | Whatever the capture had: `source`, `created`, `tags`, and the text |
 | Start work | `archive/…/20261001-a63131-start-up-brain.md` | Two lines: `original_filename` and `calculated_filename`. The text is unchanged |
-| Start work | `output/…/20261001-a63131-start-up-brain.md` | `id`, `class`, `captured`, `source_file`, `analyzed_at` and `stage: analyzed` |
+| Start work | `output/…/20261001-a63131-start-up-brain.md` | `id`, `class`, `destination`, `captured`, `source_file`, `analyzed_at` and `stage: analyzed` |
 | Finish | the page in `epiaku-docs`, and the same file in `output/` | `title`, `description`, `date`, `weight`, `type: docs`, `id`, `tags`, `source_file`, `original_filename`, `language` (notes), `video_id` (YouTube), `warnings` (YouTube), and an `llm` block with the profile, backend, model and prompt version. `stage` is gone |
 
 ## Where a page ends up
@@ -137,12 +137,12 @@ stateDiagram-v2
 | Class | How it is recognised | Folder in `epiaku-docs/hugo/content/en/docs/idea-bucket/` | LLM profile |
 | --- | --- | --- | --- |
 | `note` | No source link | `notes/` | `notes` (FreeLLMApi) |
-| `ai-chat` | A Gemini or Claude chat link | `clippings/` | `clippings` (OpenAI) |
+| `ai-chat` | A Gemini or Claude chat link | `web-clips/` | `clippings` (OpenAI) |
 | `web-clip` | Any other web page link | `web-clips/` | `clippings` (OpenAI) |
 | `youtube` | A YouTube link | `youtube/` | `youtube` (OpenAI) |
 | `youtube-gemini` | A Gemini chat that holds a YouTube link | `youtube/` | `youtube` (OpenAI) |
 
-A `type:` or `class:` line in the capture's frontmatter overrides the guess.
+A `type:` or `class:` line in the capture's frontmatter overrides the guess. The folder is the working copy's `destination` field (`notes`, `youtube` or `web-clips`): the class sets it, and a valid `destination:` line in the capture wins. There is no `clippings/` folder in epiaku-docs; `inbox/clippings/` and the profile `clippings` are other things with the same name.
 
 ## What survives a disk crash
 
