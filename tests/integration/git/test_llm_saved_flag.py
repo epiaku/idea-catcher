@@ -9,7 +9,7 @@ from catcher import cli
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
-CLIPPING = "hugo/content/en/docs/idea-bucket/clippings"
+WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
 CHAT = (
     '---\nsource : "https://gemini.google.com/app/cf81e40b020519ef?is_sa=1"\n'
     'created: 2026-09-25\ntags:\n  - "clippings"\n---\n'
@@ -31,7 +31,7 @@ def repos(make_repo):
         "epiaku-docs",
         {
             f"{NOTES}/_index.md": "---\ntitle: Notes\n---\n",
-            f"{CLIPPING}/_index.md": "---\ntitle: Clippings\n---\n",
+            f"{WEB_CLIPS}/_index.md": "---\ntitle: Web clips\n---\n",
         },
     )
     return SimpleNamespace(ideas=ideas, docs=docs)

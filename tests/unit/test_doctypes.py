@@ -1,11 +1,16 @@
+import pytest
+
 from catcher.modules.pipeline.doctypes import (
     AI_CHAT,
+    DESTINATIONS,
+    DOC_TYPES,
     NOTE,
     WEB_CLIP,
     YOUTUBE,
     YOUTUBE_GEMINI,
     canonical_source,
     derive_id,
+    destination_dir,
     detect,
     first_user_turn,
 )
@@ -93,12 +98,28 @@ def test_default_llm_profiles():
     assert YOUTUBE.llm_profile == YOUTUBE_GEMINI.llm_profile == "youtube"
 
 
-def test_output_folders():
-    assert AI_CHAT.out_dir == "hugo/content/en/docs/idea-bucket/clippings"
-    assert YOUTUBE_GEMINI.out_dir == YOUTUBE.out_dir == "hugo/content/en/docs/idea-bucket/youtube"
+def test_every_doc_type_has_one_of_the_three_destinations():
+    assert DESTINATIONS == ("notes", "youtube", "web-clips")
+    assert {name: t.destination for name, t in DOC_TYPES.items()} == {
+        "note": "notes",
+        "ai-chat": "web-clips",  # an AI chat without a YouTube video sits with the web clips
+        "web-clip": "web-clips",
+        "youtube": "youtube",
+        "youtube-gemini": "youtube",
+    }
+    assert not hasattr(YOUTUBE, "archive_dir") and not hasattr(YOUTUBE, "out_dir")
 
-    assert not hasattr(YOUTUBE, "archive_dir")
-    assert NOTE.out_dir == "hugo/content/en/docs/idea-bucket/notes"
+
+def test_the_destination_folders_sit_under_the_idea_bucket_docs_section():
+    assert destination_dir("notes") == "hugo/content/en/docs/idea-bucket/notes"
+    assert destination_dir("youtube") == "hugo/content/en/docs/idea-bucket/youtube"
+    assert destination_dir("web-clips") == "hugo/content/en/docs/idea-bucket/web-clips"
+
+
+@pytest.mark.parametrize("bad", ["clippings", "", "../x", "notes/../youtube", "Notes", " notes", None, 3])
+def test_destination_dir_refuses_anything_but_the_three_names(bad):
+    with pytest.raises(ValueError, match="destination"):
+        destination_dir(bad)  # type: ignore[arg-type]
 
 
 def test_any_other_page_clipped_with_the_web_clipper_is_a_web_clip():
@@ -131,5 +152,5 @@ def test_a_web_clip_can_be_named_explicitly_and_an_id_in_the_frontmatter_wins():
 
 def test_web_clips_use_the_clippings_profile_and_their_own_folder():
     assert WEB_CLIP.llm_profile == "clippings"
-    assert WEB_CLIP.out_dir == "hugo/content/en/docs/idea-bucket/web-clips"
+    assert WEB_CLIP.destination == "web-clips"
     assert WEB_CLIP.task == "web-clip" and WEB_CLIP.schema_name == "WebClipSummary"

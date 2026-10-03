@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select
-from worker_harness import CLIPPING, NOTES, WorkerHarness
+from worker_harness import NOTES, WEB_CLIPS, WorkerHarness
 
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import load
@@ -300,7 +300,7 @@ def test_a_poison_clip_fails_after_max_attempts(harness):
     assert by_name["yt.md"].status == "published"
     others = [j for j in jobs_of(harness, "llm.reason") if j.id != poison.id]
     assert [(j.status, j.attempts) for j in others] == [("succeeded", 1), ("succeeded", 1)]
-    assert pages(harness.docs, CLIPPING) == []
+    assert pages(harness.docs, WEB_CLIPS) == []
     assert len(pages(harness.docs, NOTES)) == 1 and len(pages(harness.docs, YOUTUBE)) == 1
     assert len(harness.fetch_calls) == 1
 
@@ -318,7 +318,7 @@ def test_a_poison_clip_fails_after_max_attempts(harness):
     assert not filed.with_suffix(".error.txt").exists()
     [final] = from_capture(harness.ideas, "output", "systeme.md")
     assert "stage" not in load(final).fm
-    assert len(pages(harness.docs, CLIPPING)) == 1
+    assert len(pages(harness.docs, WEB_CLIPS)) == 1
 
 
 def test_staging_leftovers_are_adopted_after_a_worker_restart(harness, monkeypatch):
@@ -371,4 +371,4 @@ def test_staging_leftovers_are_adopted_after_a_worker_restart(harness, monkeypat
         if j.params["calculated_name"] == crashed[0]
     ]
     assert [(j.type, j.status, j.attempts) for j in mine] == [("llm.reason", "succeeded", 1)]
-    assert [len(pages(harness.docs, folder)) for folder in (NOTES, CLIPPING, YOUTUBE)] == [1, 1, 1]
+    assert [len(pages(harness.docs, folder)) for folder in (NOTES, WEB_CLIPS, YOUTUBE)] == [1, 1, 1]

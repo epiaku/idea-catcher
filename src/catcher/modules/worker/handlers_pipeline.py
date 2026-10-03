@@ -34,7 +34,7 @@ from catcher.core.db import session_scope
 from catcher.core.frontmatter import FrontmatterError
 from catcher.core.git import GIT_LOCK, GitError, ahead_of_upstream, commit_managed, has_remote, pull, push
 from catcher.modules.llm.trace import LLM_DIR
-from catcher.modules.pipeline.doctypes import DOC_TYPES
+from catcher.modules.pipeline.doctypes import DESTINATIONS, destination_dir
 from catcher.modules.pipeline.inbox import (
     ARTIFACTS_DIR,
     STAGE_ANALYZED,
@@ -525,7 +525,7 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResu
         log.error("%s: failed, %s", who, reason)
         reject_invalid_page(ideas, ideas / LLM_DIR, note, processed, ctx.services, reason, now)
         return _item_outcome(ctx, name, "failed", reason)
-    write_page(ctx.docs, note.doctype, note.doc_id, processed.filename, processed.page)
+    write_page(ctx.docs, note.destination, note.doc_id, processed.filename, processed.page)
     finish(ideas, note, processed)
     log.info("%s: published %s", who, processed.filename)
     return _item_outcome(ctx, name, "published")
@@ -624,7 +624,8 @@ def _fetch(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResul
 
 
 IDEAS_MANAGED = ("inbox", "archive", "output", "failed", "duplicates", FACTS_DIR, LLM_DIR)
-DOCS_MANAGED = (*sorted({t.out_dir for t in DOC_TYPES.values()}), f"idea-bucket/{ARTIFACTS_DIR}")
+# exactly the three destination folders and the artifacts: an old `clippings` folder is never committed
+DOCS_MANAGED = (*(destination_dir(d) for d in DESTINATIONS), f"idea-bucket/{ARTIFACTS_DIR}")
 IDEAS_MESSAGE = "idea-catcher: process the inbox (pipeline.publish)"
 DOCS_MESSAGE = "idea-catcher: publish pages (pipeline.publish)"
 

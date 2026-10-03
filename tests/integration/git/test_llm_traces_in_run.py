@@ -13,7 +13,7 @@ from catcher.modules.llm.service import BackendUnavailable
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
-CLIPPING = "hugo/content/en/docs/idea-bucket/clippings"
+WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
 
 
 def chat(chat_id: str, body: str = "**You**\n\nsell bundles?\n\n---\n\n**Gemini**\n\nYes.\n") -> str:
@@ -36,7 +36,7 @@ def repos(make_repo):
         "epiaku-docs",
         {
             f"{NOTES}/_index.md": "---\ntitle: Notes\n---\n",
-            f"{CLIPPING}/_index.md": "---\ntitle: Clippings\n---\n",
+            f"{WEB_CLIPS}/_index.md": "---\ntitle: Web clips\n---\n",
         },
     )
     return SimpleNamespace(ideas=ideas, docs=docs, ideas_bare=ideas_bare, docs_bare=docs_bare)
@@ -85,7 +85,7 @@ def test_the_trace_name_matches_the_archive_and_output_name(repos, make_services
         name = archived(repos.ideas, sub, original).name
         assert (repos.ideas / "output" / sub / name).exists()
         assert (repos.ideas / "llm" / sub / name).with_suffix(".json").exists()
-        assert (repos.docs / (NOTES if sub == "notes" else CLIPPING) / name).exists()
+        assert (repos.docs / (NOTES if sub == "notes" else WEB_CLIPS) / name).exists()
 
 
 def test_a_requeue_overwrites_the_same_trace_file(repos, make_services, sh):

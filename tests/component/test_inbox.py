@@ -23,6 +23,7 @@ from catcher.modules.pipeline.inbox import (
     name_matches,
     name_title,
     read_note,
+    requeue_from_archive,
     return_to_inbox,
     scan_inbox,
     start_work,
@@ -63,6 +64,7 @@ def test_scan_reads_the_inbox_and_writes_nothing(tmp_path):
     assert note.doc.fm == {
         "id": note.doc_id,
         "class": "note",
+        "destination": "notes",
         "captured": "2026-09-27",
         "source_file": "inbox/notes/YouTube walks.md",
     }
@@ -241,6 +243,7 @@ def test_start_work_moves_the_document_out_of_the_inbox_and_writes_the_copies(tm
     assert load(working).fm == {
         "id": note.doc_id,
         "class": "note",
+        "destination": "notes",
         "captured": "2026-09-27",
         "source_file": "inbox/notes/YouTube walks.md",
         "original_filename": "YouTube walks.md",
@@ -271,6 +274,61 @@ def test_a_requeued_document_is_found_by_its_original_name_too(tmp_path):
     put(tmp_path, "inbox/clippings/20260925-a1b2c3-x.md", f"---\n{fields}---\n**You**\n\nhi\n")
     for query in ("New chat", "New chat.md", "20260925-a1b2c3-x", "clippings/New chat.md"):
         assert len(scan_inbox(tmp_path, now=NOW, only=[query]).notes) == 1, query
+
+
+def test_a_chat_without_a_youtube_link_goes_to_web_clips_and_a_gemini_video_chat_to_youtube(tmp_path):
+    put(tmp_path, "inbox/clippings/chat.md", gemini_clip("cf81e40b020519ef", "**You**\n\nsysteme.io?\n"))
+    video = "**You**\n\nSummarize https://www.youtube.com/watch?v=MBPHU7aaklM\n\n---\n\n**Gemini**\n\nOk\n"
+    put(tmp_path, "inbox/clippings/video.md", gemini_clip("2446cd9c762c9cc9", video))
+    notes = {n.path.name: n for n in scan_inbox(tmp_path, now=NOW).notes}
+    chat, gemini = notes["chat.md"], notes["video.md"]
+    assert chat.doctype.name == "ai-chat" and chat.destination == "web-clips"
+    assert chat.doc.fm["destination"] == "web-clips"
+    assert gemini.doctype.name == "youtube-gemini" and gemini.destination == "youtube"
+    assert gemini.doc.fm["destination"] == "youtube"
+
+
+def test_a_valid_destination_in_the_capture_wins_over_the_doc_type(tmp_path):
+    put(tmp_path, "inbox/notes/idea.md", "---\ndestination: web-clips\n---\nAn idea\n")
+    [note] = scan_inbox(tmp_path, now=NOW).notes
+    assert note.doctype.name == "note" and note.destination == "web-clips"
+    assert note.doc.fm["destination"] == "web-clips"
+
+
+@pytest.mark.parametrize("bad", ["clippings", "../x", "Web-Clips", '""', "[notes]", "3"])
+def test_an_invalid_destination_is_ignored_with_a_warning_and_recomputed(tmp_path, caplog, bad):
+    put(tmp_path, "inbox/notes/idea.md", f"---\ndestination: {bad}\n---\nAn idea\n")
+    [note] = scan_inbox(tmp_path, now=NOW).notes
+    assert note.destination == "notes" and note.doc.fm["destination"] == "notes"
+    assert "ignoring a destination" in caplog.text
+
+
+def test_a_destination_changed_by_hand_after_the_scan_is_still_checked(make_note):
+    note = make_note("note")
+    assert note.destination == "notes"  # no field: the doc type decides
+    note.doc.fm["destination"] = "youtube"
+    assert note.destination == "youtube"
+    note.doc.fm["destination"] = "../../etc"
+    assert note.destination == "notes"
+
+
+def test_a_requeued_document_keeps_the_destination_it_was_given(tmp_path):
+    put(tmp_path, "inbox/notes/idea.md", "---\ndestination: youtube\n---\nAn idea\n")
+    [first] = scan_inbox(tmp_path, now=NOW).notes
+    start_work(tmp_path, first, now=NOW)
+    assert load(one(tmp_path, "output", "notes")).fm["destination"] == "youtube"  # the working copy
+    found, missing = requeue_from_archive(tmp_path, ["idea"])
+    assert missing == [] and [r.copied for r in found] == [True]
+    [again] = scan_inbox(tmp_path, now=NOW).notes
+    assert again.name == first.name and again.destination == "youtube"
+
+
+def test_a_note_loaded_from_output_keeps_the_destination_of_its_working_copy(tmp_path):
+    put(tmp_path, "inbox/notes/idea.md", "---\ndestination: web-clips\n---\nAn idea\n")
+    [first] = scan_inbox(tmp_path, now=NOW).notes
+    start_work(tmp_path, first, now=NOW)
+    staged = load_staged_note(tmp_path, first.output_path(tmp_path), now=NOW)
+    assert staged.destination == "web-clips"
 
 
 def test_mark_deferred_keeps_the_working_copy_and_records_why(tmp_path):

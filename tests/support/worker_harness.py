@@ -49,7 +49,7 @@ from catcher.modules.youtube.facts import YoutubeFacts
 from catcher.modules.youtube.gate import YoutubeGate
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
-CLIPPING = "hugo/content/en/docs/idea-bucket/clippings"
+WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
 GEMINI_CHAT = (
     '---\nsource : "https://gemini.google.com/app/cf81e40b020519ef?is_sa=1"\n'
     'created: 2026-09-25\ntags:\n  - "clippings"\n---\n'
@@ -66,7 +66,7 @@ IDEAS_SEED = {
 }
 DOCS_SEED = {
     f"{NOTES}/_index.md": "---\ntitle: Notes\n---\n",
-    f"{CLIPPING}/_index.md": "---\ntitle: Clippings\n---\n",
+    f"{WEB_CLIPS}/_index.md": "---\ntitle: Web clips\n---\n",
 }
 YOUTUBE_GAP_S = 600  # the gate allows one fetch, then the next slot is 10 minutes later (no jitter)
 

@@ -1,7 +1,7 @@
 """The approved pages of the frozen real run, and the comparison every whole-pipeline test makes with them.
 
 A page is matched by the name it was captured under (`original_filename`) and must sit in the same section
-(notes/, clippings/, youtube/, ...) with the same frontmatter and body, except the keys that differ on every
+(notes/, youtube/ or web-clips/) with the same frontmatter and body, except the keys that differ on every
 run by design, and only those:
 
 - source_file: the calculated name, `YYYYMMDD-<random 6 hex>-<title>`, on every page;
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from catcher.core.frontmatter import load
 from catcher.core.testdata import DEFAULT_SOURCE
+from catcher.modules.pipeline.doctypes import DESTINATIONS
 
 EXPECTED = DEFAULT_SOURCE / "expected"
 PAGES = Path("hugo/content/en/docs/idea-bucket")
@@ -45,7 +46,8 @@ def compare_pages(published_dir: Path, expected_dir: Path) -> int:
     assert sorted(actual) == sorted(expected)
     for name, (rel, fm, body) in actual.items():
         want_rel, want_fm, want_body = expected[name]
-        assert rel.parent == want_rel.parent, name  # the same section (notes/, clippings/, youtube/, ...)
+        assert rel.parent == want_rel.parent, name  # the same section: notes/, youtube/ or web-clips/
+        assert rel.parent.as_posix() in DESTINATIONS, name
         assert stable(fm, rel.parent) == stable(want_fm, want_rel.parent), name
         assert body == want_body, name
     return len(actual)

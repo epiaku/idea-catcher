@@ -12,7 +12,7 @@ from typing import Any
 
 from catcher.core.files import write_atomic
 from catcher.core.frontmatter import Doc, FrontmatterError, dump, load
-from catcher.modules.pipeline.doctypes import DocType, derive_id, detect
+from catcher.modules.pipeline.doctypes import DESTINATIONS, DocType, derive_id, detect, is_destination
 
 log = logging.getLogger("catcher.inbox")
 
@@ -27,6 +27,7 @@ _ILLEGAL = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 STAGE_FOLDERS = ("inbox", "output", "archive", "failed", "duplicates")
 ORIGINAL_KEY = "original_filename"
 CALCULATED_KEY = "calculated_filename"
+DESTINATION_KEY = "destination"  # notes, youtube or web-clips: the epiaku-docs folder the page goes to
 
 STAGE_ANALYZED = "analyzed"  # the working copy in output/ while the document is being worked on
 STAGE_DEFERRED = "deferred"  # an error stalled it (LLM down, budget used up): overwritten by the next run
@@ -57,6 +58,12 @@ class Note:
 
     def output_path(self, ideas_repo: Path) -> Path:
         return ideas_repo / "output" / self.target_rel
+
+    @property
+    def destination(self) -> str:
+        """The epiaku-docs folder of the page: a valid `destination` field, else the doc type's default."""
+        value = self.doc.fm.get(DESTINATION_KEY)
+        return value if isinstance(value, str) and is_destination(value) else self.doctype.destination
 
     @property
     def rel(self) -> Path:
@@ -458,10 +465,21 @@ def _plain_file_name(name: str) -> bool:
 def _analyse(path: Path, doc: Doc, source_file: str, now: datetime) -> Note:
     doctype = detect(doc.fm, doc.body)
     doc_id = derive_id(doctype, doc.fm, doc.body) or new_id()
+    destination = doc.fm.get(DESTINATION_KEY)  # written by hand, or kept from an earlier run: it wins
+    if destination is not None and not is_destination(destination):
+        log.warning(
+            "%s: ignoring a %s that is not one of %s: %r",
+            path.name,
+            DESTINATION_KEY,
+            ", ".join(DESTINATIONS),
+            destination,
+        )
+        destination = None
     fm = {
         **doc.fm,
         "id": doc_id,
         "class": doctype.name,
+        DESTINATION_KEY: destination or doctype.destination,
         "captured": captured_date(doc.fm, now),
         "source_file": source_file,
     }

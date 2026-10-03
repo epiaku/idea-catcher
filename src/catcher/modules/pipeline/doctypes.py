@@ -7,7 +7,21 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from catcher.modules.youtube.urls import YOUTUBE_HOSTS, find_youtube_url, host_of, video_id
 
 DOCS_ROOT = "hugo/content/en/docs/idea-bucket"
+# The epiaku-docs folders under DOCS_ROOT a page can go to. A document's `destination` field names one.
+DESTINATIONS = ("notes", "youtube", "web-clips")
 CHAT_HOSTS = frozenset({"gemini.google.com", "claude.ai"})
+
+
+def is_destination(value: object) -> bool:
+    """Exactly one of the three names: a value from a file must never become a path unchecked."""
+    return isinstance(value, str) and value in DESTINATIONS
+
+
+def destination_dir(destination: str) -> str:
+    """The folder of a destination in the epiaku-docs repo. Raises ValueError for any other value."""
+    if not is_destination(destination):
+        raise ValueError(f"unknown destination {destination!r}: expected one of {', '.join(DESTINATIONS)}")
+    return f"{DOCS_ROOT}/{destination}"
 
 
 @dataclass(frozen=True)
@@ -16,42 +30,16 @@ class DocType:
     task: str
     schema_name: str
     template: str
-    out_dir: str
+    destination: str  # the default destination; a valid `destination` in the capture wins
     llm_profile: str
 
 
-NOTE = DocType("note", "note", "NoteSummary", "note.md.j2", f"{DOCS_ROOT}/notes", "notes")
-AI_CHAT = DocType(
-    "ai-chat",
-    "ai-chat",
-    "ChatSummary",
-    "ai-chat.md.j2",
-    f"{DOCS_ROOT}/clippings",
-    "clippings",
-)
-WEB_CLIP = DocType(
-    "web-clip",
-    "web-clip",
-    "WebClipSummary",
-    "web-clip.md.j2",
-    f"{DOCS_ROOT}/web-clips",
-    "clippings",
-)
-YOUTUBE = DocType(
-    "youtube",
-    "youtube",
-    "YoutubeSummary",
-    "youtube.md.j2",
-    f"{DOCS_ROOT}/youtube",
-    "youtube",
-)
+NOTE = DocType("note", "note", "NoteSummary", "note.md.j2", "notes", "notes")
+AI_CHAT = DocType("ai-chat", "ai-chat", "ChatSummary", "ai-chat.md.j2", "web-clips", "clippings")
+WEB_CLIP = DocType("web-clip", "web-clip", "WebClipSummary", "web-clip.md.j2", "web-clips", "clippings")
+YOUTUBE = DocType("youtube", "youtube", "YoutubeSummary", "youtube.md.j2", "youtube", "youtube")
 YOUTUBE_GEMINI = DocType(
-    "youtube-gemini",
-    "youtube-gemini",
-    "YoutubeSummary",
-    "youtube.md.j2",
-    f"{DOCS_ROOT}/youtube",
-    "youtube",
+    "youtube-gemini", "youtube-gemini", "YoutubeSummary", "youtube.md.j2", "youtube", "youtube"
 )
 DOC_TYPES: dict[str, DocType] = {t.name: t for t in (NOTE, AI_CHAT, WEB_CLIP, YOUTUBE, YOUTUBE_GEMINI)}
 

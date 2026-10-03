@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select, update
-from worker_harness import CLIPPING, NOTES, RaisingBackend
+from worker_harness import NOTES, WEB_CLIPS, RaisingBackend
 
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import load
@@ -262,7 +262,7 @@ def test_a_youtube_clip_with_saved_facts_publishes(harness, yt_facts):
     assert harness.fetch_calls == []
     assert len(harness.backends.chat.prompts) == 1
     assert item_of(harness, "yt.md").status == "published"
-    youtube = Path(CLIPPING).parent / "youtube"
+    youtube = Path(WEB_CLIPS).parent / "youtube"
     assert len(pages(harness.docs, youtube.as_posix())) == 1
 
 

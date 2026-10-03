@@ -222,7 +222,7 @@ def render(
         typer.echo(f"problem: {problem}", err=True)
     if processed.problems:
         raise typer.Exit(1)
-    touched = write_page(docs_repo, note.doctype, note.doc_id, processed.filename, processed.page)
+    touched = write_page(docs_repo, note.destination, note.doc_id, processed.filename, processed.page)
     typer.echo(f"wrote   {touched[0]}")
     for old in touched[1:]:
         typer.echo(f"removed {old}")

@@ -11,7 +11,7 @@ from catcher.core.db import session_scope
 from catcher.modules.queue.models import Job
 from catcher.modules.worker.app import build_handlers
 from catcher.modules.worker.handlers import Done, Fail, HandlerResult
-from catcher.modules.worker.handlers_pipeline import handle_pipeline_publish
+from catcher.modules.worker.handlers_pipeline import DOCS_MANAGED, handle_pipeline_publish
 
 IDEAS_MANAGED = ["inbox", "archive", "output", "failed", "duplicates", "facts", "llm"]
 
@@ -133,6 +133,31 @@ def test_unrelated_docs_changes_are_not_committed(harness, sh):
         " M README.md",
         "?? hugo/content/en/docs/other.md",
     ]
+
+
+def test_the_docs_commit_set_is_the_three_destination_folders_and_the_artifacts():
+    assert DOCS_MANAGED == (
+        "hugo/content/en/docs/idea-bucket/notes",
+        "hugo/content/en/docs/idea-bucket/youtube",
+        "hugo/content/en/docs/idea-bucket/web-clips",
+        "idea-bucket/artifacts",
+    )
+    assert not any("clippings" in folder for folder in DOCS_MANAGED)
+
+
+def test_a_page_in_an_old_clippings_folder_is_not_committed(harness, sh):
+    root = "hugo/content/en/docs/idea-bucket"
+    for folder in ("youtube", "web-clips", "clippings"):
+        (harness.docs / root / folder).mkdir(parents=True, exist_ok=True)
+        (harness.docs / root / folder / "20261002_abcdef_x.md").write_text(f"{folder}\n")
+
+    assert publish(harness) == Done({"committed": {"docs": True, "ideas": False}, "pushed": True})
+
+    assert sorted(sh(harness.docs, "show", "--name-only", "--format=", "HEAD").splitlines()) == [
+        f"{root}/web-clips/20261002_abcdef_x.md",
+        f"{root}/youtube/20261002_abcdef_x.md",
+    ]
+    assert sh(harness.docs, "status", "--porcelain").splitlines() == [f"?? {root}/clippings/"]
 
 
 def test_a_note_moved_out_of_inbox_is_committed_as_a_deletion(harness, sh):

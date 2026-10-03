@@ -20,7 +20,7 @@ from catcher.modules.pipeline.run import RunOptions, RunReport, run_pipeline
 from catcher.modules.pipeline.tags import TagList, load_tags
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
-CLIPPING = "hugo/content/en/docs/idea-bucket/clippings"
+WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
 NOTE_BODY = "Create YouTube content walking around\n"
 SAVED = "using the saved LLM reply (no call)"
 
@@ -45,7 +45,7 @@ def repos(make_repo):
         "epiaku-docs",
         {
             f"{NOTES}/_index.md": "---\ntitle: Notes\n---\n",
-            f"{CLIPPING}/_index.md": "---\ntitle: Clippings\n---\n",
+            f"{WEB_CLIPS}/_index.md": "---\ntitle: Web clips\n---\n",
         },
     )
     return SimpleNamespace(ideas=ideas, docs=docs, ideas_bare=ideas_bare, docs_bare=docs_bare)
@@ -67,7 +67,7 @@ def trace_of(ideas: Path, sub: str, original: str) -> Path:
 
 
 def page_of(repos: SimpleNamespace, sub: str, original: str) -> Path:
-    folder = NOTES if sub == "notes" else CLIPPING
+    folder = NOTES if sub == "notes" else WEB_CLIPS
     return repos.docs / folder / archived(repos.ideas, sub, original).name
 
 

@@ -1,10 +1,11 @@
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from catcher.cli import app
 from catcher.core.frontmatter import Doc, dump, load
-from catcher.modules.pipeline.doctypes import NOTE, YOUTUBE
+from catcher.modules.pipeline.doctypes import destination_dir
 from catcher.modules.pipeline.publish import find_pages_by_id, write_output, write_page
 
 REPO = Path(__file__).parents[2]
@@ -22,12 +23,12 @@ def page(doc_id: str | None, title: str = "T") -> str:
 
 
 def test_write_page_replaces_the_page_with_the_same_id(tmp_path):
-    out = tmp_path / NOTE.out_dir
+    out = tmp_path / destination_dir("notes")
     old = put(out / "20260927_a7b2c9_old-title.md", page("a7b2c9"))
     index = put(out / "_index.md", page("a7b2c9"))
     hand = put(out / "hand-written.md", page(None))
     broken = put(out / "broken.md", "---\ntitle: [\n---\n")
-    touched = write_page(tmp_path, NOTE, "a7b2c9", "20260927_a7b2c9_new-title.md", "NEW")
+    touched = write_page(tmp_path, "notes", "a7b2c9", "20260927_a7b2c9_new-title.md", "NEW")
     new = out / "20260927_a7b2c9_new-title.md"
     assert new.read_text() == "NEW"
     assert touched == [new, old]
@@ -36,14 +37,30 @@ def test_write_page_replaces_the_page_with_the_same_id(tmp_path):
 
 
 def test_same_filename_is_simply_overwritten(tmp_path):
-    out = tmp_path / NOTE.out_dir
+    out = tmp_path / destination_dir("notes")
     same = put(out / "20260927_a7b2c9_x.md", page("a7b2c9"))
-    assert write_page(tmp_path, NOTE, "a7b2c9", "20260927_a7b2c9_x.md", "NEW") == [same]
+    assert write_page(tmp_path, "notes", "a7b2c9", "20260927_a7b2c9_x.md", "NEW") == [same]
     assert same.read_text() == "NEW"
 
 
+def test_write_page_writes_into_the_destination_folder_only(tmp_path):
+    put(tmp_path / destination_dir("notes") / "20260927_a7b2c9_old.md", page("a7b2c9"))
+    legacy = put(tmp_path / "hugo/content/en/docs/idea-bucket/clippings/old.md", page("a7b2c9"))
+    touched = write_page(tmp_path, "web-clips", "a7b2c9", "20260927_a7b2c9_new.md", "NEW")
+    assert touched == [tmp_path / destination_dir("web-clips") / "20260927_a7b2c9_new.md"]
+    assert legacy.exists()  # an old page in another folder is the user's to move: never looked for
+    assert (tmp_path / destination_dir("notes") / "20260927_a7b2c9_old.md").exists()
+
+
+@pytest.mark.parametrize("bad", ["../x", "clippings", "", "notes/../../x", "/tmp", "Notes"])
+def test_write_page_refuses_a_destination_that_is_not_one_of_the_three(tmp_path, bad):
+    with pytest.raises(ValueError, match="destination"):
+        write_page(tmp_path, bad, "a7b2c9", "20260927_a7b2c9_x.md", "NEW")
+    assert list(tmp_path.rglob("*")) == []  # nothing written
+
+
 def test_ids_match_exactly_even_with_underscores(tmp_path):
-    out = tmp_path / YOUTUBE.out_dir
+    out = tmp_path / destination_dir("youtube")
     put(out / "20260927_ab_cd-efghi_x.md", page("ab_cd-efghi"))
     put(out / "20260927_ab_y.md", page("ab"))
     assert [p.name for p in find_pages_by_id(out, "ab")] == ["20260927_ab_y.md"]
@@ -63,9 +80,19 @@ def test_render_command_writes_the_page(tmp_path, make_note, monkeypatch):
     docs = tmp_path / "docs"
     result = CliRunner().invoke(app, ["render", str(note.path), "--docs", str(docs), "--profile", "fake"])
     assert result.exit_code == 0, result.output
-    [page_file] = list((docs / NOTE.out_dir).glob("*-a7b2c9.md"))
+    [page_file] = list((docs / destination_dir("notes")).glob("*-a7b2c9.md"))
     assert page_file.name.startswith("20260927-")
     assert note.path.exists()
+
+
+def test_render_command_publishes_into_the_destination_the_capture_asks_for(tmp_path, make_note, monkeypatch):
+    monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
+    note = make_note("note", root=tmp_path / "ideas", destination="web-clips")
+    docs = tmp_path / "docs"
+    result = CliRunner().invoke(app, ["render", str(note.path), "--docs", str(docs), "--profile", "fake"])
+    assert result.exit_code == 0, result.output
+    assert len(list((docs / destination_dir("web-clips")).glob("*-a7b2c9.md"))) == 1
+    assert not (docs / destination_dir("notes")).exists()
 
 
 def test_render_command_reports_unavailable_youtube_facts_cleanly(tmp_path, make_note, monkeypatch):

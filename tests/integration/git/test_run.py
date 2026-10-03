@@ -15,7 +15,7 @@ from catcher.modules.youtube.facts import FactsUnavailable
 
 REPO = Path(__file__).parents[3]
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
-CLIPPING = "hugo/content/en/docs/idea-bucket/clippings"
+WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
 
 
 def find(ideas: Path, folder: str, sub: str, original: str) -> Path:
@@ -76,7 +76,7 @@ def repos(make_repo):
         "epiaku-docs",
         {
             f"{NOTES}/_index.md": "---\ntitle: Notes\n---\n",
-            f"{CLIPPING}/_index.md": "---\ntitle: Clippings\n---\n",
+            f"{WEB_CLIPS}/_index.md": "---\ntitle: Web clips\n---\n",
         },
     )
     return SimpleNamespace(ideas=ideas, docs=docs, ideas_bare=ideas_bare, docs_bare=docs_bare)
@@ -95,7 +95,7 @@ def test_run_publishes_archives_and_commits(repos, make_services, sh):
     assert report.counts() == {"published": 2}
     [note_page] = [p.name for p in (repos.docs / NOTES).glob("*.md") if p.name != "_index.md"]
     assert note_page.endswith("-youtube-walks.md")
-    [chat_page] = [p.name for p in (repos.docs / CLIPPING).glob("2026*.md")]
+    [chat_page] = [p.name for p in (repos.docs / WEB_CLIPS).glob("2026*.md")]
     assert chat_page.startswith("20260925-") and chat_page.endswith("-sell-bundles.md")
     assert not list((repos.ideas / "inbox").rglob("*.md"))
     assert not (repos.ideas / "staging").exists()
@@ -108,8 +108,8 @@ def test_run_publishes_archives_and_commits(repos, make_services, sh):
     assert load(chat_archived).body.startswith("**You**\n\nsell bundles?")
     final = find(repos.ideas, "output", "clippings", "systeme.md")
     assert chat_archived.name == final.name  # one name in archive/ and output/ ...
-    assert (repos.docs / CLIPPING / final.name).read_text().startswith("---\n")  # ... and in epiaku-docs
-    assert load(repos.docs / CLIPPING / final.name).fm["id"] == "cf81e40b020519ef"
+    assert (repos.docs / WEB_CLIPS / final.name).read_text().startswith("---\n")  # ... and in epiaku-docs
+    assert load(repos.docs / WEB_CLIPS / final.name).fm["id"] == "cf81e40b020519ef"
     assert load(final).fm["source_file"] == f"clippings/{final.name}"
     assert load(final).fm["original_filename"] == "systeme.md"
     assert "stage" not in load(final).fm
@@ -178,7 +178,7 @@ def test_reclipped_chat_overwrites_its_page(repos, make_services):
     )
     v2 = json.dumps({**CANNED["ai-chat"], "title": "Bundles v2"})
     run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=FakeBackend([v2])))
-    pages = sorted((repos.docs / CLIPPING).glob("2026*.md"))
+    pages = sorted((repos.docs / WEB_CLIPS).glob("2026*.md"))
     assert len(pages) == 1  # the older page with the same id was replaced
     assert load(pages[0]).fm["title"] == "Bundles v2"
     assert len(list((repos.ideas / "archive/clippings").glob("*.md"))) == 2  # both clips are kept
@@ -352,7 +352,7 @@ def test_growing_snapshots_of_one_conversation_cost_one_llm_call(repos, make_ser
     assert absent(repos.ideas, "output", "clippings", "chat short.md")
     assert absent(repos.ideas, "output", "clippings", "chat medium.md")
     assert "stage" not in load(find(repos.ideas, "output", "clippings", "chat long.md")).fm
-    pages = [p for p in (repos.docs / CLIPPING).glob("2026*.md") if load(p).fm["id"] == "2446cd9c762c9cc9"]
+    pages = [p for p in (repos.docs / WEB_CLIPS).glob("2026*.md") if load(p).fm["id"] == "2446cd9c762c9cc9"]
     assert len(pages) == 1
     assert any("duplicates/" in r.getMessage() and "chat long.md" in r.getMessage() for r in caplog.records)
 

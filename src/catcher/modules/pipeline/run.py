@@ -412,7 +412,9 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             item.status = "would_publish"
             log.info("%s: would publish %s", who, processed.filename)
         else:
-            touched_docs += write_page(docs, note.doctype, note.doc_id, processed.filename, processed.page)
+            touched_docs += write_page(
+                docs, note.destination, note.doc_id, processed.filename, processed.page
+            )
             touched_ideas += finish(ideas, note, processed)
             item.status = "published"
             log.info("%s: published %s", who, processed.filename)
