@@ -3,13 +3,17 @@
 import logging
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from typing import Literal
 
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from catcher.core.db import session_scope
 from catcher.modules.queue import queue
+from catcher.modules.queue.items import ACTIVE_STATUSES, get_item, set_item_status
+from catcher.modules.queue.models import Job
 from catcher.modules.worker.dispatch import Outcome, run_job
 from catcher.modules.worker.handlers import Handler, HandlerContext
 
@@ -17,6 +21,26 @@ log = logging.getLogger("catcher.worker")
 
 RunOnceResult = Outcome | Literal["error"] | None
 MAX_CLAIM_BACKOFF_S = 60.0
+
+
+def fail_items_of(session: Session, jobs: Sequence[Job], *, now: datetime) -> list[str]:
+    """The item of each job the reaper failed (a poison job that kept killing its worker) is `failed` too,
+    with the job's error, when it is still active: no other job will move it. A job without a
+    `calculated_name` param (`pipeline.run`) has no item; an item already in a final status (the job made
+    its outcome, then died before it completed) is left alone. Returns the names it failed. Does not
+    commit: it belongs in the reaper's transaction."""
+    failed: list[str] = []
+    for job in jobs:
+        name = (job.params or {}).get("calculated_name")
+        if job.status != "failed" or not isinstance(name, str):
+            continue
+        item = get_item(session, name)
+        if item is None or item.status not in ACTIVE_STATUSES:
+            continue
+        set_item_status(session, name, "failed", now=now, reason=f"{job.type}: {job.error}")
+        log.error("item %s: failed, its %s job %s: %s", name, job.type, job.id, job.error)
+        failed.append(name)
+    return failed
 
 
 class Worker:
@@ -93,11 +117,14 @@ class Worker:
             return "error"
 
     def reap_safely(self) -> int:
-        """Requeue (or fail) every job whose lease expired. Returns how many changed; an error is logged
-        and gives 0, so the reaper never stops the worker."""
+        """Requeue (or fail) every job whose lease expired, and fail the item of a job it failed
+        (`fail_items_of`), in one commit. Returns how many jobs changed; an error is logged and gives 0, so
+        the reaper never stops the worker."""
         try:
             with session_scope(self.ctx.engine) as session:
-                changed = queue.reap(session, now=self.ctx.clock())
+                now = self.ctx.clock()
+                changed = queue.reap(session, now=now)
+                fail_items_of(session, changed, now=now)
         except Exception:
             log.exception("the reaper failed; it tries again later")
             return 0

@@ -12,7 +12,8 @@ from sqlalchemy.exc import OperationalError
 
 from catcher.core.db import make_worker_engine, session_scope
 from catcher.modules.queue import queue
-from catcher.modules.queue.models import Job
+from catcher.modules.queue.items import get_item, set_item_status, stage_item
+from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.queue.queue import claim, enqueue
 from catcher.modules.worker import loop
 from catcher.modules.worker.handlers import Defer, Done, Handler, HandlerContext, HandlerResult
@@ -188,6 +189,70 @@ def test_reap_safely_returns_the_number_of_reaped_jobs(pg_engine: Engine, clock)
     assert worker.reap_safely() == 0
     clock.advance(31)
     assert worker.reap_safely() == 1
+
+
+def _item(engine: Engine, clock, name: str, status: str) -> None:
+    with session_scope(engine) as s:
+        stage_item(
+            s,
+            calculated_name=name,
+            doc_id=name,
+            doc_class="note",
+            now=clock.now,
+            inbox_path=None,
+            original_filename=None,
+        )
+        set_item_status(s, name, status, now=clock.now)
+
+
+def _item_row(engine: Engine, name: str) -> JobItem:
+    with session_scope(engine) as fresh:
+        item = get_item(fresh, name)
+        assert item is not None
+        return item
+
+
+def _abandoned(engine: Engine, clock, name: str, *, max_attempts: int) -> Any:
+    """An `llm.reason` job of item `name` whose worker died: claimed, then its lease expired."""
+    with session_scope(engine) as s:
+        job, _ = enqueue(
+            s,
+            type="llm.reason",
+            now=clock.now,
+            params={"calculated_name": name},
+            dedupe_key=f"reason:{name}",
+            max_attempts=max_attempts,
+        )
+        job_id = job.id
+    with session_scope(engine) as s:
+        assert claim(s, worker="dead-worker", now=clock.now, lease_s=30) is not None
+    return job_id
+
+
+def test_the_reaper_fails_the_item_of_a_job_that_ran_out_of_attempts(pg_engine: Engine, clock) -> None:
+    _item(pg_engine, clock, "notes/poison.md", "waiting_llm")
+    job_id = _abandoned(pg_engine, clock, "notes/poison.md", max_attempts=1)
+    clock.advance(31)
+
+    assert _worker(pg_engine, clock, {}).reap_safely() == 1
+
+    assert _row(pg_engine, job_id).status == "failed"
+    item = _item_row(pg_engine, "notes/poison.md")
+    assert (item.status, item.error) == ("failed", "llm.reason: lease expired too often (1 attempts)")
+    assert item.updated_at == clock.now
+
+
+def test_the_reaper_leaves_the_item_of_a_requeued_or_finished_job_alone(pg_engine: Engine, clock) -> None:
+    _item(pg_engine, clock, "notes/again.md", "waiting_llm")
+    _item(pg_engine, clock, "notes/done.md", "published")
+    _abandoned(pg_engine, clock, "notes/again.md", max_attempts=3)
+    _abandoned(pg_engine, clock, "notes/done.md", max_attempts=1)  # it published, then died before complete
+    clock.advance(31)
+
+    assert _worker(pg_engine, clock, {}).reap_safely() == 2
+
+    assert _item_row(pg_engine, "notes/again.md").status == "waiting_llm"  # its job runs again
+    assert _item_row(pg_engine, "notes/done.md").status == "published"
 
 
 def test_stop_lets_the_current_job_finish(pg_engine: Engine, clock) -> None:
