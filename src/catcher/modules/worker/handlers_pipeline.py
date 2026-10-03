@@ -640,9 +640,9 @@ def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
             for key, repo, managed, message in repos:
                 committed[key] = commit_managed(repo, managed, message, author=author)
                 if do_pull:  # after the commit: the autostash only ever holds changes outside the managed set
-                    pull(repo)
+                    pull(repo, author=author)
                 if do_push and ahead_of_upstream(repo):
-                    push(repo)
+                    push(repo, author=author)
                     pushed = True
         except GitError as e:
             log.error("publish failed (committed so far: %s): %s", committed, e)

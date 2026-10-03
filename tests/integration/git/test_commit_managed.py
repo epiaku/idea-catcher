@@ -99,3 +99,27 @@ def test_a_folder_with_only_ignored_files_is_skipped(make_repo, sh):
     (work / "facts/v.json").write_text("{}\n")
     assert commit_managed(work, MANAGED, "facts", author=AUTHOR) is True
     assert sh(work, "show", "--name-only", "--format=", "HEAD").splitlines() == ["facts/v.json"]
+
+
+def test_a_deletion_left_staged_by_a_failed_commit_is_committed_next_time(make_repo, sh):
+    import pytest
+
+    from catcher.core.git import GitError
+
+    _, work = make_repo("ideas", {"inbox/notes/n.md": "n\n"})
+    hook = work / ".git/hooks/pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    (work / "archive/notes").mkdir(parents=True)
+    (work / "inbox/notes/n.md").rename(work / "archive/notes/n.md")
+    with pytest.raises(GitError):
+        commit_managed(work, MANAGED, "first try", author=AUTHOR)
+    assert "D  inbox/notes/n.md" in sh(work, "status", "--porcelain", "--no-renames").splitlines()
+
+    hook.unlink()
+    assert commit_managed(work, MANAGED, "second try", author=AUTHOR) is True
+    assert sorted(sh(work, "show", "--name-status", "--no-renames", "--format=", "HEAD").splitlines()) == [
+        "A\tarchive/notes/n.md",
+        "D\tinbox/notes/n.md",
+    ]
+    assert sh(work, "status", "--porcelain") == ""

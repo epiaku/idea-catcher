@@ -299,3 +299,18 @@ def test_a_rejected_push_whose_rebase_conflicts_is_aborted(harness, sh, tmp_path
     assert isinstance(result, Fail) and "rebase" in result.error
     assert_clean_branch(sh, harness.ideas)
     assert (harness.ideas / rel).read_text() == "edited by the worker\n"
+
+
+def test_a_capture_pushed_into_a_folder_the_worker_emptied_is_pulled_in(harness, sh, tmp_path):
+    notes = harness.ideas / "inbox/notes"
+    for path in sorted(notes.glob("*.md")):
+        (harness.ideas / "archive/notes").mkdir(parents=True, exist_ok=True)
+        path.rename(harness.ideas / "archive/notes" / path.name)
+    push_from_another_clone(sh, harness.ideas, tmp_path, "inbox/notes/new.md", "from the phone\n")
+
+    assert publish(harness) == Done({"committed": {"docs": False, "ideas": True}, "pushed": True})
+
+    assert (notes / "new.md").read_text() == "from the phone\n"
+    assert not (harness.ideas / "archive/notes/new.md").exists()
+    assert_clean_branch(sh, harness.ideas)
+    assert sh(harness.ideas, "rev-parse", "HEAD") == sh(bare(harness.ideas), "rev-parse", "main")
