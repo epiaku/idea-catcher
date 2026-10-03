@@ -5,7 +5,7 @@ import time
 import pytest
 from sqlalchemy import Engine, text
 
-from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock
+from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 
 
 def _backend_is_gone(engine: Engine, pid: int | None, wait_s: float = 10.0) -> bool:
@@ -80,3 +80,29 @@ def test_the_lock_is_released_when_the_holder_connection_dies(pg_engine: Engine)
             pass
     finally:
         holder.__exit__(None, None, None)  # the dead connection must not raise
+
+
+def test_check_passes_while_the_lock_is_held(pg_engine: Engine) -> None:
+    with WorkerLock(pg_engine) as lock:
+        lock.check()
+        lock.check()
+
+
+def test_check_raises_once_the_lock_connection_is_gone(pg_engine: Engine) -> None:
+    with WorkerLock(pg_engine) as lock:
+        with pg_engine.connect() as admin:
+            admin.execute(text("select pg_terminate_backend(:pid)"), {"pid": lock.backend_pid})
+            admin.commit()
+        assert _backend_is_gone(pg_engine, lock.backend_pid)
+        with pytest.raises(WorkerLockLost, match="lost its database lock"):
+            lock.check()
+        with pytest.raises(WorkerLockLost):  # stays lost: a reconnected session would not hold the lock
+            lock.check()
+
+
+def test_check_raises_when_the_lock_was_released_on_its_connection(pg_engine: Engine) -> None:
+    with WorkerLock(pg_engine, key=7) as lock:
+        assert lock._connection is not None
+        lock._connection.execute(text("select pg_advisory_unlock(7)"))
+        with pytest.raises(WorkerLockLost):
+            lock.check()

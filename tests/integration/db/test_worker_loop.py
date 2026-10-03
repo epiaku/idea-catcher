@@ -17,6 +17,7 @@ from catcher.modules.queue.items import get_item, set_item_status, stage_item
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.queue.queue import claim, enqueue
 from catcher.modules.worker import handlers_pipeline, loop
+from catcher.modules.worker.guard import WorkerLockLost
 from catcher.modules.worker.handlers import Defer, Done, Handler, HandlerContext, HandlerResult
 from catcher.modules.worker.handlers_pipeline import handle_llm_reason, handle_youtube_fetch
 from catcher.modules.worker.loop import Worker
@@ -726,3 +727,21 @@ def test_an_item_error_after_a_failed_job_is_logged_and_the_worker_goes_on(
     assert _harness_item(harness, "YouTube walks.md").status == "waiting_llm"  # B5's reconcile, or a requeue
     assert (harness.ideas / "output" / name).is_file()
     assert any("could not fail the item" in r.getMessage() for r in caplog.records)
+
+
+def test_run_once_checks_the_worker_lock_before_it_claims(pg_engine: Engine, clock) -> None:
+    job_id = _enqueue(pg_engine, clock)
+    checks: list[int] = []
+
+    def lost() -> None:
+        checks.append(1)
+        raise WorkerLockLost("the worker lost its database lock")
+
+    worker = _worker(pg_engine, clock, {"note": lambda ctx, j: Done()}, lock_check=lost)
+    with pytest.raises(WorkerLockLost):
+        worker.run_once()
+    with pytest.raises(WorkerLockLost):
+        worker.run_forever(threading.Event())
+
+    assert checks == [1, 1]
+    assert _row(pg_engine, job_id).status == "queued"  # nothing was claimed

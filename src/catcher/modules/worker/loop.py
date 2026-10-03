@@ -113,6 +113,7 @@ class Worker:
         poll_s: float = 2.0,
         reap_every_s: float = 60.0,
         sleep: Callable[[float], object] | None = None,
+        lock_check: Callable[[], None] | None = None,
     ) -> None:
         self.ctx = ctx
         self.handlers = handlers
@@ -122,6 +123,7 @@ class Worker:
         self.poll_s = poll_s
         self.reap_every_s = reap_every_s
         self._sleep = sleep
+        self._lock_check = lock_check  # `WorkerLock.check`: raises WorkerLockLost when the lock is gone
         self._claim_failures = 0  # claims in a row that raised a database error
 
     def idle_wait_s(self) -> float:
@@ -137,7 +139,11 @@ class Worker:
         of `run_job` (after a "failed" one, its item is failed too: `fail_item_of`), "error" when
         `run_job` raised (logged; the job stays running until the reaper requeues it), or None when no
         job is due or the claim hit a database error (logged; the next idle wait backs off). Any other
-        error from the claim (a bad `lease_s`) propagates, as do KeyboardInterrupt and SystemExit."""
+        error from the claim (a bad `lease_s`) propagates, as do KeyboardInterrupt and SystemExit.
+
+        Before the claim, `lock_check` (when given) makes sure this is still the one worker; its
+        WorkerLockLost propagates and stops the worker."""
+        self.check_lock()
         try:
             with session_scope(self.ctx.engine) as session:
                 job = queue.claim(session, worker=self.worker_id, now=self.ctx.clock(), lease_s=self.lease_s)
@@ -186,6 +192,11 @@ class Worker:
             return
         file_failed_items(self.ctx.ideas, failed, now=now)
 
+    def check_lock(self) -> None:
+        """Run `lock_check` when given: WorkerLockLost when this is no longer the one worker."""
+        if self._lock_check is not None:
+            self._lock_check()
+
     def reap_safely(self) -> int:
         """Requeue (or fail) every job whose lease expired, and fail the item of a job it failed
         (`fail_items_of`), in one commit; then move those items' working copies to `failed/`
@@ -208,12 +219,14 @@ class Worker:
         """Reap, then run jobs until `stop` is set; wait `idle_wait_s()` when nothing was run and reap
         again every `reap_every_s` (checked between jobs). A job that is running when `stop` is set
         finishes first; a stop that arrives just before a claim can let one more job start (it then
-        finishes too)."""
+        finishes too). WorkerLockLost from `check_lock` (before each reap and each claim) propagates."""
         wait = self._sleep if self._sleep is not None else stop.wait
+        self.check_lock()
         self.reap_safely()
         next_reap = time.monotonic() + self.reap_every_s
         while not stop.is_set():
             if time.monotonic() >= next_reap:
+                self.check_lock()
                 self.reap_safely()
                 next_reap = time.monotonic() + self.reap_every_s
             if self.run_once() is None and not stop.is_set():

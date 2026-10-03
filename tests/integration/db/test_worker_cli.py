@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from typer.testing import CliRunner
 
 from catcher import cli
@@ -203,6 +203,41 @@ def test_an_idle_worker_process_stops_at_once_on_sigterm(
         time.sleep(0.5)  # into the idle wait (poll 3600 s)
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=10) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def test_a_worker_that_loses_its_lock_stops_with_exit_1(
+    runner: CliRunner, engine, fresh_database_url: str, tmp_path: Path
+) -> None:
+    env = {
+        **os.environ,
+        "DATABASE_URL": fresh_database_url,
+        "CATCHER_STATE_DIR": str(tmp_path / "state"),
+        "LOG_FILE": str(tmp_path / "worker.log"),
+        "LOG_LEVEL": "INFO",
+    }
+    command = [sys.executable, "-c", "from catcher.cli import app; app()", "worker", "--poll-s", "0.1"]
+    process = subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True)
+    try:
+        assert process.stderr is not None
+        for line in process.stderr:  # wait until it holds the lock and runs
+            if "worker" in line and "started" in line:
+                break
+        else:
+            pytest.fail(f"the worker never started (exit {process.wait(5)})")
+        with engine.connect() as admin:  # a Postgres restart, or a dropped connection, ends the lock
+            [pid] = admin.execute(
+                text("select pid from pg_locks where locktype = 'advisory' and granted")
+            ).scalars()
+            admin.execute(text("select pg_terminate_backend(:pid)"), {"pid": pid})
+            admin.commit()
+        assert process.wait(timeout=10) == 1
+        rest = process.stderr.read()
+        assert "lost its database lock" in rest
+        assert "Traceback" not in rest
     finally:
         if process.poll() is None:
             process.kill()

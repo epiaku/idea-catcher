@@ -46,7 +46,7 @@ from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
 from catcher.modules.queue.models import JOB_STATUSES, Job
 from catcher.modules.worker.app import build_context, build_handlers
-from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock
+from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import build_access
 from catcher.modules.youtube.cache import FACTS_DIR
@@ -421,7 +421,7 @@ def worker(
     ctx = build_context(Settings(), ideas=ideas, docs=docs)
     stop = threading.Event()
     try:
-        with WorkerLock(ctx.engine), _stop_on_signals(stop):
+        with WorkerLock(ctx.engine) as lock, _stop_on_signals(stop):
             runner = Worker(
                 ctx,
                 build_handlers(),
@@ -429,10 +429,12 @@ def worker(
                 lease_s=lease_s,
                 heartbeat_s=lease_s / 3,
                 poll_s=poll_s,
+                lock_check=lock.check,
             )
             log.info("worker %s started (once=%s)", runner.worker_id, once)
             if once:
                 counts: Counter[str] = Counter()
+                runner.check_lock()
                 runner.reap_safely()
                 while not stop.is_set():
                     outcome = runner.run_once()
@@ -448,6 +450,10 @@ def worker(
         log.error("%s", e)
         typer.echo(str(e), err=True)
         raise typer.Exit(2) from e
+    except WorkerLockLost as e:
+        log.error("%s", e)
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
     except OperationalError as e:
         log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
         raise typer.Exit(2) from e
