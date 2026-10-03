@@ -1,10 +1,11 @@
+import contextlib
 import logging
 import os
+import signal
 import subprocess
 import threading
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger("catcher.git")
 
@@ -19,10 +20,15 @@ NETWORK_COMMANDS = frozenset({"pull", "push", "fetch"})
 # a stalled HTTP transfer (under 1000 bytes/s for 60 s) is stopped by git, long before the wall clock
 NETWORK_OPTIONS = ("-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60")
 SSH_COMMAND = "ssh -o BatchMode=yes -o ServerAliveInterval=15"  # no passphrase or host-key prompt, no hang
+KILL_GRACE_S = 10  # after a timeout: SIGTERM to the process group, this long to clean up, then SIGKILL
 
 
 class GitError(RuntimeError):
     pass
+
+
+class GitTimeout(GitError):
+    """An unattended git command ran out of time and was stopped."""
 
 
 def _command(args: tuple[str, ...]) -> list[str]:
@@ -45,26 +51,84 @@ def _identity(author: tuple[str, str] | None) -> tuple[str, ...]:
     return ("-c", f"user.name={name}", "-c", f"user.email={email}")
 
 
+def _ssh_configured(repo: Path, env: dict[str, str]) -> bool:
+    """True when the user chose how git runs ssh (GIT_SSH_COMMAND, GIT_SSH or core.sshCommand)."""
+    if env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH"):
+        return True
+    out = subprocess.run(
+        ["git", "config", "--get", "core.sshCommand"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        env=env,
+        timeout=LOCAL_TIMEOUT_S,
+    )
+    return out.returncode == 0 and bool(out.stdout.strip())
+
+
+def unattended_env(repo: Path, args: tuple[str, ...]) -> dict[str, str]:
+    """The environment of an unattended git command: GIT_TERMINAL_PROMPT=0, and for a network command ssh in
+    batch mode, but only when the user did not choose an ssh command of their own (that one is left alone)."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    command = _command(args)
+    if command and command[0] in NETWORK_COMMANDS and not _ssh_configured(repo, env):
+        env["GIT_SSH_COMMAND"] = SSH_COMMAND
+    return env
+
+
+def _signal_group(pgid: int, sig: signal.Signals) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(pgid, sig)
+
+
+def _run_unattended(
+    cmd: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """Run `cmd` in its own process group with no terminal. On a timeout the whole group (git, its hooks,
+    ssh) gets SIGTERM, so git removes its lock files; whatever is left after KILL_GRACE_S gets SIGKILL.
+    Raises GitTimeout once the child is reaped."""
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _signal_group(proc.pid, signal.SIGTERM)
+        try:
+            proc.communicate(timeout=KILL_GRACE_S)
+        except subprocess.TimeoutExpired:
+            _signal_group(proc.pid, signal.SIGKILL)
+            proc.communicate()
+        _signal_group(proc.pid, signal.SIGKILL)  # a grandchild that ignored SIGTERM
+        raise GitTimeout(f"timed out after {timeout} s") from None
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def git(repo: Path, *args: str, unattended: bool = False) -> str:
     """Run git in `repo`; raises GitError. By default as an interactive user would (the terminal stays
     available for a password or passphrase prompt, no timeout). `unattended=True` (the worker) runs with no
-    prompt (no terminal, GIT_TERMINAL_PROMPT=0, ssh in batch mode unless the environment sets its own
-    GIT_SSH_COMMAND) and a timeout: NETWORK_TIMEOUT_S for pull, push and fetch, LOCAL_TIMEOUT_S for the
-    rest."""
-    extra: dict[str, Any] = {}
-    timeout: float | None = None
+    terminal, GIT_TERMINAL_PROMPT=0, ssh in batch mode unless the user set an ssh command (`unattended_env`),
+    and a timeout (NETWORK_TIMEOUT_S for pull, push and fetch, LOCAL_TIMEOUT_S for the rest) that stops the
+    whole process group: a GitTimeout."""
     if unattended:
-        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-        env.setdefault("GIT_SSH_COMMAND", SSH_COMMAND)
         command = _command(args)
         timeout = NETWORK_TIMEOUT_S if command and command[0] in NETWORK_COMMANDS else LOCAL_TIMEOUT_S
-        extra = {"stdin": subprocess.DEVNULL, "env": env, "timeout": timeout}
-    try:
-        out = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, **extra)
-    except subprocess.TimeoutExpired as e:
-        message = f"git {_shown(args)} timed out after {timeout} s in {repo}"
-        log.error(message)
-        raise GitError(message) from e
+        try:
+            out = _run_unattended(["git", *args], cwd=repo, env=unattended_env(repo, args), timeout=timeout)
+        except GitTimeout as e:
+            message = f"git {_shown(args)} timed out after {timeout} s in {repo} and was stopped"
+            log.error(message)
+            raise GitTimeout(message) from e
+    else:
+        out = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
     if out.returncode != 0:
         message = f"git {_shown(args)} failed in {repo}: {out.stderr.strip()[:500]}"
         log.error(message)
@@ -188,13 +252,15 @@ def require_on_branch(repo: Path, *, unattended: bool = False) -> None:
 
 
 def _in_head(repo: Path, path: str, unattended: bool) -> bool:
-    """True when HEAD has files under `path` (a deletion staged by a failed commit is only there)."""
+    """True when HEAD has files under `path` (a deletion staged by a failed commit is only there). False in a
+    repo without a commit; any other git failure (a timeout included) is raised."""
     try:
-        return bool(
-            git(repo, "ls-tree", "-r", "--name-only", "HEAD", "--", path, unattended=unattended).strip()
-        )
+        git(repo, "rev-parse", "--verify", "-q", "HEAD", unattended=unattended)
+    except GitTimeout:
+        raise
     except GitError:  # no commit yet
         return False
+    return bool(git(repo, "ls-tree", "-r", "--name-only", "HEAD", "--", path, unattended=unattended).strip())
 
 
 def commit_managed(
