@@ -4,13 +4,17 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from catcher.core.db import session_scope
+from catcher.modules.pipeline.inbox import move_to_failed
 from catcher.modules.queue import queue
 from catcher.modules.queue.items import ACTIVE_STATUSES, get_item, set_item_status
 from catcher.modules.queue.models import Job
@@ -23,24 +27,74 @@ RunOnceResult = Outcome | Literal["error"] | None
 MAX_CLAIM_BACKOFF_S = 60.0
 
 
-def fail_items_of(session: Session, jobs: Sequence[Job], *, now: datetime) -> list[str]:
+@dataclass(frozen=True)
+class FailedItem:
+    """An item the reaper failed, with what its working copy needs to be filed in `failed/`."""
+
+    name: str
+    reason: str
+    doc_id: str
+    doc_class: str
+
+
+def _other_active_job(session: Session, job: Job, name: str) -> bool:
+    """True when another queued or running job carries item `name`: the handler handed it on (fetch to
+    reason, or back) before it died, and that job owns the item now."""
+    statement = select(Job.id).where(
+        Job.id != job.id,
+        Job.status.in_(("queued", "running")),
+        Job.params["calculated_name"].astext == name,
+    )
+    return session.scalars(statement.limit(1)).first() is not None
+
+
+def fail_items_of(session: Session, jobs: Sequence[Job], *, now: datetime) -> list[FailedItem]:
     """The item of each job the reaper failed (a poison job that kept killing its worker) is `failed` too,
-    with the job's error, when it is still active: no other job will move it. A job without a
+    with the reason `<job type>: <job error>`, when nothing else will move it: it is still active and no
+    other queued or running job carries it (after a hand-off the next job owns it). A job without a
     `calculated_name` param (`pipeline.run`) has no item; an item already in a final status (the job made
-    its outcome, then died before it completed) is left alone. Returns the names it failed. Does not
-    commit: it belongs in the reaper's transaction."""
-    failed: list[str] = []
+    its outcome, then died before it completed) is left alone. Each item is changed in its own savepoint:
+    an error is logged, that item is left as it was and the reap goes on. Returns the items it failed. Does
+    not commit: it belongs in the reaper's transaction."""
+    failed: list[FailedItem] = []
     for job in jobs:
         name = (job.params or {}).get("calculated_name")
         if job.status != "failed" or not isinstance(name, str):
             continue
-        item = get_item(session, name)
-        if item is None or item.status not in ACTIVE_STATUSES:
+        reason = f"{job.type}: {job.error}"
+        try:
+            with session.begin_nested():
+                if _other_active_job(session, job, name):
+                    log.info(
+                        "item %s: left to its next job (the %s job %s was failed)", name, job.type, job.id
+                    )
+                    continue
+                item = get_item(session, name)
+                if item is None or item.status not in ACTIVE_STATUSES:
+                    continue
+                set_item_status(session, name, "failed", now=now, reason=reason)
+                failed.append(FailedItem(name, reason, item.doc_id, item.doc_class))
+        except Exception:
+            log.exception(
+                "item %s: could not be failed after its %s job %s; left as it was", name, job.type, job.id
+            )
             continue
-        set_item_status(session, name, "failed", now=now, reason=f"{job.type}: {job.error}")
         log.error("item %s: failed, its %s job %s: %s", name, job.type, job.id, job.error)
-        failed.append(name)
     return failed
+
+
+def file_failed_items(ideas: Path, items: Sequence[FailedItem], *, now: datetime) -> None:
+    """Best effort, after the reaper's commit: move each failed item's working copy from `output/` to
+    `failed/` with the reason, as Stage A does (`move_to_failed`). A missing working copy is skipped; a file
+    error is logged, never raised (the database already says `failed`, and a requeue starts from
+    `archive/` either way)."""
+    for item in items:
+        out = ideas / "output" / item.name
+        try:
+            if out.is_file():
+                move_to_failed(ideas, out, item.reason, doc_id=item.doc_id, doc_class=item.doc_class, now=now)
+        except Exception as e:
+            log.error("item %s: could not move output/%s to failed/: %s", item.name, item.name, e)
 
 
 class Worker:
@@ -118,16 +172,18 @@ class Worker:
 
     def reap_safely(self) -> int:
         """Requeue (or fail) every job whose lease expired, and fail the item of a job it failed
-        (`fail_items_of`), in one commit. Returns how many jobs changed; an error is logged and gives 0, so
+        (`fail_items_of`), in one commit; then move those items' working copies to `failed/`
+        (`file_failed_items`). Returns how many jobs changed; an error is logged and gives 0, so
         the reaper never stops the worker."""
         try:
             with session_scope(self.ctx.engine) as session:
                 now = self.ctx.clock()
                 changed = queue.reap(session, now=now)
-                fail_items_of(session, changed, now=now)
+                failed = fail_items_of(session, changed, now=now)
         except Exception:
             log.exception("the reaper failed; it tries again later")
             return 0
+        file_failed_items(self.ctx.ideas, failed, now=now)  # file IO after the commit, never in it
         if changed:
             log.info("the reaper recovered %d job(s)", len(changed))
         return len(changed)

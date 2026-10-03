@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.exc import OperationalError
+from worker_harness import YOUTUBE_GAP_S
 
 from catcher.core.db import make_worker_engine, session_scope
 from catcher.modules.queue import queue
@@ -17,6 +18,7 @@ from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.queue.queue import claim, enqueue
 from catcher.modules.worker import loop
 from catcher.modules.worker.handlers import Defer, Done, Handler, HandlerContext, HandlerResult
+from catcher.modules.worker.handlers_pipeline import handle_llm_reason, handle_youtube_fetch
 from catcher.modules.worker.loop import Worker
 
 WAIT_S = 10  # generous: a deterministic wait that only times out when something is broken
@@ -212,15 +214,18 @@ def _item_row(engine: Engine, name: str) -> JobItem:
         return item
 
 
-def _abandoned(engine: Engine, clock, name: str, *, max_attempts: int) -> Any:
-    """An `llm.reason` job of item `name` whose worker died: claimed, then its lease expired."""
+def _abandoned(
+    engine: Engine, clock, name: str | None, *, max_attempts: int, type: str = "llm.reason"
+) -> Any:
+    """A job of item `name` (`type`, `llm.reason` by default; no `calculated_name` param when `name` is None)
+    whose worker died: claimed, then its lease expired."""
     with session_scope(engine) as s:
         job, _ = enqueue(
             s,
-            type="llm.reason",
+            type=type,
             now=clock.now,
-            params={"calculated_name": name},
-            dedupe_key=f"reason:{name}",
+            params={"calculated_name": name} if name is not None else {},
+            dedupe_key=f"{type}:{name}" if name is not None else None,
             max_attempts=max_attempts,
         )
         job_id = job.id
@@ -253,6 +258,164 @@ def test_the_reaper_leaves_the_item_of_a_requeued_or_finished_job_alone(pg_engin
 
     assert _item_row(pg_engine, "notes/again.md").status == "waiting_llm"  # its job runs again
     assert _item_row(pg_engine, "notes/done.md").status == "published"
+
+
+def test_the_reaper_fails_the_item_of_a_youtube_fetch_that_ran_out_of_attempts(
+    pg_engine: Engine, clock
+) -> None:
+    _item(pg_engine, clock, "clippings/clip.md", "waiting_youtube")
+    job_id = _abandoned(pg_engine, clock, "clippings/clip.md", max_attempts=1, type="youtube.fetch")
+    clock.advance(31)
+
+    assert _worker(pg_engine, clock, {}).reap_safely() == 1
+
+    assert _row(pg_engine, job_id).status == "failed"
+    item = _item_row(pg_engine, "clippings/clip.md")
+    assert (item.status, item.error) == ("failed", "youtube.fetch: lease expired too often (1 attempts)")
+
+
+def test_the_reaper_fails_a_pipeline_run_and_touches_no_item(pg_engine: Engine, clock) -> None:
+    _item(pg_engine, clock, "notes/leftover.md", "staging")
+    job_id = _abandoned(pg_engine, clock, None, max_attempts=1, type="pipeline.run")
+    clock.advance(31)
+
+    assert _worker(pg_engine, clock, {}).reap_safely() == 1
+
+    row = _row(pg_engine, job_id)
+    assert (row.status, row.error) == ("failed", "lease expired too often (1 attempts)")
+    item = _item_row(pg_engine, "notes/leftover.md")
+    assert (item.status, item.updated_at) == ("staging", clock.now - timedelta(seconds=31))
+
+
+def test_an_item_error_does_not_stop_the_reaper(
+    pg_engine: Engine, clock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    real_set_item_status = loop.set_item_status
+
+    def broken_for_one(session, name, status, **kwargs):
+        if name == "notes/broken.md":
+            session.execute(text("select 1/0"))  # a database error, inside the savepoint
+        return real_set_item_status(session, name, status, **kwargs)
+
+    monkeypatch.setattr(loop, "set_item_status", broken_for_one)
+    _item(pg_engine, clock, "notes/broken.md", "waiting_llm")
+    _item(pg_engine, clock, "notes/poison.md", "waiting_llm")
+    broken = _abandoned(pg_engine, clock, "notes/broken.md", max_attempts=1)
+    poison = _abandoned(pg_engine, clock, "notes/poison.md", max_attempts=1)
+    requeued = _abandoned(pg_engine, clock, "notes/again.md", max_attempts=3)
+    clock.advance(31)
+
+    with caplog.at_level("ERROR", logger="catcher.worker"):
+        assert _worker(pg_engine, clock, {}).reap_safely() == 3
+
+    assert [_row(pg_engine, j).status for j in (broken, poison, requeued)] == ["failed", "failed", "queued"]
+    assert _item_row(pg_engine, "notes/broken.md").status == "waiting_llm"  # logged, left as it was
+    assert _item_row(pg_engine, "notes/poison.md").status == "failed"
+    assert any("notes/broken.md" in r.getMessage() and r.exc_info for r in caplog.records)
+
+
+def _die_after_the_hand_off(harness, type: str, handler: Handler) -> Any:
+    """Claim the queued `type` job as a worker that dies on its last attempt right after the handler's
+    hand-off commit (the next job is queued, the item moved on), before `complete`; the lease expires."""
+    with session_scope(harness.ctx.engine) as s:
+        [job] = [j for j in harness.jobs(s) if j.type == type and j.status == "queued"]
+        job.max_attempts = 1
+    with session_scope(harness.ctx.engine) as s:
+        job = claim(s, worker="dead-worker", now=harness.clock(), lease_s=30, types=[type])
+    assert job is not None
+    assert isinstance(handler(harness.ctx, job), Done)
+    harness.clock.advance(YOUTUBE_GAP_S + 1)  # past the lease, and past the YouTube gate's gap
+    return job.id
+
+
+def _harness_item(harness, original: str) -> JobItem:
+    with session_scope(harness.ctx.engine) as s:
+        [item] = [i for i in s.scalars(select(JobItem)) if i.original_filename == original]
+        return item
+
+
+def test_a_fetch_that_died_after_handing_off_to_llm_reason_leaves_the_item_to_it(harness) -> None:
+    harness.add_job("pipeline.run", only=["yt"])
+    assert harness.worker.run_once() == "succeeded"
+    assert _harness_item(harness, "yt.md").status == "waiting_youtube"
+    fetch_id = _die_after_the_hand_off(harness, "youtube.fetch", handle_youtube_fetch)
+    assert _harness_item(harness, "yt.md").status == "waiting_llm"
+
+    assert harness.worker.reap_safely() == 1
+
+    assert _row(harness.ctx.engine, fetch_id).status == "failed"
+    assert _harness_item(harness, "yt.md").status == "waiting_llm"  # the queued llm.reason owns it
+    assert harness.drain(max_jobs=2) == ["succeeded"]
+    assert _harness_item(harness, "yt.md").status == "published"
+    assert len(harness.fetch_calls) == 1
+
+
+def test_an_llm_reason_that_died_after_handing_back_to_youtube_fetch_leaves_the_item_to_it(
+    harness, yt_facts
+) -> None:
+    facts = harness.ctx.services.youtube.cache(harness.ideas / "facts")
+    facts.put(yt_facts)
+    harness.add_job("pipeline.run", only=["yt"])
+    assert harness.worker.run_once() == "succeeded"
+    assert _harness_item(harness, "yt.md").status == "waiting_llm"
+    (harness.ideas / "facts" / f"{yt_facts.video_id}.json").unlink()  # the saved facts are gone
+    reason_id = _die_after_the_hand_off(harness, "llm.reason", handle_llm_reason)
+    assert _harness_item(harness, "yt.md").status == "waiting_youtube"
+
+    assert harness.worker.reap_safely() == 1
+
+    assert _row(harness.ctx.engine, reason_id).status == "failed"
+    assert _harness_item(harness, "yt.md").status == "waiting_youtube"  # the queued fetch owns it
+    assert harness.drain(max_jobs=3) == ["succeeded", "succeeded"]  # the fetch, then a new llm.reason
+    assert _harness_item(harness, "yt.md").status == "published"
+    assert len(harness.fetch_calls) == 1
+
+
+def _poisoned_note(harness) -> tuple[str, Any]:
+    """The note staged with its working copy in output/, and its llm.reason job reaped out of attempts."""
+    harness.add_job("pipeline.run", only=["YouTube walks"])
+    assert harness.worker.run_once() == "succeeded"
+    name = _harness_item(harness, "YouTube walks.md").calculated_name
+    with session_scope(harness.ctx.engine) as s:
+        [job] = [j for j in harness.jobs(s) if j.type == "llm.reason"]
+        job.max_attempts = 1
+    with session_scope(harness.ctx.engine) as s:
+        job = claim(s, worker="dead-worker", now=harness.clock(), lease_s=30)
+    assert job is not None
+    harness.clock.advance(31)
+    return name, job.id
+
+
+def test_the_reaper_moves_a_failed_items_working_copy_to_failed(harness) -> None:
+    name, _ = _poisoned_note(harness)
+    assert (harness.ideas / "output" / name).is_file()
+
+    assert harness.worker.reap_safely() == 1
+
+    assert _harness_item(harness, "YouTube walks.md").status == "failed"
+    assert not (harness.ideas / "output" / name).exists()
+    assert (harness.ideas / "failed" / name).is_file()
+    error = (harness.ideas / "failed" / name).with_suffix(".error.txt").read_text(encoding="utf-8")
+    assert "reason: llm.reason: lease expired too often (1 attempts)" in error.splitlines()
+
+
+def test_a_file_error_moving_to_failed_is_logged_and_the_reap_stands(
+    harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    name, job_id = _poisoned_note(harness)
+
+    def no_disk(*args: Any, **kwargs: Any):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(loop, "move_to_failed", no_disk)
+
+    with caplog.at_level("ERROR", logger="catcher.worker"):
+        assert harness.worker.reap_safely() == 1
+
+    assert _row(harness.ctx.engine, job_id).status == "failed"
+    assert _harness_item(harness, "YouTube walks.md").status == "failed"
+    assert (harness.ideas / "output" / name).is_file()  # it stays where it was
+    assert any("disk full" in r.getMessage() for r in caplog.records)
 
 
 def test_stop_lets_the_current_job_finish(pg_engine: Engine, clock) -> None:

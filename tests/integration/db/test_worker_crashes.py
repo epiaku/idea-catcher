@@ -289,7 +289,12 @@ def test_a_poison_clip_fails_after_max_attempts(harness):
         "failed",
         "llm.reason: lease expired too often (3 attempts)",
     )
-    assert from_capture(harness.ideas, "output", "systeme.md")  # its working copy stays for a requeue
+    # its working copy is filed in failed/ with the reason, as Stage A files a failed document
+    assert from_capture(harness.ideas, "output", "systeme.md") == []
+    [filed] = from_capture(harness.ideas, "failed", "systeme.md")
+    assert filed.relative_to(harness.ideas / "failed").as_posix() == clip_names[0]
+    reason = filed.with_suffix(".error.txt").read_text(encoding="utf-8").splitlines()
+    assert "reason: llm.reason: lease expired too often (3 attempts)" in reason
     # the other jobs still ran: the note and the YouTube clip are published
     assert by_name["YouTube walks.md"].status == "published"
     assert by_name["yt.md"].status == "published"
@@ -298,6 +303,22 @@ def test_a_poison_clip_fails_after_max_attempts(harness):
     assert pages(harness.docs, CLIPPING) == []
     assert len(pages(harness.docs, NOTES)) == 1 and len(pages(harness.docs, YOUTUBE)) == 1
     assert len(harness.fetch_calls) == 1
+
+    # once the cause is fixed, a requeue brings it back from archive/ under the same name
+    harness.worker.handlers = build_handlers()
+    harness.add_job("pipeline.run", requeue=["systeme"])
+    assert harness.drain(max_jobs=3) == ["succeeded", "succeeded"]
+    again = items(harness)["systeme.md"]
+    assert (again.id, again.calculated_name, again.status) == (
+        by_name["systeme.md"].id,
+        clip_names[0],
+        "published",
+    )
+    assert from_capture(harness.ideas, "failed", "systeme.md") == []
+    assert not filed.with_suffix(".error.txt").exists()
+    [final] = from_capture(harness.ideas, "output", "systeme.md")
+    assert "stage" not in load(final).fm
+    assert len(pages(harness.docs, CLIPPING)) == 1
 
 
 def test_staging_leftovers_are_adopted_after_a_worker_restart(harness, monkeypatch):
