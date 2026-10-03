@@ -703,7 +703,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 | B0 (built 2026-10-02) | **Make the run steppable.** `run_pipeline` is one loop today. Split it into steps a job can call on its own: scan and stage, process one document, publish what is ready. Behaviour stays the same. Do this **first**: everything else depends on it | The Stage A tests (unit, component, git integration) stay green and unchanged |
 | B1 (built 2026-10-02) | `compose.yaml` with only `db` (`pgvector/pgvector:pg17`), SQLAlchemy, Alembic. Tables `jobs`, `job_items`, `job_events`, plus **`resources`** (the YouTube gap and breaker, the LLM budgets) and the schedules | `docker compose up db`, `catcher db upgrade`, then look at the tables. Migrations upgrade from empty and downgrade |
 | B2 (built 2026-10-02) | **Our own queue module** on Postgres: `enqueue()`, `claim()` (`FOR UPDATE SKIP LOCKED`, `run_after`), `complete()`, a lease and heartbeat so a crashed worker's job comes back, `LISTEN/NOTIFY`. Azure-style semantics: `attempts`, `max_attempts` 5, a `dead` status, an invisible delay before a retry. **Priorities:** a new clip and a requeue you asked for by hand go first, a backfill goes last | Tests on **real Postgres with a fake clock**: two workers never claim the same job; a crashed worker's job comes back; backoff and `dead`; the priority order |
-| B3   | Job handlers that call the Stage A functions: `pipeline.run`, `llm.reason`, `pipeline.publish`, and a separate **`youtube.fetch`** (the rate-limited resource, idempotent, saved facts) so that **an LLM failure never causes a YouTube call**. Every handler is idempotent (overwrite by id already helps) | `catcher jobs add pipeline.run` + `catcher worker` on a copy of the repos gives the same pages as Stage A. A failing LLM makes no YouTube call |
+| B3 (built 2026-10-03) | Job handlers that call the Stage A functions: `pipeline.run`, `llm.reason`, `pipeline.publish`, and a separate **`youtube.fetch`** (the rate-limited resource, idempotent, saved facts) so that **an LLM failure never causes a YouTube call**. Every handler is idempotent (overwrite by id already helps) | `catcher jobs add pipeline.run` + `catcher worker` on a copy of the repos gives the same pages as Stage A. A failing LLM makes no YouTube call |
 | B4   | **The YouTube gate moves into Postgres** (`resources`). The claim reserves the slot in the same transaction, so two workers can never break the gap. A 429 sets `blocked_until` and pushes `run_after` past it **without counting an attempt** | Fake clock: two workers cannot break the gap; a block stops every fetch; a working fetch closes the breaker |
 | B5   | **State, retries and metrics.** `job_items.status` (waiting, deferred, stuck, failed...), `stuck` after 3 days, per-backend blocking on a quota error, and how the in-call LLM retries (5 calls) and the job-level `retry_delay` add up. The **frontmatter mirror** (`stage`, `stage_reason`, `stage_since`) is written on status changes only. A `catcher reconcile` rebuilds the database from the folders. The metrics queries | Set `run_after` and the clock in tests. Stop FreeLLMApi and check that jobs defer. Delete the database and reconcile. Query the metrics with SQL |
 | B6   | **The scheduler loop in the worker** with three cron variables: `SCHEDULE_IDEAS_PULL` (often), `SCHEDULE_PIPELINE_RUN` and `SCHEDULE_PUBLISH` (a few times a day), plus a manual `catcher publish`. A missed slot runs once | Fake clock: each schedule fires on time; a missed slot runs once; the pull runs more often than the publish |
@@ -720,13 +720,37 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - **Changed from the plan: the fenced update refuses a modified job and does not autoflush.** `heartbeat`, `complete`, `fail` and `defer` raise `ValueError` for a `Job` with unsaved changes, and the UPDATE runs without autoflush. Before this, a flush could write a stale caller's pending changes without the fence, and a stale `complete()` returned True. Other dirty objects in the caller's own session are still flushed when that session commits: pass the `Job` that `claim()` returned, in a session of its own.
 - **Test isolation rule: the tables are truncated before every database test** (an autouse fixture in `tests/integration/db/conftest.py`; `alembic_version` is left alone). Tests that commit rows of their own used to leak running jobs into later tests that share a frozen clock. The tests run on a real Postgres 17 in a throwaway container.
 
+**Built (2026-10-03): B3, the worker and its handlers.** What exists:
+
+- **The worker** (`modules/worker/`): `catcher worker [--once] [--ideas] [--docs] [--lease-s] [--poll-s]` claims one job at a time and runs its handler; a heartbeat thread renews the lease while the handler runs; the reaper runs at the start and every 60 seconds between jobs; Ctrl-C or SIGTERM ends it after the current job. A Postgres advisory lock allows **one worker per database** (a second exits with code 2). Worker sessions have a `lock_timeout`.
+- **The handlers** (`handlers_pipeline.py`): `pipeline.run` (stage the inbox, then queue the next job per document), `youtube.fetch` (saved facts, else one paced fetch through the Stage A gate; a closed gate defers the job to the gate's time without counting an attempt), `llm.reason` (saved facts only, the saved reply before the model, the page), `pipeline.publish` (the only handler that runs git). A handler returns `Done`, `Defer` or `Fail`.
+- **The item API** (`modules/queue/items.py`): one `job_items` row per calculated name, with the status of the document (`staging`, `waiting_youtube`, `waiting_llm`, `published`, `deferred`, `failed`, `duplicate`...).
+- **`catcher jobs add TYPE [--param KEY=VALUE] [--priority N]`** and **`catcher jobs list [--status] [--limit]`**. How to use them: [How to Run](../idea-catcher-how-to-run/#worker-stage-b).
+- **Tests:** a database harness with a frozen clock and fake services (`tests/support/`), the worker publishing the frozen real run of the test data with the same pages as Stage A, and crash injection at each step of each handler.
+
+**The transaction rules.**
+
+- **The claim commits before the handler runs.** A crash after that leaves a `running` job that the reaper recovers after its lease.
+- **No database transaction is open while a handler calls a model, YouTube or git.** Reads and writes are short sessions before and after the call.
+- **An item's new status and its next job are committed together** (one commit), so a document is never in a state with no job to move it on, and a crash between the two cannot queue a job twice.
+
+**Changed from the plan** (rulings made while building; where a step or plan text disagrees, this list wins):
+
+- **Adoption after a crash checks `inbox/` before `output/`.** A `staging` row whose capture is still in `inbox/` is rebuilt under the same calculated name, but only when the inbox file is the same document as `archive/<name>` (a new capture at the same path is staged on its own). Otherwise a copy in `output/` continues at the queue step.
+- **Publish commits first, then `pull --rebase`, then push** (the plan said pull first). The pull's autostash then never holds the worker's own changes; a failed rebase is aborted and fails the job, the local commit stays and the next publish pushes it. Stage A's pull now does the same: it aborts a failed rebase, pulls with `merge.directoryRenames=false` (a capture added to a folder the worker emptied stays where it was added), and stops when the user's autostash cannot be put back cleanly.
+- **Unattended git only for the worker.** `GIT_TERMINAL_PROMPT=0`, ssh `BatchMode` (only when no `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` is set), `http.lowSpeed*` and timeouts (about 30 s local, 600 s network; a timeout stops the whole process group) apply to the worker's git calls only. The Stage A CLI keeps its interactive git.
+- **`youtube.fetch` jobs carry `profile` and `refresh_llm`** and pass them on to the `llm.reason` job they queue.
+- **The reaper fails the items of a job it fails** and moves their working copy to `failed/` (after its commit, best effort), except items that were handed off to another queued or running job.
+- **The `Done` counts of `pipeline.run` have a sixth key, `errors`** (`staged`, `adopted`, `duplicates`, `artifacts`, `unreadable`, `errors`).
+- **Job and item outcomes are separate.** A deferred or failed document ends its job as `succeeded`; an unexpected exception in a handler fails the item (moved to `failed/`) **and** the job (no retry).
+
 **Size check (decision 11).** `wc -l`: `queue.py` is **222 lines**; the whole `queue` package is **377 lines** (`queue.py` 222, `models.py` 155, an empty `__init__.py`). The rule "queue core about 300 lines" is about the queue logic, which is `queue.py`; `models.py` is the schema. **Verdict: under the threshold, so Procrastinate stays the fallback and we continue with our own queue.** No flaky concurrency test was reported in review, and the fencing holes found there were fixed (see above); the concurrency test does not yet force the blocking path or the rollback-by-winner path deterministically. B3 to B5 will add code to the queue, so look at the count again at B5.
 
-**Minors carried into B3** (found in review, not fixed in B2; this is the full list, the review ledger is not kept):
+**Minors carried into B3** (found in review, not fixed in B2; this is the full list, the review ledger is not kept; three are settled in B3, marked below):
 
 *Schema and migrations*
 
-- `job_items.doc_id` and `doc_class` are NOT NULL: confirm a staged `waiting_youtube` row always has both when it is first written (decision 5). B3 handlers create exactly those rows.
+- *Settled in B3:* `job_items.doc_id` and `doc_class` are NOT NULL: both are set by `_analyse` before staging, so every staged row (also `waiting_youtube`) has them.
 - The drift test reads `information_schema.data_type`, which hides USER-DEFINED/ARRAY detail (irrelevant for the current text/json columns).
 - The architecture's database section also lists `progress_done/total/message`, `trigger`, `queue` and `failed_days`, which the B1 tables leave out.
 - Stage C's image must copy `alembic.ini` and `migrations/` (`alembic_config` uses `PROJECT_ROOT`).
@@ -736,7 +760,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 *Queue behaviour*
 
-- The reaper needs a timer loop that tolerates errors (it can deadlock with a concurrent claim).
+- *Settled in B3:* the reaper runs on a timer in the worker (at the start and every 60 seconds, between jobs) and logs an error instead of stopping the worker.
 - `defer()` silently accepts a `run_after` in the past (document "due at once").
 - `claim()` and `heartbeat()` check `lease_s` (finite, > 0); a `types=[]` matches nothing (undocumented).
 - `with_for_update` needs `of=Job` if a join is ever added to `claim()`.
@@ -748,7 +772,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 *Tests*
 
-- Add `lock_timeout` to worker sessions so a thread test cannot hang the teardown; the thread `join(30)` is non-daemon and can stall pytest exit on failure.
+- *Settled in B3:* worker sessions have a `lock_timeout` (10 s). Still open: the thread `join(30)` in the queue tests is non-daemon and can stall pytest exit on failure.
 - The concurrency test does not force the blocking path nor the rollback-by-winner path (add a deterministic holder-session test); its lock-wait poll is not scoped to the reaper (add `datname` / `pg_blocking_pids`).
 - Check rejection tests insert a partial column set, so a NOT NULL violation would also raise `IntegrityError`; the `-x url=` path of `env.py` is untested.
 - The db conftest: a broad `except Exception` turns an ImportError into a Docker skip (import outside the try, catch only the container start); the container is not stopped if `start()` fails partway or `make_engine` raises; the admin engine in `fresh_database_url` is created before the try; the session fixture lacks a return annotation; two `pg_engine` tests request `session` only for its teardown (comment it).
@@ -762,6 +786,35 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - `process.py`: `str(vid)` and `str(gemini_video_id())` would embed "None" if `build_page` is called without `get_facts`; no test that `get_facts` raises with no transcript, or that `ask_llm` is not reached; a `FactsUnavailable` import sits inside a test function (`test_process_steps.py`).
 - The Gate test "no state file written" checks a `tmp_path` that nothing points at (near-vacuous).
 - `run.py`: no test pins the `log_outcome` levels and wording per kind (add a parametrized caplog test); `log_outcome` is called in two places with different message arguments (compute the message once); the dry-run test runs `start_work` first (cosmetic).
+
+**Open items after B3** (deferred minors from the B3 reviews that matter later):
+
+*For B4 (more than one worker)*
+
+- `fail_items_of` in the reaper checks the item status before it locks the row.
+- The reaper's file move to `failed/` after its commit is not fenced: re-check `status == "failed"` just before the move.
+- `GIT_LOCK` is per process, and only `pipeline.publish` takes it: use the `git` resource.
+- The status read and write in `youtube.fetch` and a few other handler paths are not one transaction.
+
+*For B5 (reconcile and item states)*
+
+- A reset of an item does not clear `stage_reason` (and `failed_path`, `warnings`).
+- A `waiting_youtube` item's `updated_at` is not refreshed while its fetch is deferred: reconcile must not call it `stuck` while a fetch is queued.
+- An item whose handler could not commit its own status stays active until reconcile; nothing marks `stuck` yet.
+
+*Robustness*
+
+- A down LLM backend is called once per queued `llm.reason` job (Stage A stops after the first failure in a run).
+- `os.killpg` is POSIX only: fall back to `terminate()`/`kill()` on Windows.
+- The ssh-config probe uses a plain `subprocess.run`, so a timeout or `OSError` there is not a `GitError`.
+- `worker --once` spins on a handler that defers to a time already due, and exits 0 with `ran 0 job(s)` on a database error during a claim.
+- A malformed `DATABASE_URL` gives a Typer traceback that can show local variables, the URL with its password among them: set `pretty_exceptions_show_locals=False` (or catch it).
+- `only` and `requeue` of `pipeline.run` are lists, which `catcher jobs add --param` cannot give (found on 2026-10-03 while checking the how-to-run recipe).
+
+*Tests*
+
+- The heartbeat and lease tests with a 0.6 s lease can be flaky on a slow machine.
+- The byte compare of `llm/` and `facts/` in the end-to-end test does not assert that the folders are not empty.
 
 **Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 

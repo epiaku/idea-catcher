@@ -10,7 +10,7 @@ Obsidian -> idea-bucket/inbox -> catcher run pipeline -> epiaku-docs (page)
                                       |-> output/ (the working copy), failed/, duplicates/
 ```
 
-**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) comes next.
+**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs are built (B0 to B3); the shared YouTube gate, item states, schedules and Compose come next.
 
 ## 📑 Table of contents
 
@@ -45,6 +45,8 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 | `catcher reason`, `catcher render` | Try the LLM step, or write one page, on a single document |
 | `catcher youtube facts` | Print the facts of one YouTube video (it respects the YouTube rate limits) |
 | `catcher db upgrade`, `catcher db downgrade REVISION` (for example `-1`) | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see the how-to-run guide) |
+| `catcher worker` | Run the jobs in the queue, one at a time, until Ctrl-C (`--once`: run what is due, then exit). One worker at a time (Stage B) |
+| `catcher jobs add TYPE`, `catcher jobs list` | Put a job on the queue (`pipeline.run`, `pipeline.publish`, with `--param KEY=VALUE`), list the jobs (Stage B) |
 | `catcher testdata reset` | Make fresh test repos in `tmp/ic` |
 | `catcher version` | Print the version |
 
