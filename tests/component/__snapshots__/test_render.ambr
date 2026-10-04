@@ -8,6 +8,9 @@
   weight: 100
   type: docs
   id: cf81e40b020519ef
+  destination: web-clips
+  stage: published
+  created_by: idea catcher
   tags:
   - digital-product-idea
   - online-courses
@@ -49,6 +52,9 @@
   weight: 100
   type: docs
   id: a7b2c9
+  destination: notes
+  stage: published
+  created_by: idea catcher
   tags:
   - youtube-idea
   - content-creation

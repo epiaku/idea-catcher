@@ -104,7 +104,7 @@ def check_not_blocked(profile: Profile, opts: ProcessOptions) -> None:
 
 
 def facts_for(note: Note, vid: str, svc: Services, opts: ProcessOptions) -> YoutubeFacts:
-    log.info("%s: getting the YouTube facts for %s", note_label(note), vid)
+    log.debug("%s: getting the YouTube facts for %s", note_label(note), vid)
     if svc.youtube is None:
         if not opts.allow_fetch:  # no access layer (tests): only the saved facts, never the fetcher
             saved = FactsCache(opts.facts_dir).get(vid) if opts.facts_dir else None
@@ -135,7 +135,7 @@ def youtube_embed(vid: str, title: str) -> str:
 
 
 def log_llm(note: Note, step: str, result: LlmResult) -> None:
-    log.info(
+    log.debug(
         "%s: %s done (backend=%s model=%s attempts=%d tokens_in=%s tokens_out=%s)",
         note_label(note),
         step,
@@ -185,7 +185,7 @@ def ask_llm(
         schema_name=note.doctype.schema_name,
         profile=profile_name,
     )
-    log.info("%s: asking the LLM (profile=%s)", note_label(note), profile_name)
+    log.debug("%s: asking the LLM (profile=%s)", note_label(note), profile_name)
     recorder = None
     if llm_dir is not None and svc.settings.llm_trace and not dry_run:
         recorder = trace_recorder(note, llm_dir)
@@ -201,7 +201,7 @@ def ask_llm(
         keep_prompt=svc.settings.llm_trace_prompt,
     )
     if result.from_saved:
-        log.info("%s: using the saved LLM reply (no call)", note_label(note))
+        log.debug("%s: using the saved LLM reply (no call)", note_label(note))
     log_llm(note, "reason", result)
     return result
 

@@ -6,7 +6,7 @@ weight: 40
 type: docs
 ---
 
-This page shows how to **run** the Idea Catcher: the local CLI of Stage A, and the worker and job queue of Stage B (see [Worker (Stage B)](#worker-stage-b)). The settings it needs are on the [configuration page](../idea-catcher-configuration/), the flow on the [pipeline page](../idea-catcher-pipeline/).
+This page shows how to **run** the Idea Catcher: the local CLI of Stage A, and the worker and job queue of Stage B (see [How to Run Stage B](../idea-catcher-how-to-run-stage-b/)). The settings it needs are on the [configuration page](../idea-catcher-configuration/), the flow on the [pipeline page](../idea-catcher-pipeline/).
 
 ## Before you start
 
@@ -39,8 +39,8 @@ uv run catcher run pipeline --push                                   # 3. full r
 - **`reason`**: sends one document to the LLM and prints the answer. Nothing is written.
 - **`render`**: makes the page for one document and writes it into `epiaku-docs`. No commit.
 - **`youtube facts`**: prints the counts and transcript of one YouTube video.
-- **`db upgrade`, `db downgrade REVISION`**: create or roll back the Postgres tables (Stage B). See [Database (Stage B)](#database-stage-b).
-- **`worker`, `jobs add`, `jobs list`**: run the jobs in the Postgres queue, put a job on it, look at the jobs (Stage B). See [Worker (Stage B)](#worker-stage-b).
+- **`db upgrade`, `db downgrade REVISION`**: create or roll back the Postgres tables (Stage B). See [How to Run Stage B](../idea-catcher-how-to-run-stage-b/#database).
+- **`worker`, `jobs add`, `jobs list`**: run the jobs in the Postgres queue, put a job on it, look at the jobs (Stage B). See [How to Run Stage B](../idea-catcher-how-to-run-stage-b/#worker).
 - **`version`**: prints the version.
 
 **A run only looks at `inbox/` to find work.** When work on a document starts, it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`) and leaves `inbox/`: the original goes to `archive/` and a working copy to `output/`, both under that name. If something temporary goes wrong (the LLM is down, a budget is used up), the working copy stays in `output/` with `stage: deferred` and the reason. The run never reads `output/`, so **to retry, use `--requeue NAME`** (it moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again), or move the file back by hand. It keeps its calculated name, so the next run overwrites the stalled copy.
@@ -220,97 +220,9 @@ Prints the counts, description and transcript of one video as JSON. It calls You
 uv run catcher youtube facts https://www.youtube.com/watch?v=MBPHU7aaklM
 ```
 
-## Database (Stage B) {#database-stage-b}
+## Stage B: the database and the worker {#stage-b}
 
-The queue and the state tables live in Postgres. Stage A needs none of this: `run pipeline` and the other commands above never touch the database. The schema commands, the tests, the [worker and the `jobs` commands](#worker-stage-b) use it.
-
-**Start a Postgres 17 for development** (the image has pgvector, as in the design):
-
-```bash
-docker run --rm -d --name catcher-db -p 5432:5432 \
-  -e POSTGRES_USER=catcher -e POSTGRES_PASSWORD=catcher -e POSTGRES_DB=catcher \
-  pgvector/pgvector:pg17
-```
-
-When you are done (`--rm` removes the container and its data):
-
-```bash
-docker stop catcher-db
-```
-
-This matches the default `DATABASE_URL`, `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`. To use another port or server, set `DATABASE_URL` in `.env` or in the shell (see [Configuration](../idea-catcher-configuration/)). There is no `compose.yaml` yet.
-
-**Create and drop the tables:**
-
-```bash
-uv run catcher db upgrade        # migrate to the latest revision (head); a REVISION can be given instead
-uv run catcher db downgrade -1   # roll back one migration; REVISION is required (a revision id, or -1)
-```
-
-`catcher db downgrade base` drops **every table with all its rows**, so it asks for confirmation first (`--yes` skips the question). Without a REVISION the command fails and changes nothing.
-
-After `upgrade` the tables are `jobs`, `job_items`, `job_events`, `resources`, `schedules` and Alembic's `alembic_version`; after `downgrade base` only `alembic_version` is left.
-
-**Run the database tests:**
-
-```bash
-uv run pytest tests/integration/db -q
-```
-
-They start their **own throwaway Postgres container** through testcontainers (`pgvector/pgvector:pg17`) and remove it afterwards, so the development container is not needed and is not touched. They **skip** when Docker is not running. On macOS with Docker Desktop the socket is found automatically if `~/.docker/run/docker.sock` exists (unless `DOCKER_HOST` is set). **The pre-commit hook does not run them**: it runs only `tests/unit` and `tests/component`, so run the database tests yourself before you push anything that touches `modules/queue`, `core/db.py` or `migrations/`.
-
-**Run every check at once:** `scripts/check` (from any folder) runs `ruff check`, `ruff format --check`, `pyright` and then all the tests, and stops at the first failure. The tests run with outgoing network blocked (`tests/support/blocknet.py`): any connection to a host other than localhost, or a DNS lookup of one, raises `NETWORK BLOCKED`, is counted, and makes the run fail even when a test swallowed the error. `scripts/check --fast` runs only `tests/unit` and `tests/component` (no Docker). The database tests skip by themselves when Docker is not running, so `scripts/check` can pass without them: start Docker for the full check. The guard is not loaded by default, so `pytest -m live` by hand still works. GitHub Actions (`.github/workflows/ci.yml`) runs `scripts/check` only when you start it by hand (Actions tab, "Run workflow"); it does not run on push or pull request.
-
-## Worker (Stage B) {#worker-stage-b}
-
-In Stage B the same work runs as **jobs** in the Postgres queue. `catcher jobs add` puts a job on the queue, `catcher worker` runs the jobs. Nothing is scheduled yet (that is B6): you add the jobs by hand. The worker uses `IDEAS_REPO` and `DOCS_REPO` (or `--ideas`/`--docs`) like `run pipeline`, and the database in `DATABASE_URL` (`postgresql+psycopg://catcher:...@localhost:5432/catcher`).
-
-**A free try on the test repos.** The test repos hold the saved replies and facts of a real run, so this calls no model and no YouTube. The empty key and the unreachable URL make sure a reply that is not saved fails (the document is `deferred`) instead of costing money.
-
-```bash
-# 1. a Postgres and the tables (see Database (Stage B) above)
-docker run --rm -d --name catcher-db -p 5432:5432 \
-  -e POSTGRES_USER=catcher -e POSTGRES_PASSWORD=catcher -e POSTGRES_DB=catcher \
-  pgvector/pgvector:pg17
-uv run catcher db upgrade
-
-# 2. fresh test repos, one pipeline.run job, and a worker that runs everything that is due, then exits
-uv run catcher testdata reset
-uv run catcher jobs add pipeline.run           # prints the job id
-OPENAI_API_KEY="" FREELLMAPI_URL=http://127.0.0.1:1/v1 YOUTUBE_OFFLINE=1 \
-  uv run catcher worker --once --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
-uv run catcher jobs list                       # newest first: id, type, status, priority, run_after, reason or error
-
-# 3. commit the result (the test repos have no remote, so no pull and no push)
-uv run catcher jobs add pipeline.publish --param push=false --param pull=false
-uv run catcher worker --once --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
-git -C tmp/ic/epiaku-docs log --stat -1        # the pages
-
-docker stop catcher-db                         # when you are done (removes the data)
-```
-
-What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 documents and queues one `llm.reason` job per document (a clip without saved facts gets a `youtube.fetch` job first). **One `worker --once` runs them all**, because it keeps going while jobs are due: it ends with `ran 44 job(s): succeeded=44` after about 2 seconds, all from saved replies. The pages and the moved files are in the repos, but **nothing is committed until `pipeline.publish`**, which makes one commit per repo (`idea-catcher: process the inbox (pipeline.publish)` and `idea-catcher: publish pages (pipeline.publish)`).
-
-**The jobs and their parameters.** Give parameters with `--param KEY=VALUE` (repeat it): `true`/`false` become booleans, whole numbers become integers, the rest stays text. `only` and `requeue` are always lists of names: repeat them for more (`--param only=a --param only=b`); a name is never split on commas, because a file name can hold one. `--priority N` puts a job before others (higher first). `jobs add` checks the job first with the handler's own check: an unknown job type or a parameter the handler would refuse exits with code 2 and queues nothing (`cannot queue pipeline.run: limit must be a whole number of 0 or more, not -1`).
-
-| Job | Parameters | What it does |
-| --- | --- | --- |
-| `pipeline.run` | `limit`, `profile`, `refresh_llm`, `retry_deferred`, `only`, `requeue` | Stages the `inbox/` documents (database row first, then the move to `archive/` and `output/`), copies the artifacts, and queues the next job of each document. The parameters mean what the `run pipeline` options of the same name mean: `--param only=x` is `--file x`, `--param requeue=x` is `--requeue x` (repeat both for more names; an absolute path or a `..` part is refused). `requeue` leaves a document alone while a queued or running job carries it; a document left active with no job (a stuck leftover) is requeued |
-| `pipeline.publish` | `pull`, `push` (both `true` by default) | Per repo, `idea-bucket` first: commits the managed folders (in `idea-bucket` all of `inbox/`, so also captures that arrived after the last `pipeline.run`, plus `archive/`, `output/`, `failed/`, `duplicates/`, `facts/` and `llm/`; in `epiaku-docs` the page folders and `idea-bucket/artifacts/`), then `git pull --rebase`, then push. A failed rebase is aborted and fails the job; the commit stays local and the next publish pushes it. With `push=true` on a repo without a remote the job fails before any git change (`no git remote to push to ...`) |
-| `llm.reason`, `youtube.fetch` | `calculated_name`, `profile`, `refresh_llm` (queued by the worker) | One document each, by its calculated name (`notes/<name>.md`, `clippings/2026/<name>.md`, or `<name>.md` for a capture directly in `inbox/`). You do not add these by hand |
-
-- **A fresh answer:** `uv run catcher jobs add pipeline.run --param refresh_llm=true` calls the model even when a reply is saved, so it costs money with real keys. With the empty key above it only shows that the documents defer (`OPENAI_API_KEY is not set`). With `refresh_llm=true` a rerun after a crash also skips the reply the first try saved, so **the model can be paid twice**; without it the model is paid once.
-- **Dry runs never go through the queue.** `jobs add` refuses a `dry_run` parameter (exit code 2): use `run pipeline --dry-run`.
-- **A job's status is not a document's status.** A document that defers (the LLM is down, a budget is used up) or fails for good is an item outcome: its job still `succeeded`. The item states are in the `job_items` table (there is no command for them yet) and in the working copy in `output/` (`stage: deferred`), as in Stage A. A job `failed` means the job itself went wrong: a git error, a parameter the job carries that is wrong, or an unexpected error in the code. When a failed job carries a document (`llm.reason`, `youtube.fetch`), the worker marks that document `failed` with the job's error and moves its working copy to `failed/`, unless another queued or running job carries it; a `requeue` runs it again.
-- **`worker --once` exits 0 even when a job failed.** Look at `jobs list`. A job deferred to a later time (a YouTube gap) is not due, so `--once` leaves it.
-- **Exit codes of `catcher worker`:** `0` it stopped normally (also when jobs failed); `1` it lost its one-worker lock (see below), or with `--once` a claim hit a database error (`could not claim a job`) or a job could not be finished (`error=1` in the summary; the reaper puts it back after its lease); `2` another worker runs, `DATABASE_URL` is malformed, or the database cannot be reached.
-
-**Running the worker.** Without `--once` it runs until you stop it, waits `--poll-s` seconds (2) when no job is due, and at the start and every 60 seconds (between jobs) puts back jobs whose lease ran out (the reaper; `--once` reaps once at the start).
-
-- **Stop it with Ctrl-C or `kill` (SIGTERM).** It finishes the job it is running, then exits (exit code 0). A **second** Ctrl-C stops at once: that job stays `running` until its lease ends (`--lease-s`, 120 seconds; a heartbeat renews it while the job runs), then the reaper puts it back on the queue and counts one attempt. After 3 such attempts the job fails, and its document is marked `failed` and moved to `failed/`.
-- **One worker at a time.** A second worker on the same database exits at once with code 2: `another worker is already running; run one worker at a time`. The lock lives on one database connection. Before every claim and every reap the worker checks that this connection still holds it; after a Postgres restart or a dropped connection it stops with exit code 1 (`the worker lost its database lock ...`), so a supervisor can start it again and it takes the lock again.
-- **No Postgres:** `cannot reach the database in DATABASE_URL` and exit code 2, for the worker and the `jobs` commands. A malformed `DATABASE_URL` gives `DATABASE_URL is not a valid database URL` and exit code 2; no message shows the URL (it holds the password).
-- **Do not run `run pipeline` (Stage A) on the checkout a worker uses.** Both move files in `inbox/` and commit; nothing stops that yet (an open item).
+The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, how to stop the worker, and the exit codes. Stage A needs none of it: `run pipeline` and the other commands on this page never touch the database. `scripts/check` runs every check at once (see that page).
 
 ## YouTube and the gap between calls {#youtube-gap}
 
@@ -352,7 +264,7 @@ Every LLM call of `run pipeline` leaves a **trace** in `llm/<subfolder>/<calcula
 }
 ```
 
-- **A run reads a good saved reply before it calls the model**, like it reads saved facts before it calls YouTube. The log says `using the saved LLM reply (no call)`. The reply is reused only when the task, the profile (`notes`, `clippings`, `youtube`, or the `--profile` override), the prompt version (for example `note-7`) and the `content_key` (a sha256 of the task, the document text and the transcript) all match, and the trace ended `ok`. Another profile or a prompt version bump is a miss. Two documents with the same text share a reply.
+- **A run reads a good saved reply before it calls the model**, like it reads saved facts before it calls YouTube. The log says `using the saved LLM reply (no call)` (a DEBUG line, see [How much is logged](#logging)). The reply is reused only when the task, the profile (`notes`, `clippings`, `youtube`, or the `--profile` override), the prompt version (for example `note-7`) and the `content_key` (a sha256 of the task, the document text and the transcript) all match, and the trace ended `ok`. Another profile or a prompt version bump is a miss. Two documents with the same text share a reply.
 - **What is not in the key:** the title, the source URL, tags, glossary, business context and the facts metadata. After you change the glossary or the context, use `--refresh-llm`. Tags are normalised again when the page is rendered, so a new tag rule applies to an old reply. A page made from a saved reply is the same, byte for byte, as the live page. The report shows the recorded tokens, although nothing was paid.
 - **`--requeue` reuses a good saved reply like any run.** For a fresh answer use `--refresh-llm` (alone or with `--requeue`), or delete the trace file (or the whole `llm/` folder). `LLM_CACHE=false` turns the reading off. A saved reply is validated again: if it no longer validates, the run logs a warning and calls the model. A dry run reads saved replies (free) and writes nothing.
 - **Never lost:** a trace that ended `ok` is never replaced by a failed call, and a trace with replies never by one without. A reply that made an invalid page is marked `invalid_page` and is never reused, so a plain requeue calls the model again. (With `LLM_TRACE=false` nothing is written to `llm/`, so such a reply is not marked: use `--refresh-llm`.) A trace that cannot be written never fails a document. No API key is ever written. `LLM_TRACE_PROMPT=true` also saves the prompt text (large: it holds the whole document); otherwise only its `prompt_sha256`.
@@ -361,6 +273,12 @@ Every LLM call of `run pipeline` leaves a **trace** in `llm/<subfolder>/<calcula
 - **To debug a bad page**, open the trace of the document: `attempts[].reply` is what the model said, `error` says why a call or a page was refused, `output` is what was validated. After a real run, commit and push `idea-bucket` like any other result.
 
 The settings are `LLM_CACHE`, `LLM_TRACE` and `LLM_TRACE_PROMPT` (see the [configuration page](../idea-catcher-configuration/)). The test data holds a frozen run, so a reset test repo runs with no model and no YouTube call (see [Recipes on test data](#recipes-on-test-data)).
+
+## How much is logged {#logging}
+
+At the default level (`INFO`) a run logs a start line, one line per document with its result (`published`, `deferred`, `failed`, `moved to duplicates/`), warnings and errors, and a summary. A big inbox does not fill the screen: when `limit` stops a run, one line says how many documents stay in `inbox/`. The worker's first line says how many documents wait in the inbox and the version of the catcher (`inbox: 43 document(s) to process, at most 3 now (catcher version 0.1.0)`).
+
+The steps of each document (naming, archiving, starting work, asking the LLM, using a saved reply, tokens) are `DEBUG` lines. To see them: `uv run catcher --log-level DEBUG run pipeline`, `uv run catcher --log-level DEBUG worker --once`, or `LOG_LEVEL=DEBUG` in `.env`.
 
 ## Reading the output
 
@@ -413,7 +331,7 @@ export DOCS_REPO=tmp/ic/epiaku-docs
 2. Copies the test data into `tmp/ic/idea-bucket` and `tmp/ic/epiaku-docs`.
 3. Turns each into a git repo with one commit and **no remote**, so nothing can be pulled or pushed by mistake.
 
-Run it again whenever you want to start over. `--target PATH` makes the repos somewhere else. The default, `tmp/ic`, is in the project root whatever folder you run the command from, and `tmp/` is not tracked by Git.
+Run it again whenever you want to start over. `--target PATH` makes the repos somewhere else. **`--fresh-llm-and-youtube`** copies `idea-bucket` without its `llm/` (saved LLM replies) and `facts/` (saved YouTube facts), so a run on the copies calls the LLM and YouTube for real: it costs money within the budget caps, and the [YouTube gap](#youtube-gap) applies (about 2 minutes between clips), so start with `limit=3`. Without the option the copies hold the saved replies and facts of the real run, so a run calls neither. The default, `tmp/ic`, is in the project root whatever folder you run the command from, and `tmp/` is not tracked by Git.
 
 The two `export` lines make every command in this terminal use the test repos, so the recipes below need no `--ideas`/`--docs`. They win over `.env`. Run `unset IDEAS_REPO DOCS_REPO` when you are done, so a later command does not run on the test repos by accident. `catcher reason` and `catcher render` take a document path directly, so those always need the full `tmp/ic/...` path.
 
@@ -662,7 +580,7 @@ uv run catcher run pipeline --file "<the-file>"
 - **`output/`**: the working copy (`stage: analyzed` or `deferred`) while it is worked on or stalled, then the final page, the same text as in `epiaku-docs`. A run never reads it.
 - **`failed/`**: files that could not be processed, with the reason.
 - **`duplicates/`**: earlier snapshots of a longer clip.
-- **`epiaku-docs`**: the published pages, under `hugo/content/en/docs/idea-bucket/`, in `notes/`, `youtube/` (YouTube clips and Gemini video chats) or `web-clips/` (web clips and the other AI chats). The working copy's `destination` field says which; see [Where a page goes](../idea-catcher-pipeline/#destination). There is no `clippings/` folder there any more (the idea-bucket `inbox/clippings/` and the profile `clippings` are other things). Pages still in an old `clippings/` folder are not touched or committed by the pipeline: move them by hand once. The site still needs your manual `deploy.sh`.
+- **`epiaku-docs`**: the published pages, under `hugo/content/en/docs/idea-bucket/`, in `notes/`, `youtube/` (YouTube clips and Gemini video chats) or `web-clips/` (web clips and the other AI chats). The page's `destination` field says which; see [Where a page goes](../idea-catcher-pipeline/#destination). There is no `clippings/` folder there any more (the idea-bucket `inbox/clippings/` and the profile `clippings` are other things). Pages still in an old `clippings/` folder are not touched or committed by the pipeline: move them by hand once. The site still needs your manual `deploy.sh`.
 
 ## When something is off
 

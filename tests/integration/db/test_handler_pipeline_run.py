@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select, update
 
+from catcher import __version__
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import load
 from catcher.modules.pipeline import inbox
@@ -384,6 +385,19 @@ def test_limit_counts_the_staged_notes(harness):
     assert run(harness, limit=1) == Done(counts(staged=1))
     assert len(items(harness)) == 1
     assert len([p for p in (harness.ideas / "inbox").rglob("*.md")]) == 2
+
+
+def test_a_big_inbox_is_logged_in_two_lines_not_one_per_document(harness, caplog):
+    with caplog.at_level("INFO", logger="catcher.worker"):
+        run(harness, limit=1)
+    lines = [r.getMessage() for r in caplog.records if r.name == "catcher.worker.pipeline"]
+    assert [m for m in lines if m.startswith("inbox:")] == [
+        f"inbox: 3 document(s) to process, at most 1 now (catcher version {__version__})"
+    ]
+    assert [m for m in lines if m.startswith("limit of")] == [
+        "limit of 1 reached: 2 document(s) stay in inbox/"
+    ]
+    assert not [m for m in lines if "stays in inbox/" in m]  # no line per document that waits
 
 
 @pytest.mark.parametrize(

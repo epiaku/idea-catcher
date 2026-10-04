@@ -93,7 +93,7 @@ If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ER
 - `TRANSCRIPT_LANGUAGES` (default `en`): preferred YouTube transcript languages, comma-separated, for example `en, nl`.
 - `GIT_AUTHOR_NAME` (default `idea-catcher`): author name on the commits the pipeline makes.
 - `GIT_AUTHOR_EMAIL` (default `idea-catcher@users.noreply.github.com`): author email on those commits.
-- `DATABASE_URL` (default `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`): the Postgres database for the Stage B queue and state. Only `catcher db upgrade` and `catcher db downgrade` use it so far; a plain `catcher run pipeline` does not need a database. The default matches the development container in [Database (Stage B)](../idea-catcher-how-to-run/#database-stage-b). It holds a password, so a real URL goes in `.env`.
+- `DATABASE_URL` (default `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`): the Postgres database for the Stage B queue and state. Only `catcher db upgrade` and `catcher db downgrade` use it so far; a plain `catcher run pipeline` does not need a database. The default matches the development container in [Database](../idea-catcher-how-to-run-stage-b/#database). It holds a password, so a real URL goes in `.env`.
 - `LOG_LEVEL` (default `INFO`): `DEBUG`, `INFO`, `WARNING` or `ERROR`. The flag `--log-level` overrides it for one run.
 - `LOG_FILE` (default none): also write the log to this file. The folder is created.
 

@@ -133,8 +133,8 @@ def test_the_business_context_is_only_for_the_youtube_prompts(make_note, make_se
     assert "Epiaku makes demos" not in chats.prompts[0]
 
 
-def test_the_published_page_has_no_destination_field(make_note, make_services):
+def test_the_published_page_names_its_destination_folder(make_note, make_services):
     note = make_note("note", destination="web-clips")
     processed = process_note(note, make_services(), ProcessOptions())
     assert note.destination == "web-clips"
-    assert "destination" not in parse(processed.page).fm  # the page's folder says it
+    assert parse(processed.page).fm["destination"] == "web-clips"  # output/ shows where the page goes

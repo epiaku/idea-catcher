@@ -331,13 +331,14 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     )
 
     state = RunState(blocked=set(), budget_blocked={}, attempted=0, seen_ids=set())
+    left_by_limit = 0
     for position, note in enumerate(ordered, start=1):
         who = f"({position}/{total}) {note_label(note)}"
         item = ItemReport(note.doc_id, note.doctype.name, "skipped")
         report.items.append(item)
         if opts.limit is not None and state.attempted >= opts.limit:
             item.message = "run limit reached"
-            log.info("%s: skipped, %s", who, item.message)
+            left_by_limit += 1  # one line for all of them after the loop: an inbox can hold hundreds
             continue
         vid = video_id(str(note.doc.fm.get("source") or "")) if note.doctype.name == "youtube" else None
         if vid and svc.youtube is not None:
@@ -430,6 +431,8 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             backend,
             waiting,
         )
+    if left_by_limit:
+        log.info("limit of %d reached: %d note(s) stay in inbox/", opts.limit, left_by_limit)
     copy_artifacts(scan, ideas, docs, opts, svc, report, touched_ideas, touched_docs)
     counts = report.counts()
     log.info(

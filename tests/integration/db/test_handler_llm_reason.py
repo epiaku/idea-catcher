@@ -93,7 +93,7 @@ def test_llm_reason_publishes_a_note_page_and_marks_the_item_published(harness, 
 
     [page] = pages(harness.docs, NOTES)
     final = harness.ideas / "output" / name
-    assert "stage" not in load(final).fm
+    assert load(final).fm["stage"] == "published"
     assert final.read_text(encoding="utf-8") == page.read_text(encoding="utf-8")
     assert item_of(harness, "YouTube walks.md").status == "published"
     assert harness.fetch_calls == []
@@ -152,7 +152,7 @@ def test_a_second_run_reuses_the_saved_reply_and_never_calls_the_model(harness):
     assert rerun(harness, name) == Done({"item": "published"})
     assert calls == []
     assert pages(harness.docs, NOTES) == [page] and page.read_bytes() == published
-    assert "stage" not in load(harness.ideas / "output" / name).fm
+    assert load(harness.ideas / "output" / name).fm["stage"] == "published"
 
 
 def test_refresh_llm_in_the_job_params_calls_the_model_again(harness):
@@ -391,7 +391,7 @@ def test_a_rerun_of_a_deferred_working_copy_publishes(harness):
         set_item_status(session, name, "waiting_llm", now=harness.clock())
 
     assert rerun(harness, name) == Done({"item": "published"})
-    assert "stage" not in load(harness.ideas / "output" / name).fm
+    assert load(harness.ideas / "output" / name).fm["stage"] == "published"
     assert len(pages(harness.docs, NOTES)) == 1
 
 

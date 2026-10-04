@@ -10,11 +10,12 @@ from catcher.core.frontmatter import Doc, dump
 from catcher.modules.llm.schemas import Summary
 from catcher.modules.llm.service import LlmResult
 from catcher.modules.pipeline.doctypes import canonical_source
-from catcher.modules.pipeline.inbox import Note
+from catcher.modules.pipeline.inbox import STAGE_PUBLISHED, Note
 from catcher.modules.youtube.facts import fmt_ts
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 PAGE_WEIGHT = 100
+CREATED_BY = "idea catcher"  # the `created_by` field of every page the pipeline writes
 
 
 def slugify(title: str, max_len: int = 60) -> str:
@@ -71,6 +72,9 @@ def build_frontmatter(ctx: PageContext, extra_fm: dict[str, Any] | None = None) 
         "weight": PAGE_WEIGHT,
         "type": "docs",
         "id": ctx.note.doc_id,
+        "destination": ctx.note.destination,  # the epiaku-docs folder of this page
+        "stage": STAGE_PUBLISHED,  # the catcher made this page: the other fields may come from Obsidian
+        "created_by": CREATED_BY,  # stays in the page when it is copied: we can always see where it came from
         "tags": ctx.tags,
     }
     source = canonical_source(ctx.note.doctype, ctx.note.doc.fm)

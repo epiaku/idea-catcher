@@ -5,6 +5,9 @@ date: '2026-09-28'
 weight: 100
 type: docs
 id: mX7zMtssx70-gemini
+destination: youtube
+stage: published
+created_by: idea catcher
 tags:
 - strategy
 - marketing

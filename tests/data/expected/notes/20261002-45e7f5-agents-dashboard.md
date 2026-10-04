@@ -5,6 +5,9 @@ date: '2026-10-02'
 weight: 100
 type: docs
 id: d4b611
+destination: notes
+stage: published
+created_by: idea catcher
 tags:
 - app-idea
 - ai-agents

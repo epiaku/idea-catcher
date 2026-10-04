@@ -407,7 +407,7 @@ Until Postgres arrives in [Stage B](../idea-catcher-service-architecture/#mvp-st
 - **In `inbox/`**: waiting. Nothing has touched it.
 - **`output/`, `stage: analyzed`**: work has started. `id` and `class` are added. This is also what a crashed run leaves behind.
 - **`output/`, `stage: deferred`**: an error stalled it (LLM down, budget used up, YouTube facts unavailable). The frontmatter also has `deferred_reason` and `deferred_at`.
-- **`output/`, no `stage`**: **final.** The file is now exactly the page written to `epiaku-docs`.
+- **`output/`, `stage: published`**: **final.** The file is now exactly the page written to `epiaku-docs`. The page carries `stage: published`, `destination` and `created_by: idea catcher`: Obsidian and the web clipper never write those fields. `created_by` stays in the file when you copy it somewhere else, so you can always see that the pipeline made it.
 - **`failed/`** (with `.error.txt`): failed for good.
 - **`duplicates/`**: an earlier snapshot of a longer clip. Never processed.
 
@@ -524,7 +524,7 @@ There is no `clippings/` folder in epiaku-docs (since 2026-10-03). The `inbox/cl
 - **The field:** when the pipeline analyses a document it writes `destination` into the working copy's frontmatter, next to `id`, `class` and `captured`. The value is `notes`, `youtube` or `web-clips`.
 - **Who sets it:** the pipeline, from the class: `note` → `notes`; `youtube` and `youtube-gemini` → `youtube`; `web-clip` and `ai-chat` → `web-clips`.
 - **Override:** a capture that already has a valid `destination` (exactly one of the three) keeps it, like `type:` or `class:` override the class. You can write it yourself, and a document requeued from `archive/` keeps the one it had. Any other value is ignored with a warning in the log and the pipeline sets it again.
-- **Only the folder changes.** An AI chat keeps its own prompt, template and the `clippings` profile. The published page has no `destination` field: its folder says it.
+- **Only the folder changes.** An AI chat keeps its own prompt, template and the `clippings` profile. The finished page carries the field too (`destination: web-clips` in its frontmatter, next to `stage: published`), so the page in `output/` and in `epiaku-docs` shows which folder it belongs to.
 - **Republishing** replaces the page with the same `id` in the target folder only. Pages that still sit in an old `clippings/` folder of epiaku-docs are not looked at and not committed: move them by hand once (to `web-clips/`, or `youtube/` for a Gemini video chat).
 
 ### One class, one prompt, one call {#one-prompt-per-class}
@@ -1227,7 +1227,7 @@ async def publish(ctx: JobContext, p: PublishParams) -> None:
             ctx.item_failed(item, problems)  # output/<sub>/<name>.md → failed/<sub>/ + .error.txt
             continue
         write_page(docs_repo, item.destination, item.doc_id, page)  # DOCS/<notes|youtube|web-clips>
-        finish(ideas_repo, item, page)  # the working copy in output/ becomes the final page (no stage)
+        finish(ideas_repo, item, page)  # the working copy in output/ becomes the final page (`stage: published`)
         ctx.item(item.doc_id, item.doc_class, status="published")
     push(docs_repo)
     push(ideas_repo)  # straight to main, docs first

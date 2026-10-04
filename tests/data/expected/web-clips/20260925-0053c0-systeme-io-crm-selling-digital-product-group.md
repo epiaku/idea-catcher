@@ -5,6 +5,9 @@ date: '2026-09-25'
 weight: 100
 type: docs
 id: cf81e40b020519ef
+destination: web-clips
+stage: published
+created_by: idea catcher
 tags:
 - strategy
 - online-courses

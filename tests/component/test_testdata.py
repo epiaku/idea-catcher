@@ -78,3 +78,28 @@ def test_reset_command(tmp_path):
     assert "made" in result.output and "--profile fake" in result.output
     refused = CliRunner().invoke(app, ["testdata", "reset", "--target", str(tmp_path)])
     assert refused.exit_code == 2 and "not made by this command" in refused.output
+
+
+def test_reset_fresh_llm_and_youtube_leaves_out_the_saved_replies_and_facts(tmp_path):
+    """The idea-bucket copy has no `facts/` and no `llm/`, so a run calls the LLM and YouTube for real."""
+    source = DEFAULT_SOURCE / "idea-bucket"
+    assert (source / "facts").is_dir() and (source / "llm").is_dir()  # the committed data has them
+    repos = reset_test_repos(tmp_path / "ic", fresh_llm_and_youtube=True)
+    assert not (repos["idea-bucket"] / "facts").exists() and not (repos["idea-bucket"] / "llm").exists()
+    left_out = {p for p in tree(source) if p.split("/")[0] in ("facts", "llm")}
+    assert left_out  # something was left out
+    assert tree(repos["idea-bucket"]) == tree(source) - left_out  # everything else arrives
+    assert tree(repos["epiaku-docs"]) == tree(DEFAULT_SOURCE / "epiaku-docs")
+    assert git(repos["idea-bucket"], "status", "--porcelain").strip() == ""
+
+
+def test_reset_command_fresh_llm_and_youtube(tmp_path):
+    target = tmp_path / "ic"
+    result = CliRunner().invoke(
+        app, ["testdata", "reset", "--target", str(target), "--fresh-llm-and-youtube"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "no saved LLM replies or YouTube facts" in result.output
+    assert not (target / "idea-bucket" / "llm").exists()
+    plain = CliRunner().invoke(app, ["testdata", "reset", "--target", str(target)])
+    assert "no saved LLM replies" not in plain.output and (target / "idea-bucket" / "llm").is_dir()

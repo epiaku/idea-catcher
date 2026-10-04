@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from catcher import __version__
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import FrontmatterError
 from catcher.core.git import GIT_LOCK, GitError, ahead_of_upstream, commit_managed, has_remote, pull, push
@@ -326,11 +327,18 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         counts["duplicates"] += 1
         log.info("%s: moved to duplicates/, an earlier clip of %s", note_label(note), note_label(winner))
 
+    log.info(
+        "inbox: %d document(s) to process%s (catcher version %s)",
+        len(to_process),
+        f", at most {params.limit} now" if params.limit is not None else "",
+        __version__,
+    )
+    left_in_inbox = 0
     for note in to_process:
         if note.inbox_rel in tried:
             continue
         if params.limit is not None and counts["staged"] >= params.limit:
-            log.info("%s: run limit reached, stays in inbox/", note_label(note))
+            left_in_inbox += 1  # one line for all of them below: an inbox can hold hundreds
             continue
         name = _stage(ctx, job, note)
         if name is None:
@@ -340,6 +348,8 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
             continue
         _queue_next(ctx, name, note, params)
         counts["staged"] += 1
+    if left_in_inbox:
+        log.info("limit of %d reached: %d document(s) stay in inbox/", params.limit, left_in_inbox)
 
     report = RunReport()
     copy_artifacts(scan, ideas, ctx.docs, RunOptions(), ctx.services, report, [], [])

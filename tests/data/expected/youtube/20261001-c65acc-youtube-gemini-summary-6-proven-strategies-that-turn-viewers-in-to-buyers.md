@@ -5,6 +5,9 @@ date: '2026-10-01'
 weight: 100
 type: docs
 id: RlX-tt9XrFo-gemini
+destination: youtube
+stage: published
+created_by: idea catcher
 tags:
 - strategy
 - youtube-growth

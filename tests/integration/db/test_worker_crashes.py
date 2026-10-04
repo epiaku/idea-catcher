@@ -124,7 +124,7 @@ def test_a_worker_killed_mid_llm_reason_is_recovered(harness, monkeypatch, crash
     [item] = items(harness).values()
     assert item.status == "published"
     [final] = from_capture(harness.ideas, "output", "YouTube walks.md")
-    assert "stage" not in load(final).fm and final.read_bytes() == first
+    assert load(final).fm["stage"] == "published" and final.read_bytes() == first
     assert len(harness.backends.note.prompts) == 1  # the re-run reused the saved reply
     assert harness.fetch_calls == []
 
@@ -317,7 +317,7 @@ def test_a_poison_clip_fails_after_max_attempts(harness):
     assert from_capture(harness.ideas, "failed", "systeme.md") == []
     assert not filed.with_suffix(".error.txt").exists()
     [final] = from_capture(harness.ideas, "output", "systeme.md")
-    assert "stage" not in load(final).fm
+    assert load(final).fm["stage"] == "published"
     assert len(pages(harness.docs, WEB_CLIPS)) == 1
 
 

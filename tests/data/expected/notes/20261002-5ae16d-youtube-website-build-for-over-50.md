@@ -5,6 +5,9 @@ date: '2026-10-02'
 weight: 100
 type: docs
 id: 0a6575
+destination: notes
+stage: published
+created_by: idea catcher
 tags:
 - youtube-idea
 - vibe-coding

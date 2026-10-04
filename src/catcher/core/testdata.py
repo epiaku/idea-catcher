@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 MARKER = ".catcher-testdata"
@@ -8,22 +9,43 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TARGET = PROJECT_ROOT / "tmp" / "ic"  # tmp/ is in .gitignore
 DEFAULT_SOURCE = PROJECT_ROOT / "tests" / "data"
 REPOS = ("idea-bucket", "epiaku-docs")
+SAVED_CALLS = ("facts", "llm")  # in idea-bucket: the saved YouTube facts and saved LLM replies
 
 
 class TestDataError(RuntimeError):
     __test__ = False  # not a pytest class
 
 
+_Ignore = Callable[[str, list[str]], set[str]]
+
+
+def _top_level_only(root: Path, ignore: _Ignore | None) -> _Ignore | None:
+    """Apply `ignore` to the folder `root` itself only, not to a folder of the same name deeper down."""
+    if ignore is None:
+        return None
+
+    def skip(directory: str, names: list[str]) -> set[str]:
+        return set(ignore(directory, names)) if Path(directory) == root else set()
+
+    return skip
+
+
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
 
 
-def reset_test_repos(target: Path = DEFAULT_TARGET, source: Path = DEFAULT_SOURCE) -> dict[str, Path]:
+def reset_test_repos(
+    target: Path = DEFAULT_TARGET, source: Path = DEFAULT_SOURCE, *, fresh_llm_and_youtube: bool = False
+) -> dict[str, Path]:
     """Throw away the test repos in `target` and make fresh ones from the committed test data.
 
     `source` holds `idea-bucket/` (with `inbox/`) and `epiaku-docs/` (with the Hugo idea-bucket pages), only
     the folders the Idea Catcher reads and writes. Each becomes a git repo with one commit and **no remote**,
     so nothing can be pulled or pushed by mistake.
+
+    The test data holds the saved YouTube facts (`facts/`) and saved LLM replies (`llm/`) of a real run, so
+    a run on the copies calls neither. With `fresh_llm_and_youtube` the idea-bucket copy is made without
+    those two folders, and a run calls the LLM and YouTube for real (it costs money, the YouTube gap applies).
     """
     for name in REPOS:
         if not (source / name).is_dir():
@@ -38,7 +60,10 @@ def reset_test_repos(target: Path = DEFAULT_TARGET, source: Path = DEFAULT_SOURC
     repos: dict[str, Path] = {}
     for name in REPOS:
         repo = target / name
-        shutil.copytree(source / name, repo)
+        leave_out = (
+            shutil.ignore_patterns(*SAVED_CALLS) if fresh_llm_and_youtube and name == "idea-bucket" else None
+        )
+        shutil.copytree(source / name, repo, ignore=_top_level_only(source / name, leave_out))
         _git(repo, "init", "-q", "-b", "main")
         _git(repo, "add", "-A")
         _git(

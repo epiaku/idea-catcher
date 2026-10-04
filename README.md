@@ -44,10 +44,10 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 | `catcher scan` | List what is in the inbox, without changing anything |
 | `catcher reason`, `catcher render` | Try the LLM step, or write one page, on a single document |
 | `catcher youtube facts` | Print the facts of one YouTube video (it respects the YouTube rate limits) |
-| `catcher db upgrade`, `catcher db downgrade REVISION` (for example `-1`) | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see the how-to-run guide) |
+| `catcher db upgrade`, `catcher db downgrade REVISION` (for example `-1`) | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see [How to run Stage B](docs/idea-catcher-how-to-run-stage-b.md)) |
 | `catcher worker` | Run the jobs in the queue, one at a time, until Ctrl-C (`--once`: run what is due, then exit). One worker at a time (Stage B) |
 | `catcher jobs add TYPE`, `catcher jobs list` | Put a job on the queue (`pipeline.run`, `pipeline.publish`, with `--param KEY=VALUE`), list the jobs (Stage B) |
-| `catcher testdata reset` | Make fresh test repos in `tmp/ic` |
+| `catcher testdata reset` | Make fresh test repos in `tmp/ic` (`--fresh-llm-and-youtube`: without the saved LLM replies and YouTube facts, so a run calls both for real) |
 | `catcher version` | Print the version |
 
 Document classes: `note`, `ai-chat`, `web-clip`, `youtube` (a clipped YouTube page) and `youtube-gemini` (a Gemini chat about a video). Files that are not markdown are copied to `epiaku-docs` as artifacts.
@@ -68,6 +68,7 @@ Everything is in the [`docs/`](docs/) folder.
 | Page | What is in it |
 | --- | --- |
 | [How to run it](docs/idea-catcher-how-to-run.md) | Every command and option, with recipes on test data and on the real repos |
+| [How to run Stage B](docs/idea-catcher-how-to-run-stage-b.md) | The Postgres queue and the worker: start Postgres, add jobs, run the worker on test and real repos, publish, stop it, exit codes |
 | [Configuration](docs/idea-catcher-configuration.md) | `.env`, `profiles.yaml`, and every setting |
 
 ### Design

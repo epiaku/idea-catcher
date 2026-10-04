@@ -572,8 +572,8 @@ def jobs_add(
     ] = None,
     priority: Annotated[int, typer.Option("--priority", help="higher runs first")] = 0,
 ) -> None:
-    """Put one job on the queue, due now, and print its id. The type must have a handler and the
-    params must pass that handler's own check, or nothing is queued (exit 2). Dry runs are refused:
+    """Put one job on the queue, due now, and print its id and the version. The type must have a handler
+    and the params must pass that handler's own check, or nothing is queued (exit 2). Dry runs are refused:
     they never go through the queue."""
     params = _parse_params(param or [])
     try:
@@ -584,7 +584,7 @@ def jobs_add(
     with _queue_session() as session:
         job, _ = queue.enqueue(session, type=job_type, now=utc_now(), priority=priority, params=params)
         job_id = job.id
-    typer.echo(str(job_id))
+    typer.echo(f"job queued, version {__version__}, job id {job_id}")
 
 
 @jobs_app.command("list")
@@ -623,14 +623,26 @@ def testdata_group() -> None:
 def testdata_reset(
     target: Annotated[Path, typer.Option("--target", help="where the test repos are made")] = DEFAULT_TARGET,
     source: Annotated[Path, typer.Option("--source", help="the committed test data")] = DEFAULT_SOURCE,
+    fresh_llm_and_youtube: Annotated[
+        bool,
+        typer.Option(
+            "--fresh-llm-and-youtube",
+            help="leave out the saved LLM replies (llm/) and YouTube facts (facts/): a run then calls the "
+            "LLM and YouTube for real (it costs money, the YouTube gap applies)",
+        ),
+    ] = False,
 ) -> None:
     """Delete the test repos and make fresh ones (idea-bucket, epiaku-docs) from the committed test data."""
     try:
-        repos = reset_test_repos(target, source)
+        repos = reset_test_repos(target, source, fresh_llm_and_youtube=fresh_llm_and_youtube)
     except TestDataError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(2) from e
     for path in repos.values():
         typer.echo(f"made {path}")
+    if fresh_llm_and_youtube:
+        typer.echo(
+            "idea-bucket has no saved LLM replies or YouTube facts: a run calls the LLM and YouTube for real"
+        )
     ideas, docs = (os.path.relpath(repos[name]) for name in ("idea-bucket", "epiaku-docs"))
     typer.echo(f"run on them: uv run catcher run pipeline --ideas {ideas} --docs {docs} --profile fake")

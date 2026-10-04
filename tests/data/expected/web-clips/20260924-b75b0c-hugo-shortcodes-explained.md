@@ -5,6 +5,9 @@ date: '2026-09-24'
 weight: 100
 type: docs
 id: 8dcbf3dbbc0b
+destination: web-clips
+stage: published
+created_by: idea catcher
 tags:
 - tech-note
 - hugo

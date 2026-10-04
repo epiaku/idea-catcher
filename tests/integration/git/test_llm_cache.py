@@ -103,7 +103,7 @@ def test_a_second_run_reuses_the_saved_reply_and_never_calls_the_backend(repos, 
     saved = {p: p.read_bytes() for p in traces(repos.ideas)}
     assert len(saved) == 2
 
-    caplog.set_level(logging.INFO, logger="catcher")
+    caplog.set_level(logging.DEBUG, logger="catcher")
     requeue = RunOptions(requeue=["systeme", "YouTube walks"])
     report = run_pipeline(repos.ideas, repos.docs, requeue, no_backend(make_services))
     assert report.counts() == {"requeued": 2, "published": 2}
@@ -290,7 +290,7 @@ def test_a_dry_run_reads_saved_replies_and_writes_nothing(repos, make_services, 
     # the same text captured again under another name: its text matches a saved reply
     (repos.ideas / "inbox/notes/YouTube walks again.md").write_text(NOTE_BODY)
 
-    caplog.set_level(logging.INFO, logger="catcher")
+    caplog.set_level(logging.DEBUG, logger="catcher")
     report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), no_backend(make_services))
     assert report.counts() == {"would_publish": 1}
     assert any(SAVED in r.getMessage() for r in caplog.records if r.name == "catcher.process")

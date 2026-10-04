@@ -31,6 +31,7 @@ DESTINATION_KEY = "destination"  # notes, youtube or web-clips: the epiaku-docs 
 
 STAGE_ANALYZED = "analyzed"  # the working copy in output/ while the document is being worked on
 STAGE_DEFERRED = "deferred"  # an error stalled it (LLM down, budget used up): overwritten by the next run
+STAGE_PUBLISHED = "published"  # the finished page (output/ and epiaku-docs): it came from the catcher
 
 _TURN = re.compile(r"^\*\*You\*\*[ \t]*$", re.MULTILINE)
 
@@ -217,7 +218,7 @@ def assign_name(ideas_repo: Path, note: Note) -> str:
         stem = _unique_stem(ideas_repo, note.rel.parent, str(note.doc.fm["captured"]), title)
         note.name = f"{stem}.md"
         note.original = note.original_name
-        log.info("named %s -> %s", note.original_name, note.name)
+        log.debug("named %s -> %s", note.original_name, note.name)
     return note.name
 
 
@@ -314,7 +315,7 @@ def archive_copy(ideas_repo: Path, note: Note) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     raw = note.path.read_bytes().decode("utf-8")
     write_atomic(dest, with_filename_fields(raw, note.original_name, name).encode("utf-8"))
-    log.info("archived %s", dest.relative_to(ideas_repo).as_posix())
+    log.debug("archived %s", dest.relative_to(ideas_repo).as_posix())
     return dest
 
 
@@ -334,7 +335,7 @@ def start_work(ideas_repo: Path, note: Note, now: datetime | None = None) -> lis
     }
     write_atomic(out, dump(Doc(fm, note.doc.body)))
     note.path.unlink()  # last: until now a crash leaves the document in inbox/ as well, never nowhere
-    log.info("started work: %s -> output/%s", note.path.name, note.target_rel.as_posix())
+    log.debug("started work: %s -> output/%s", note.path.name, note.target_rel.as_posix())
     return [*touched, out, note.path]
 
 

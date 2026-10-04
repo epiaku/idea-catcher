@@ -5,6 +5,9 @@ date: '2026-09-04'
 weight: 100
 type: docs
 id: 881d4eb7f61ae72b
+destination: web-clips
+stage: published
+created_by: idea catcher
 tags:
 - tech-note
 - home-lab

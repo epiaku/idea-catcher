@@ -5,6 +5,9 @@ date: '2026-10-02'
 weight: 100
 type: docs
 id: 6a0c85
+destination: notes
+stage: published
+created_by: idea catcher
 tags:
 - marketing
 - content-creation

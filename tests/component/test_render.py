@@ -66,6 +66,18 @@ def test_note_page(make_note, make_result, snapshot):
     assert page == snapshot
 
 
+def test_the_page_carries_its_destination_folder(make_note, make_result):
+    """The finished page (output/ and epiaku-docs are the same text) names the folder it is published to."""
+    summary = NoteSummary(title="t", description="d", body="b", tags=["youtube-idea"])
+    note = make_note("note")
+    ctx = PageContext(note, summary, ["youtube-idea"], make_result(summary))
+    assert parse(render_page(ctx)).fm["destination"] == "notes"
+    assert parse(render_page(ctx)).fm["stage"] == "published"  # a field only the catcher writes
+    assert parse(render_page(ctx)).fm["created_by"] == "idea catcher"  # stays when the page is copied
+    note.doc.fm["destination"] = "web-clips"  # a valid value in the document wins
+    assert parse(render_page(ctx)).fm["destination"] == "web-clips"
+
+
 def test_source_file_and_original_filename_once_the_note_has_a_calculated_name(make_note, make_result):
     note = make_note("note", source_file="notes/Walk and talk.md")
     note.name = "20260927-abc123-walk-and-talk-videos.md"

@@ -112,7 +112,7 @@ def test_run_publishes_archives_and_commits(repos, make_services, sh):
     assert load(repos.docs / WEB_CLIPS / final.name).fm["id"] == "cf81e40b020519ef"
     assert load(final).fm["source_file"] == f"clippings/{final.name}"
     assert load(final).fm["original_filename"] == "systeme.md"
-    assert "stage" not in load(final).fm
+    assert load(final).fm["stage"] == "published"
     assert report.committed == {"docs": True, "ideas": True}
     assert sh(repos.docs, "status", "--porcelain") == ""
     assert sh(repos.ideas, "status", "--porcelain") == ""
@@ -163,6 +163,14 @@ def test_a_rate_limit_defers_every_note_of_that_backend_but_not_the_others(repos
         assert load(stalled).fm["stage"] == "deferred" and "openai" in load(stalled).fm["deferred_reason"]
         assert not (repos.ideas / "inbox/clippings" / name).exists()
         assert find(repos.ideas, "archive", "clippings", name).name == stalled.name
+
+
+def test_a_limit_is_logged_once_not_for_every_note_that_waits(repos, make_services, caplog):
+    with caplog.at_level("INFO", logger="catcher.run"):
+        run_pipeline(repos.ideas, repos.docs, RunOptions(limit=1), make_services())
+    lines = [r.getMessage() for r in caplog.records if r.name == "catcher.run"]
+    assert [m for m in lines if m.startswith("limit of")] == ["limit of 1 reached: 1 note(s) stay in inbox/"]
+    assert not [m for m in lines if "skipped, run limit reached" in m]
 
 
 def test_limit_processes_at_most_n_notes(repos, make_services):
@@ -223,7 +231,7 @@ def test_youtube_without_facts_is_deferred_then_published(repos, make_services, 
     assert (
         final.name == stalled_path.name
     )  # the retry kept the calculated name and overwrote the stalled copy
-    assert "stage" not in load(final).fm
+    assert load(final).fm["stage"] == "published"
     assert find(repos.ideas, "archive", "clippings", "yt.md").name == final.name  # not a second archive copy
     assert (repos.docs / "hugo/content/en/docs/idea-bucket/youtube" / final.name).exists()
 
@@ -235,10 +243,18 @@ def test_run_logs_progress_per_note_and_a_total(repos, make_services, caplog):
     assert any("(1/2)" in m and "processing" in m for m in messages)
     assert any("(2/2)" in m and "published" in m for m in messages)
     assert any(m.startswith("processed 2/2: 2 published") for m in messages)
-    assert any(m.startswith("archived archive/notes/") and m.endswith("-youtube-walks.md") for m in messages)
-    assert any(m.startswith("named YouTube walks.md ->") for m in messages)
     assert any('"inbox/notes/YouTube walks.md"' in m and "published" in m for m in messages)
     assert any('"inbox/clippings/systeme.md"' in m and "processing" in m for m in messages)
+
+
+def test_the_steps_of_a_document_are_debug_lines_not_info(repos, make_services, caplog):
+    """At INFO a document gets its result line; naming, archiving and the LLM steps are DEBUG lines."""
+    caplog.set_level("DEBUG", logger="catcher")
+    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    steps = ("named ", "archived ", "started work", "asking the LLM", "reason done", "using the saved")
+    detail = [r for r in caplog.records if any(s in r.getMessage() for s in steps)]
+    assert detail and all(r.levelname == "DEBUG" for r in detail)
+    assert any(m.startswith("archived archive/notes/") for m in (r.getMessage() for r in detail))
 
 
 def test_failures_and_deferrals_are_always_logged(repos, make_services, caplog):
@@ -286,7 +302,7 @@ def test_a_usage_limit_stalls_the_note_in_output_until_you_move_it_back(repos, m
     second = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
     assert second.counts() == {"published": 1}
     final = find(repos.ideas, "output", "clippings", "systeme.md")
-    assert final.name == stalled.name and "stage" not in load(final).fm
+    assert final.name == stalled.name and load(final).fm["stage"] == "published"
 
 
 def test_an_unreadable_capture_is_reported_and_filed_as_failed(repos, make_services, sh):
@@ -351,7 +367,7 @@ def test_growing_snapshots_of_one_conversation_cost_one_llm_call(repos, make_ser
     assert find(repos.ideas, "archive", "clippings", "chat short.md").name == dup.name
     assert absent(repos.ideas, "output", "clippings", "chat short.md")
     assert absent(repos.ideas, "output", "clippings", "chat medium.md")
-    assert "stage" not in load(find(repos.ideas, "output", "clippings", "chat long.md")).fm
+    assert load(find(repos.ideas, "output", "clippings", "chat long.md")).fm["stage"] == "published"
     pages = [p for p in (repos.docs / WEB_CLIPS).glob("2026*.md") if load(p).fm["id"] == "2446cd9c762c9cc9"]
     assert len(pages) == 1
     assert any("duplicates/" in r.getMessage() and "chat long.md" in r.getMessage() for r in caplog.records)
@@ -553,7 +569,7 @@ def test_requeue_brings_a_stalled_document_back_and_runs_it_again(repos, make_se
     assert second.not_in_archive == []
     assert not list((repos.ideas / "inbox").rglob("yt*.md"))
     final = find(repos.ideas, "output", "clippings", "yt.md")
-    assert final.name == stalled_name and "stage" not in load(final).fm  # overwrote the stalled copy
+    assert final.name == stalled_name and load(final).fm["stage"] == "published"  # overwrote the stalled copy
     assert (repos.ideas / "archive/clippings" / stalled_name).exists()  # archived again, same name
 
 
@@ -657,7 +673,7 @@ def test_requeue_of_a_failed_note_clears_failed_and_its_error_file(repos, make_s
     assert not list((repos.ideas / "failed").rglob("*YouTube*")) and not list(
         (repos.ideas / "failed").rglob("*youtube-walks*")
     )
-    assert "stage" not in load(find(repos.ideas, "output", "notes", "YouTube walks.md")).fm
+    assert load(find(repos.ideas, "output", "notes", "YouTube walks.md")).fm["stage"] == "published"
     assert sh(repos.ideas, "status", "--porcelain") == ""
 
 
@@ -940,7 +956,7 @@ def test_retry_deferred_puts_the_stalled_documents_back_so_they_run_again(repos,
     second = run_pipeline(repos.ideas, repos.docs, RunOptions(retry_deferred=True), make_services())
     assert second.counts() == {"requeued": 1, "published": 1}
     final = find(repos.ideas, "output", "clippings", "systeme.md")
-    assert "stage" not in load(final).fm
+    assert load(final).fm["stage"] == "published"
 
 
 def test_retry_deferred_with_nothing_stalled_does_nothing(repos, make_services):

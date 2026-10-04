@@ -5,6 +5,9 @@ date: '2026-09-27'
 weight: 100
 type: docs
 id: p3F-1QyvHnY-gemini
+destination: youtube
+stage: published
+created_by: idea catcher
 tags:
 - strategy
 - automation

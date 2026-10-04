@@ -14,7 +14,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.exc import OperationalError
 from typer.testing import CliRunner
 
-from catcher import cli
+from catcher import __version__, cli
 from catcher.cli import app
 from catcher.core.db import make_engine, session_scope, utc_now
 from catcher.modules.queue import queue
@@ -70,7 +70,7 @@ def test_jobs_add_enqueues_and_prints_the_id(runner: CliRunner, engine) -> None:
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     [job] = _jobs(engine)
-    assert result.output.strip() == str(job.id)
+    assert result.output.splitlines() == [f"job queued, version {__version__}, job id {job.id}"]
     assert job.type == "pipeline.run"
     assert job.status == "queued"
     assert job.priority == 3
@@ -179,7 +179,7 @@ def test_jobs_list_filters_by_status(runner: CliRunner, engine) -> None:
     ):
         result = runner.invoke(app, ["jobs", "add", job_type, *params])
         assert result.exit_code == 0, result.output
-        ids.append(result.output.strip())
+        ids.append(result.output.strip().rsplit("job id ", 1)[1])
     with session_scope(engine) as session:
         session.execute(
             update(Job)
