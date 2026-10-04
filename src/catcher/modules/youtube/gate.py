@@ -177,6 +177,12 @@ class YoutubeGate:
             now = self.clock()
             return wait_for(self._read(now), now)
 
+    def snapshot(self) -> GateState:
+        """The state as the file holds it now (for `catcher youtube gate --import-file`), with the same rules
+        as every other call: a missing file is open, a damaged one is kept as `.corrupt` and reads closed."""
+        with self._locked():
+            return self._read(self.clock())
+
     def reserve(self) -> Wait | None:
         """Ask for a call. None means go ahead, and the gap to the next call has started."""
         with self._locked():

@@ -13,6 +13,7 @@ from sqlalchemy import Engine, create_engine, event, text
 
 from catcher.core.db import make_engine, make_worker_engine
 from catcher.modules.youtube.gate import Gate, Wait, YoutubeGate
+from catcher.modules.youtube.gate_rules import GateState
 from catcher.modules.youtube.pg_gate import GateUnavailable, PostgresGate
 
 pytestmark = pytest.mark.db
@@ -439,3 +440,84 @@ def test_a_row_another_worker_inserted_first_is_read_not_reported(pg_engine: Eng
         second.dispose()
     assert not any("missing" in record.getMessage() for record in caplog.records)
     assert result is None  # the row the other worker inserted is read and used
+
+
+# ---- snapshot and import_state (for `catcher youtube gate`) ---------------------------------------------
+
+
+def test_snapshot_reads_the_row_and_changes_nothing(pg_engine: Engine):
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    assert gate.snapshot() == GateState(0.0, 0.0, 0.0, 0)
+    assert gate.reserve() is None
+    until = gate.record_block()
+    before = _row(pg_engine)
+    clock.now += 60
+    assert gate.snapshot() == GateState(START + GAP + 0.5 * JITTER, until, START, 1)
+    assert _row(pg_engine) == before
+
+
+def test_snapshot_closes_a_missing_or_damaged_row(pg_engine: Engine, caplog):
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    _execute(pg_engine, "delete from resources where name = 'youtube'")
+    with caplog.at_level(logging.ERROR, logger="catcher.youtube"):
+        assert gate.snapshot() == GateState(0.0, START + 6 * HOUR, START, 1)
+    assert any("missing" in record.getMessage() for record in caplog.records)
+    assert _row(pg_engine) == (None, START + 6 * HOUR, START, 1, START)
+
+    caplog.clear()
+    _execute(pg_engine, "update resources set blocked_until = 'infinity' where name = 'youtube'")
+    clock.now += 60
+    with caplog.at_level(logging.ERROR, logger="catcher.youtube"):
+        assert gate.snapshot() == GateState(0.0, START + 60 + 6 * HOUR, START + 60, 1)
+    assert any("damaged" in record.getMessage() for record in caplog.records)
+
+
+def test_import_state_writes_the_state_into_the_row(pg_engine: Engine):
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    imported = GateState(START + 100, START + 12 * HOUR, START - 60, 2)
+    assert gate.import_state(imported) is True
+    assert _row(pg_engine) == (START + 100, START + 12 * HOUR, START - 60, 2, START)
+    assert gate.snapshot() == imported
+    assert gate.peek() == Wait(START + 12 * HOUR, blocked=True)
+
+
+def test_import_state_never_shortens_a_longer_block(pg_engine: Engine):
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    until = gate.record_block()  # 6 hours
+    before = _row(pg_engine)
+    assert gate.import_state(GateState(0.0, START + 2 * HOUR, START, 1)) is False
+    assert gate.import_state(GateState(0.0, 0.0, 0.0, 0)) is False  # an open file does not open the row
+    assert _row(pg_engine) == before
+
+    assert gate.import_state(GateState(0.0, START + 12 * HOUR, START, 2)) is True  # a longer one is kept
+    assert gate.snapshot().blocked_until == START + 12 * HOUR > until
+
+    clock.now += 13 * HOUR  # the row's block is over: it is not a block any more, and does not refuse
+    assert gate.import_state(GateState(0.0, 0.0, 0.0, 0)) is True
+    assert gate.snapshot() == GateState(0.0, 0.0, 0.0, 0)
+
+
+def test_import_state_never_shortens_the_gap(pg_engine: Engine):
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    assert gate.reserve() is None
+    gap_until = START + GAP + 0.5 * JITTER
+    assert gate.import_state(GateState(START + 10, 0.0, 0.0, 0)) is True
+    assert gate.snapshot().next_allowed_at == gap_until
+    assert gate.import_state(GateState(gap_until + 50, 0.0, 0.0, 0)) is True
+    assert gate.snapshot().next_allowed_at == gap_until + 50
+
+
+def test_snapshot_and_import_state_raise_gate_unavailable_when_the_database_is_down(pg_engine: Engine):
+    broken = create_engine(pg_engine.url.set(host="127.0.0.1", port=1))
+    try:
+        gate = _pg_gate(broken, EpochClock())
+        for call in (gate.snapshot, lambda: gate.import_state(GateState(0.0, 0.0, 0.0, 0))):
+            with pytest.raises(GateUnavailable):
+                call()
+    finally:
+        broken.dispose()

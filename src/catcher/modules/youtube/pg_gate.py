@@ -26,6 +26,7 @@ import math
 import random
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -269,5 +270,34 @@ class PostgresGate:
                 datetime.fromtimestamp(stored.blocked_until).strftime("%Y-%m-%d %H:%M"),
             )
             return stored.blocked_until
+
+        return self._transaction(work)
+
+    # ---- for a person: `catcher youtube gate` ----------------------------------------------------
+
+    def snapshot(self) -> GateState:
+        """The state as the row holds it now. Changes nothing (apart from closing the gate over a missing or
+        damaged row, as every other call does)."""
+
+        def work(session: Session) -> GateState:
+            return self._read(session)[0]
+
+        return self._transaction(work)
+
+    def import_state(self, state: GateState) -> bool:
+        """Write `state` (from the Stage A state file) into the row; True when written.
+
+        A block is never shortened: when the row holds a block that still runs and ends later than the one in
+        `state`, nothing is written and the answer is False. The gap is never shortened either: the later of
+        the two `next_allowed_at` is kept."""
+
+        def work(session: Session) -> bool:
+            current, now = self._read(session)
+            if current.blocked_until > now and current.blocked_until > state.blocked_until:
+                return False
+            new = clamp(state, now)  # damage in `state` raises ValueError, as it does for a row
+            new = replace(new, next_allowed_at=max(new.next_allowed_at, current.next_allowed_at))
+            self._write(session, new, now)
+            return True
 
         return self._transaction(work)
