@@ -92,6 +92,8 @@ from catcher.modules.youtube.urls import video_id
 log = logging.getLogger("catcher.worker.pipeline")
 
 NO_DOCUMENT = "staging row without a document"
+# Every `youtube.fetch` job names the gate's `resources` row: the claim leaves it queued while closed.
+YOUTUBE_RESOURCE = "youtube"
 DEFER_FALLBACK_S = 600  # a FactsDeferred without a time (a gate that does not say): ask again in 10 minutes
 
 
@@ -166,7 +168,14 @@ def _queue_next(ctx: HandlerContext, name: str, note: Note, params: RunParams) -
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
         set_item_status(session, name, status, now=now)
-        enqueue(session, type=job_type, now=now, params=job_params, dedupe_key=key)
+        enqueue(
+            session,
+            type=job_type,
+            now=now,
+            params=job_params,
+            dedupe_key=key,
+            resource=YOUTUBE_RESOURCE if fetch else None,
+        )
 
 
 def _inbox_note(ideas: Path, inbox_path: str, now: datetime) -> Note | None:
@@ -450,7 +459,14 @@ def _wait_for_youtube(ctx: HandlerContext, name: str, params: ReasonParams) -> H
         item = set_item_status(session, name, "waiting_youtube", now=now)
         if item is None:
             return Fail(f"no item {name!r}: it was removed while the job ran")
-        enqueue(session, type="youtube.fetch", now=now, params=job_params, dedupe_key=f"fetch:{name}")
+        enqueue(
+            session,
+            type="youtube.fetch",
+            now=now,
+            params=job_params,
+            dedupe_key=f"fetch:{name}",
+            resource=YOUTUBE_RESOURCE,
+        )
     return Done({"item": "waiting_youtube"})
 
 

@@ -14,7 +14,7 @@ from worker_harness import NOTES, YOUTUBE_GAP_S
 from catcher.core.db import make_worker_engine, session_scope
 from catcher.modules.queue import queue
 from catcher.modules.queue.items import get_item, set_item_status, stage_item
-from catcher.modules.queue.models import Job, JobItem
+from catcher.modules.queue.models import Job, JobEvent, JobItem
 from catcher.modules.queue.queue import claim, enqueue
 from catcher.modules.worker import handlers_pipeline, loop
 from catcher.modules.worker.guard import WorkerLockLost
@@ -746,3 +746,59 @@ def test_run_once_checks_the_worker_lock_before_it_claims(pg_engine: Engine, clo
 
     assert checks == [1, 1]
     assert _row(pg_engine, job_id).status == "queued"  # nothing was claimed
+
+
+def test_a_worker_with_only_waiting_fetch_jobs_is_idle_and_counts_no_attempts(
+    pg_engine: Engine, clock
+) -> None:
+    with session_scope(pg_engine) as s:
+        ids = [
+            enqueue(s, type="youtube.fetch", now=clock.now, resource="youtube", params={"n": n})[0].id
+            for n in range(3)
+        ]
+        s.execute(
+            text(
+                "update resources set next_allowed_at = :next, blocked_until = :blocked"
+                " where name = 'youtube'"
+            ),
+            {"next": clock.now + timedelta(seconds=120), "blocked": clock.now + timedelta(hours=6)},
+        )
+    before = {job_id: _row(pg_engine, job_id) for job_id in ids}
+    ran: list[Any] = []
+
+    def handler(ctx: HandlerContext, job: Job) -> HandlerResult:
+        ran.append(job.id)
+        return Defer(ctx.clock() + timedelta(seconds=60), "the gate is closed")
+
+    worker = _worker(pg_engine, clock, {"youtube.fetch": handler})
+
+    assert [worker.run_once() for _ in range(3)] == [None, None, None]
+
+    assert ran == []
+    with session_scope(pg_engine) as s:
+        assert s.scalars(select(JobEvent)).all() == []
+    for job_id, old in before.items():
+        row = _row(pg_engine, job_id)
+        assert (row.status, row.attempts, row.claim_seq, row.locked_by) == ("queued", 0, 0, None)
+        assert (row.run_after, row.reason, row.started_at) == (old.run_after, old.reason, old.started_at)
+
+
+def _queued(harness) -> list[tuple[str, str | None]]:
+    with session_scope(harness.ctx.engine) as s:
+        return [(j.type, j.resource) for j in harness.jobs(s) if j.status == "queued"]
+
+
+def test_youtube_fetch_jobs_carry_the_youtube_resource(harness, yt_facts) -> None:
+    # Site 1: pipeline.run stages a clip without saved facts and queues its fetch.
+    harness.add_job("pipeline.run", only=["yt"])
+    assert harness.worker.run_once() == "succeeded"
+    assert _queued(harness) == [("youtube.fetch", "youtube")]
+
+    # The fetch saves the facts and hands over to llm.reason, which carries no resource.
+    assert harness.worker.run_once() == "succeeded"
+    assert _queued(harness) == [("llm.reason", None)]
+
+    # Site 2: an llm.reason job that finds no saved facts queues the fetch again.
+    (harness.ideas / "facts" / f"{yt_facts.video_id}.json").unlink()
+    assert harness.worker.run_once() == "succeeded"
+    assert _queued(harness) == [("youtube.fetch", "youtube")]

@@ -118,7 +118,7 @@ def test_youtube_is_called_with_no_database_session_open(harness):
     assert checked_out == [0]
 
 
-def test_a_closed_gate_defers_the_job_until_the_next_slot(harness):
+def test_a_closed_gate_keeps_the_job_queued_until_the_next_slot(harness):
     (harness.ideas / "inbox" / "clippings" / "yt2.md").write_text(
         YT_CLIP.replace(VID, OTHER_VID), encoding="utf-8"
     )
@@ -130,15 +130,20 @@ def test_a_closed_gate_defers_the_job_until_the_next_slot(harness):
 
     harness.fetcher = two_videos
     harness.add_job("pipeline.run", only=["yt", "yt2"])
-    slot = harness.clock() + timedelta(seconds=600)
+    start = harness.clock()
+    slot = start + timedelta(seconds=600)
 
     labels = harness.drain(max_jobs=6)
 
-    assert sorted(labels) == ["deferred", "succeeded", "succeeded", "succeeded"]
+    assert labels == ["succeeded", "succeeded", "succeeded"]  # the claim never takes the waiting fetch
     assert len(harness.fetch_calls) == 1  # the gate allowed one call
     [waiting] = [j for j in jobs_of(harness, "youtube.fetch") if j.status == "queued"]
-    assert (waiting.run_after, waiting.attempts) == (slot, 0)
-    assert "next call allowed at" in (waiting.reason or "")
+    assert (waiting.run_after, waiting.attempts, waiting.claim_seq, waiting.reason) == (start, 0, 0, None)
+    with session_scope(harness.ctx.engine) as session:
+        next_allowed_at = session.execute(
+            text("select next_allowed_at from resources where name = 'youtube'")
+        ).scalar_one()
+    assert next_allowed_at == slot
     waiting_clip = "yt2.md" if harness.fetch_calls == [VID] else "yt.md"
     assert item_of(harness, waiting_clip).status == "waiting_youtube"
 

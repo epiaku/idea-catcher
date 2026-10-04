@@ -6,13 +6,13 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, inspect, select, text, update
+from sqlalchemy import exists, func, inspect, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
 from catcher.core.db import require_aware
-from catcher.modules.queue.models import Job
+from catcher.modules.queue.models import Job, Resource
 
 # Same predicate as the partial unique index `uq_jobs_active_dedupe_key` on the model.
 _ACTIVE_DEDUPE = text("dedupe_key IS NOT NULL AND status IN ('queued','running')")
@@ -93,18 +93,28 @@ def claim(
     Order: priority (high first), then run_after, then created_at. Rows other workers have locked
     are skipped, not waited for. The row stays locked until the caller commits, so commit promptly.
     `(locked_by, claim_seq)` on the returned job is the claim token for fencing later writes.
-    `types` is a sequence of type names (a bare str is a TypeError); an empty sequence matches nothing."""
+    `types` is a sequence of type names (a bare str is a TypeError); an empty sequence matches nothing.
+
+    A job whose `resource` names a `resources` row that is closed at `now` (`blocked_until > now` or
+    `next_allowed_at > now`) is not claimable: it waits in the queue without an attempt or an event. A job
+    without a resource, or whose resource has no row, is not affected (a missing row is the gate's business).
+    The claim only reads the row and never locks it; the gate's own reserve holds the lock that keeps the gap.
+    """
     require_aware(now)
     _check_lease(lease_s)
     if isinstance(types, str):
         raise TypeError("types must be a sequence of type names, not a str")
-    statement = select(Job).where(Job.status == "queued", Job.run_after <= now)
+    closed = exists().where(
+        Resource.name == Job.resource,
+        or_(Resource.blocked_until > now, Resource.next_allowed_at > now),
+    )
+    statement = select(Job).where(Job.status == "queued", Job.run_after <= now, ~closed)
     if types is not None:
         statement = statement.where(Job.type.in_(types))
     statement = (
         statement.order_by(Job.priority.desc(), Job.run_after, Job.created_at)
         .limit(1)
-        .with_for_update(skip_locked=True)
+        .with_for_update(skip_locked=True, of=Job)  # the jobs row only: the claim never locks a resource
     )
     job = session.scalars(statement, execution_options={"populate_existing": True}).one_or_none()
     if job is None:

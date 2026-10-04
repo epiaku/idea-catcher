@@ -7,7 +7,6 @@ have no git remote, so `pipeline.publish` runs with `push=false, pull=false`: it
 Review Focus #3: an LLM failure never causes a YouTube call. The facts are fetched once, by `youtube.fetch`,
 and a deferred item that is retried later reads the saved facts."""
 
-from datetime import timedelta
 from pathlib import Path
 
 from golden import EXPECTED, PAGES, compare_pages
@@ -146,16 +145,16 @@ def test_a_closed_gate_waits_in_the_queue_and_the_next_slot_publishes(frozen_har
     facts = frozen_facts(h, SIX_PROVEN_VID, RAG_VID)
     forget_saved(h, sh, *(h.ideas / "facts" / f"{vid}.json" for vid in facts))
     h.fetcher = lambda vid: facts[vid]
-    slot = h.clock() + timedelta(seconds=600)
+    start = h.clock()
 
     h.add_job("pipeline.run")
     labels = h.drain(max_jobs=MAX_JOBS)
 
-    assert labels.count("deferred") == 1 and set(labels) == {"succeeded", "deferred"}
+    assert set(labels) == {"succeeded"}  # the claim never takes the fetch that waits for the slot
     [first] = h.fetch_calls  # the gate allowed one call
     second, second_clip = (RAG_VID, RAG) if first == SIX_PROVEN_VID else (SIX_PROVEN_VID, SIX_PROVEN)
     [waiting] = [j for j in jobs_of(h, "youtube.fetch") if j.status == "queued"]
-    assert (waiting.run_after, waiting.attempts) == (slot, 0)  # deferred to the slot, no attempt counted
+    assert (waiting.run_after, waiting.attempts, waiting.claim_seq) == (start, 0, 0)  # never claimed
     assert items(h)[second_clip].status == "waiting_youtube"
     assert len(list((h.docs / PAGES).rglob("2*.md"))) == 42  # every page but the waiting clip's
 

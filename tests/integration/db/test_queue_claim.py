@@ -168,3 +168,99 @@ def test_a_job_locked_by_an_open_transaction_is_skipped_not_waited_for(
                 assert other is not None
                 assert other.id == ids[1]
         # a commits here, after b.
+
+
+def _youtube_gate(
+    session: Session, *, next_allowed_at: datetime | None, blocked_until: datetime | None
+) -> None:
+    """Set the `youtube` row (the db conftest seeds it open before each test) as the gate would."""
+    session.execute(
+        text("update resources set next_allowed_at = :next, blocked_until = :blocked where name = 'youtube'"),
+        {"next": next_allowed_at, "blocked": blocked_until},
+    )
+
+
+def _fetch(session: Session, now: datetime, **kwargs) -> uuid.UUID:
+    job, _ = enqueue(session, type="youtube.fetch", now=now, resource="youtube", **kwargs)
+    return job.id
+
+
+def test_claim_skips_a_job_whose_resource_is_blocked(session: Session, clock) -> None:
+    _fetch(session, clock.now)
+    _youtube_gate(session, next_allowed_at=None, blocked_until=clock.now + timedelta(hours=6))
+
+    assert claim(session, worker="w1", now=clock.now, lease_s=30) is None
+    assert claim(session, worker="w1", now=clock.now, lease_s=30, types=["youtube.fetch"]) is None
+
+
+def test_claim_skips_a_job_whose_resource_is_in_its_gap(session: Session, clock) -> None:
+    _fetch(session, clock.now)
+    _youtube_gate(session, next_allowed_at=clock.now + timedelta(seconds=1), blocked_until=None)
+
+    assert claim(session, worker="w1", now=clock.now, lease_s=30) is None
+
+
+def test_claim_takes_the_job_again_when_the_slot_is_open(session: Session, clock) -> None:
+    job_id = _fetch(session, clock.now)
+    _youtube_gate(
+        session,
+        next_allowed_at=clock.now + timedelta(seconds=120),
+        blocked_until=clock.now + timedelta(seconds=300),
+    )
+
+    clock.advance(299)
+    assert claim(session, worker="w1", now=clock.now, lease_s=30) is None
+
+    clock.advance(1)  # exactly at blocked_until: open (the gate waits only while now < the time)
+    claimed = claim(session, worker="w1", now=clock.now, lease_s=30)
+    assert claimed is not None
+    assert claimed.id == job_id
+
+
+def test_a_job_without_a_resource_is_unaffected(session: Session, clock) -> None:
+    note, _ = enqueue(session, type="note", now=clock.now)
+    _youtube_gate(
+        session,
+        next_allowed_at=clock.now + timedelta(minutes=5),
+        blocked_until=clock.now + timedelta(hours=6),
+    )
+
+    claimed = claim(session, worker="w1", now=clock.now, lease_s=30)
+    assert claimed is not None
+    assert claimed.id == note.id
+
+
+def test_a_job_whose_resource_has_no_row_is_unaffected(session: Session, clock) -> None:
+    job, _ = enqueue(session, type="llm.reason", now=clock.now, resource="openai")  # no `openai` row
+    _youtube_gate(session, next_allowed_at=None, blocked_until=clock.now + timedelta(hours=6))
+
+    claimed = claim(session, worker="w1", now=clock.now, lease_s=30)
+    assert claimed is not None
+    assert claimed.id == job.id
+
+
+def test_other_job_types_still_run_while_fetch_jobs_wait(session: Session, clock) -> None:
+    _fetch(session, clock.now, priority=9)  # would go first if the gate were open
+    reason, _ = enqueue(session, type="llm.reason", now=clock.now)
+    _youtube_gate(session, next_allowed_at=None, blocked_until=clock.now + timedelta(hours=6))
+
+    claimed = claim(session, worker="w1", now=clock.now, lease_s=30)
+    assert claimed is not None
+    assert claimed.id == reason.id
+    assert claim(session, worker="w1", now=clock.now, lease_s=30) is None
+
+
+def test_the_oldest_fetch_job_is_claimed_first_when_the_slot_opens(session: Session, clock) -> None:
+    now = clock.now
+    middle = _fetch(session, now - timedelta(minutes=20))
+    oldest = _fetch(session, now - timedelta(minutes=30))
+    newest = _fetch(session, now - timedelta(minutes=10))
+    _youtube_gate(session, next_allowed_at=now + timedelta(seconds=120), blocked_until=None)
+    assert claim(session, worker="w1", now=now, lease_s=30) is None
+
+    clock.advance(120)
+    order = []
+    while (job := claim(session, worker="w1", now=clock.now, lease_s=30)) is not None:
+        order.append(job.id)
+
+    assert order == [oldest, middle, newest]
