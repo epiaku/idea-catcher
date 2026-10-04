@@ -7,12 +7,15 @@ is what lets exactly one of two workers asking at the same moment go ahead.
 It fails **closed**, like the file gate:
 
 - a **missing** row is inserted closed (blocked for `block_hours`) and an error is logged;
-- **damaged** values (negative, before 1970, a negative streak) rewrite the row closed and log an error; a
-  gap or a block more than 24 hours ahead is cut to 24 hours (damage too, not a block) and logged;
+- **damaged** values (negative, before 1970, 'infinity', past the year 9999, a negative streak) rewrite the
+  row closed and log an error; a gap or a block more than 24 hours ahead is cut to 24 hours (damage too, not
+  a block) and logged;
 - a **database error** (down, a lock timeout) raises `GateUnavailable` and changes nothing: the caller must
   not fetch.
 
-Times are seconds since the epoch in Python and `timestamptz` in the row, converted only here, at the edge.
+The clock is read once the row lock is held, as the file gate reads it inside its file lock: a call that
+waited for the lock uses the time it got it. Times are seconds since the epoch in Python and `timestamptz` in
+the row, converted only here, at the edge (read with `extract(epoch ...)`, so any stored value can be read).
 A row keeps whole microseconds, so every time is stored rounded *up*: a gap or a block can last a
 microsecond longer than the rules say but never ends a moment too early, and a block recorded in the same
 microsecond as the start of a fetch counts as newer (it stays). After reading, times are compared as floats.
@@ -24,9 +27,10 @@ import random
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from fractions import Fraction
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, Row, extract, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -51,6 +55,8 @@ log = logging.getLogger("catcher.youtube")
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _US = 1_000_000
+_LAST_SECOND = (datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC) - _EPOCH).total_seconds()
+_TIMES = ("next_allowed_at", "blocked_until", "blocked_at")
 
 
 class GateUnavailable(RuntimeError):
@@ -71,8 +77,18 @@ def _moment(us: int) -> datetime | None:
 
 
 def _seconds(moment: datetime | None) -> float:
-    """An aware time from the row (in any session time zone) as seconds since the epoch; NULL is 0."""
     return 0.0 if moment is None else moment.timestamp()
+
+
+def _epoch(key: str, value: Decimal | None) -> float:
+    """A time read as `extract(epoch ...)` (the same in any session time zone); NULL is 0. 'infinity' or a
+    time past the year 9999 is damage (`ValueError`); a negative one is left to `clamp`."""
+    if value is None:
+        return 0.0
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds > _LAST_SECOND:
+        raise ValueError(f"{key} is {value}")
+    return seconds
 
 
 class PostgresGate:
@@ -97,10 +113,11 @@ class PostgresGate:
 
     # ---- the row ----------------------------------------------------------------------------------
 
-    def _select(self, session: Session) -> Resource | None:
+    def _select(self, session: Session) -> Row | None:
+        columns = [extract("epoch", getattr(Resource, key)) for key in _TIMES]
         return session.execute(
-            select(Resource).where(Resource.name == self.name).with_for_update()
-        ).scalar_one_or_none()
+            select(*columns, Resource.streak).where(Resource.name == self.name).with_for_update()
+        ).first()
 
     @staticmethod
     def _columns(state: GateState) -> dict[str, object]:
@@ -112,48 +129,59 @@ class PostgresGate:
             "streak": state.streak,
         }
 
-    def _write(self, row: Resource, state: GateState, now: float) -> GateState:
-        """Write `state` into the locked row and return it as the row now holds it."""
-        for key, value in self._columns(state).items():
-            setattr(row, key, value)
-        row.updated_at = _EPOCH + timedelta(microseconds=_floor_us(now))
-        return self._state(row)
-
     @staticmethod
-    def _state(row: Resource) -> GateState:
+    def _updated_at(now: float) -> datetime:
+        return _EPOCH + timedelta(microseconds=_floor_us(now))
+
+    def _write(self, session: Session, state: GateState, now: float) -> GateState:
+        """Write `state` into the locked row and return it as the row now holds it."""
+        columns = self._columns(state)
+        session.execute(
+            update(Resource)
+            .where(Resource.name == self.name)
+            .values(**columns, updated_at=self._updated_at(now))
+        )
         return GateState(
-            next_allowed_at=_seconds(row.next_allowed_at),
-            blocked_until=_seconds(row.blocked_until),
-            blocked_at=_seconds(row.blocked_at),
-            streak=row.streak,
+            **{key: _seconds(columns[key]) for key in _TIMES},  # type: ignore[arg-type]
+            streak=state.streak,
         )
 
-    def _read(self, session: Session, now: float) -> tuple[Resource, GateState]:
-        """Lock the row and read it, closing the gate over a missing row or damaged values."""
-        row = self._select(session)
-        if row is None:
-            hours = max(self.block_hours, 1.0)
-            closed = closed_state(now, self.block_hours)
-            session.execute(
-                insert(Resource)
-                .values(
-                    name=self.name,
-                    concurrency=1,
-                    updated_at=_EPOCH + timedelta(microseconds=_floor_us(now)),
-                    **self._columns(closed),
-                )
-                .on_conflict_do_nothing(index_elements=[Resource.name])
+    def _insert_closed(self, session: Session) -> None:
+        """The row is missing: insert it closed. When another worker inserted it at the same moment, nothing
+        is inserted here and nothing is logged; its row is read next."""
+        now = self.clock()
+        inserted = session.execute(
+            insert(Resource)
+            .values(
+                name=self.name,
+                concurrency=1,
+                updated_at=self._updated_at(now),
+                **self._columns(closed_state(now, self.block_hours)),
             )
+            .on_conflict_do_nothing(index_elements=[Resource.name])
+            .returning(Resource.name)
+        ).first()
+        if inserted is not None:
             log.error(
                 "the YouTube gate row %r is missing: inserted closed, no calls for %g hours to be safe",
                 self.name,
-                hours,
+                max(self.block_hours, 1.0),
             )
-            row = self._select(session)  # ours, or the one another worker inserted at the same moment
-            if row is None:
+
+    def _read(self, session: Session) -> tuple[GateState, float]:
+        """Lock the row, then read the clock, then the row, closing the gate over a missing row or damage."""
+        found = self._select(session)
+        if found is None:
+            self._insert_closed(session)
+            found = self._select(session)  # ours, or the one another worker inserted at the same moment
+            if found is None:
                 raise GateUnavailable(f"the YouTube gate row {self.name!r} could not be inserted")
-        raw = self._state(row)
+        now = self.clock()  # under the row lock, like the file gate reads its clock inside its file lock
         try:
+            raw = GateState(
+                **{key: _epoch(key, value) for key, value in zip(_TIMES, found[:3], strict=True)},
+                streak=found[3],
+            )
             state = clamp(raw, now)
         except ValueError as e:
             log.error(
@@ -162,20 +190,20 @@ class PostgresGate:
                 e,
                 max(self.block_hours, 1.0),
             )
-            return row, self._write(row, closed_state(now, self.block_hours), now)
+            return self._write(session, closed_state(now, self.block_hours), now), now
         if state != raw:
             log.error(
                 "the YouTube gate row %r is damaged (a time more than 24 hours ahead): cut to 24 hours",
                 self.name,
             )
-            state = self._write(row, state, now)
-        return row, state
+            state = self._write(session, state, now)
+        return state, now
 
-    def _transaction[T](self, work: Callable[[Session, float], T]) -> T:
+    def _transaction[T](self, work: Callable[[Session], T]) -> T:
         """One short transaction; any database error is `GateUnavailable`, and nothing is changed."""
         try:
             with session_scope(self.engine) as session:
-                return work(session, self.clock())
+                return work(session)
         except SQLAlchemyError as e:
             raise GateUnavailable(f"the YouTube gate row {self.name!r} is unavailable: {e}") from e
 
@@ -184,21 +212,21 @@ class PostgresGate:
     def peek(self) -> Wait | None:
         """Is a call allowed now? Changes nothing (apart from closing the gate over a damaged row)."""
 
-        def work(session: Session, now: float) -> Wait | None:
-            return wait_for(self._read(session, now)[1], now)
+        def work(session: Session) -> Wait | None:
+            return wait_for(*self._read(session))
 
         return self._transaction(work)
 
     def reserve(self) -> Wait | None:
         """Ask for a call. None means go ahead, and the gap to the next call has started."""
 
-        def work(session: Session, now: float) -> Wait | None:
-            row, state = self._read(session, now)
+        def work(session: Session) -> Wait | None:
+            state, now = self._read(session)
             wait = wait_for(state, now)
             if wait is not None:
                 return wait
             self._write(
-                row,
+                session,
                 after_reserve(state, now, min_gap_s=self.min_gap_s, jitter_s=self.jitter_s, rng=self.rng),
                 now,
             )
@@ -210,14 +238,14 @@ class PostgresGate:
         """A fetch worked: close the breaker. `started_at` is when that fetch was reserved: a block recorded
         after it (by another worker) is newer news and stays."""
 
-        def work(session: Session, now: float) -> None:
-            row, state = self._read(session, now)
+        def work(session: Session) -> None:
+            state, now = self._read(session)
             new = after_success(state, started_at)
             if new is state:
                 return
             if state.streak or state.blocked_until:
                 log.info("YouTube answered again: the breaker is closed")
-            self._write(row, new, now)
+            self._write(session, new, now)
 
         self._transaction(work)
 
@@ -227,12 +255,12 @@ class PostgresGate:
         Two fetches that were running together and both get the no are one block, not two: when a block was
         recorded after this fetch started, the breaker stays as it is."""
 
-        def work(session: Session, now: float) -> float:
-            row, state = self._read(session, now)
+        def work(session: Session) -> float:
+            state, now = self._read(session)
             new = after_block(state, now, started_at, block_hours=self.block_hours)
             if new is state:
                 return state.blocked_until
-            stored = self._write(row, new, now)
+            stored = self._write(session, new, now)
             log.error(
                 "YouTube is blocking us (block %d): no calls for %g hours, until %s",
                 stored.streak,

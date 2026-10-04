@@ -4,13 +4,14 @@ what only a shared database brings (two workers at once, a missing or damaged ro
 import logging
 import math
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import Engine, create_engine, event, text
 
-from catcher.core.db import make_engine
+from catcher.core.db import make_engine, make_worker_engine
 from catcher.modules.youtube.gate import Gate, Wait, YoutubeGate
 from catcher.modules.youtube.pg_gate import GateUnavailable, PostgresGate
 
@@ -292,7 +293,9 @@ def test_the_time_zone_of_the_session_does_not_shift_the_gap(pg_engine: Engine):
 
 
 @pytest.mark.parametrize("failure", ["closed port", "lock timeout"])
-def test_a_database_error_raises_gate_unavailable_and_changes_nothing(pg_engine: Engine, failure):
+def test_a_database_error_raises_gate_unavailable_and_changes_nothing(
+    pg_engine: Engine, failure, monkeypatch
+):
     clock = EpochClock()
     _pg_gate(pg_engine, clock).record_block()
     before = _row(pg_engine)
@@ -300,7 +303,8 @@ def test_a_database_error_raises_gate_unavailable_and_changes_nothing(pg_engine:
     if failure == "closed port":
         broken = create_engine(pg_engine.url.set(host="127.0.0.1", port=1))
     else:
-        broken = create_engine(url, connect_args={"options": "-c lock_timeout=200"})
+        monkeypatch.setattr("catcher.core.db.WORKER_LOCK_TIMEOUT_MS", 200)  # the worker's engine, sooner
+        broken = make_worker_engine(url)
     holder = pg_engine.connect()
     try:
         if failure == "lock timeout":
@@ -318,3 +322,120 @@ def test_a_database_error_raises_gate_unavailable_and_changes_nothing(pg_engine:
         holder.close()
         broken.dispose()
     assert _row(pg_engine) == before
+
+
+def _wait_until_a_session_waits_for_a_lock(engine: Engine) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with engine.connect() as connection:
+            waiting = connection.execute(
+                text(
+                    "select count(*) from pg_stat_activity"
+                    " where wait_event_type = 'Lock' and datname = current_database()"
+                )
+            ).scalar()
+        if waiting:
+            return
+        time.sleep(0.01)
+    raise AssertionError("the gate never waited for the lock")
+
+
+def _in_thread(call: Callable[[], object]) -> Callable[[], object]:
+    """Start `call` in a daemon thread; the returned function joins it and gives its result (or raises)."""
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            outcome["result"] = call()
+        except BaseException as error:
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    def join() -> object:
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "the gate call hung"
+        if "error" in outcome:
+            raise outcome["error"]  # type: ignore[misc]
+        return outcome.get("result")
+
+    return join
+
+
+@pytest.mark.parametrize("call", ["reserve", "record_block"])
+def test_the_clock_is_read_under_the_row_lock(pg_engine: Engine, caplog, call):
+    """A call that waited for the lock uses the time it got the lock, not the time it asked: the gap starts
+    then, the block is dated then, and a 24 hour block of the other worker is not taken for damage."""
+    clock = EpochClock()
+    second = make_engine(pg_engine.url.render_as_string(hide_password=False))
+    waited = 300.0
+    try:
+        with pg_engine.connect() as holder:
+            transaction = holder.begin()
+            holder.execute(text("select 1 from resources where name = 'youtube' for update"))
+            gate = _pg_gate(second, clock)
+            join = _in_thread(gate.reserve if call == "reserve" else lambda: gate.record_block(START))
+            _wait_until_a_session_waits_for_a_lock(pg_engine)
+            clock.now += waited  # time passes while the call waits for the lock ...
+            if call == "record_block":  # ... and the other worker records its 3rd block: 24 hours
+                holder.execute(
+                    text("update resources set blocked_until = :until, blocked_at = :at, streak = 3"),
+                    {
+                        "until": datetime.fromtimestamp(clock.now + 24 * HOUR, UTC),
+                        "at": datetime.fromtimestamp(clock.now, UTC),
+                    },
+                )
+            with caplog.at_level(logging.ERROR, logger="catcher.youtube"):
+                transaction.commit()
+                result = join()
+    finally:
+        second.dispose()
+    assert not any("damaged" in record.getMessage() for record in caplog.records)
+    row = _row(pg_engine)
+    if call == "reserve":
+        assert result is None
+        assert row[0] == START + waited + GAP + 0.5 * JITTER  # type: ignore[index]
+    else:
+        assert result == START + waited + 24 * HOUR  # the other worker's block: one block, kept whole
+        assert row[1:4] == (START + waited + 24 * HOUR, START + waited, 3)  # type: ignore[index]
+
+
+@pytest.mark.parametrize("column", ["next_allowed_at", "blocked_until", "blocked_at"])
+@pytest.mark.parametrize("value", ["infinity", "-infinity", "20000-01-01 00:00:00+00"])
+def test_an_unreadable_time_is_damage_and_is_repaired(pg_engine: Engine, caplog, column, value):
+    """Python cannot hold 'infinity' or a year past 9999: the gate must repair the row, not fail forever."""
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    _execute(pg_engine, f"update resources set {column} = cast(:value as timestamptz)", value=value)
+    with caplog.at_level(logging.ERROR, logger="catcher.youtube"):
+        assert gate.reserve() == Wait(START + 6 * HOUR, blocked=True)
+    assert any("damaged" in record.getMessage() for record in caplog.records)
+    assert _row(pg_engine) == (None, START + 6 * HOUR, START, 1, START)
+    assert gate.peek() == Wait(START + 6 * HOUR, blocked=True)
+
+
+def test_a_row_another_worker_inserted_first_is_read_not_reported(pg_engine: Engine, caplog):
+    """Two gates find the row missing at once: only the one whose insert inserted logs the error."""
+    clock = EpochClock()
+    _execute(pg_engine, "delete from resources where name = 'youtube'")
+    second = make_engine(pg_engine.url.render_as_string(hide_password=False))
+    try:
+        with pg_engine.connect() as other:
+            transaction = other.begin()
+            other.execute(  # the other worker inserted the row and has not committed yet
+                text(
+                    "insert into resources (name, streak, concurrency, updated_at)"
+                    " values ('youtube', 0, 1, :at)"
+                ),
+                {"at": datetime.fromtimestamp(START, UTC)},
+            )
+            with caplog.at_level(logging.ERROR, logger="catcher.youtube"):
+                join = _in_thread(_pg_gate(second, clock).peek)
+                _wait_until_a_session_waits_for_a_lock(pg_engine)  # our insert waits on its key
+                transaction.commit()
+                result = join()
+    finally:
+        second.dispose()
+    assert not any("missing" in record.getMessage() for record in caplog.records)
+    assert result is None  # the row the other worker inserted is read and used
