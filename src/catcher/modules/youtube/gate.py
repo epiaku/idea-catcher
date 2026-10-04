@@ -41,7 +41,7 @@ from catcher.modules.youtube.gate_rules import (
     wait_for,
 )
 
-__all__ = ["MAX_BLOCK_HOURS", "Gate", "Wait", "YoutubeGate", "is_block_error"]
+__all__ = ["MAX_BLOCK_HOURS", "Gate", "GateUnavailable", "Wait", "YoutubeGate", "is_block_error"]
 
 log = logging.getLogger("catcher.youtube")
 
@@ -80,6 +80,13 @@ def is_block_error(error: BaseException) -> bool:
             if isinstance(part, BaseException):
                 stack.append(part)
     return False
+
+
+class GateUnavailable(RuntimeError):
+    """The gate could not read or write its state (the database is down, a lock timed out): do not fetch.
+
+    Raised by the Postgres gate (`pg_gate.py`); kept here, next to the protocol, so `YoutubeAccess` and the
+    Stage A CLI can handle it without importing SQLAlchemy."""
 
 
 class Gate(Protocol):

@@ -5,7 +5,8 @@ The fixtures `harness` and `frozen_harness` in `tests/integration/db/conftest.py
 - `WorkerHarness`: the seed of `tests/integration/git/test_run.py` (a note, a Gemini chat, a YouTube clip)
   in a bare + clone idea-bucket and epiaku-docs; fake note/chat backends (`.backends.note` / `.backends.chat`,
   swap them freely); a counting fake YouTube fetcher (`.fetch_calls`, `.fetcher` to change what it does)
-  behind a real `YoutubeAccess` with a file gate in a tmp folder.
+  behind a real `YoutubeAccess` with the worker's Postgres gate (the row `youtube`, re-seeded open for each
+  test by the db conftest) on the harness's engine, reading the frozen clock.
 - `frozen_harness()`: the same machinery on `reset_test_repos` of the committed `tests/data` (the real inbox,
   saved facts and saved replies), with a model and a YouTube that record the attempt and raise.
 
@@ -46,7 +47,7 @@ from catcher.modules.worker.handlers import Handler, HandlerContext
 from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import YoutubeAccess
 from catcher.modules.youtube.facts import YoutubeFacts
-from catcher.modules.youtube.gate import YoutubeGate
+from catcher.modules.youtube.pg_gate import PostgresGate
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
 WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
@@ -128,8 +129,8 @@ class WorkerHarness:
         self.fetch_calls: list[str] = []
         self.fetcher = fetcher
         self.backends = backends
-        self.gate = YoutubeGate(
-            state_dir, min_gap_s=YOUTUBE_GAP_S, jitter_s=0, block_hours=6, clock=self.clock.timestamp
+        self.gate = PostgresGate(  # the worker's gate: the row `youtube` on the harness's engine
+            engine, min_gap_s=YOUTUBE_GAP_S, jitter_s=0, block_hours=6, clock=self.clock.timestamp
         )
         services.settings = Settings(
             ideas_repo=ideas,

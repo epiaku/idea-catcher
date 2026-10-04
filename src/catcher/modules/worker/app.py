@@ -19,6 +19,7 @@ from catcher.modules.worker.handlers_pipeline import (
     parse_publish_params,
     parse_reason_params,
 )
+from catcher.modules.youtube.pg_gate import PostgresGate
 
 # Test-only seam: handlers merged into the registry. Production code never writes to it.
 EXTRA_HANDLERS: dict[str, Handler] = {}
@@ -64,11 +65,22 @@ def build_context(
     clock: Callable[[], datetime] = utc_now,
 ) -> HandlerContext:
     """The context every handler gets: the real services (`default_services`), a worker engine for
-    DATABASE_URL (sessions with a lock timeout), and the two checkouts. The caller disposes the engine."""
+    DATABASE_URL (sessions with a lock timeout), and the two checkouts. The caller disposes the engine.
+
+    The YouTube gate is the row `youtube` in Postgres on that same engine (not the file gate of Stage A), and
+    it reads the same `clock`, so a frozen clock freezes the gate too."""
+    engine = make_worker_engine(settings.database_url)
+    gate = PostgresGate(
+        engine,
+        min_gap_s=settings.youtube_min_gap_s,
+        jitter_s=settings.youtube_gap_jitter_s,
+        block_hours=settings.youtube_block_hours,
+        clock=lambda: clock().timestamp(),
+    )
     return HandlerContext(
         settings=settings,
-        services=default_services(settings),
-        engine=make_worker_engine(settings.database_url),
+        services=default_services(settings, gate=gate),
+        engine=engine,
         ideas=ideas or settings.ideas_repo,
         docs=docs or settings.docs_repo,
         clock=clock,

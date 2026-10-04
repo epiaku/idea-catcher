@@ -39,6 +39,7 @@ from catcher.modules.youtube.facts import (
     YoutubeFacts,
     fetch_facts,
 )
+from catcher.modules.youtube.gate import Gate
 from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.process")
@@ -86,8 +87,9 @@ class ProcessedPage:
     facts: YoutubeFacts | None = None  # YouTube only: written next to the final page
 
 
-def default_services(settings: Settings) -> Services:
-    access = build_access(settings)
+def default_services(settings: Settings, *, gate: Gate | None = None) -> Services:
+    """The real services; `gate` replaces the YouTube file gate (the worker passes its Postgres gate)."""
+    access = build_access(settings, gate)
     return Services(
         settings=settings,
         profiles=load_profiles(settings.profiles_file),

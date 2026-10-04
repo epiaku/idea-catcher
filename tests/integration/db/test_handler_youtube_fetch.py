@@ -7,15 +7,15 @@ working copy is marked deferred and the job succeeds. Saved facts mean no second
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select, update
-from worker_harness import YT_CLIP
+from sqlalchemy import create_engine, select, text, update
+from worker_harness import YT_CLIP, FrozenClock
 
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import load
 from catcher.modules.queue.items import set_item_status
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.worker import handlers_pipeline
-from catcher.modules.worker.app import build_handlers
+from catcher.modules.worker.app import build_context, build_handlers
 from catcher.modules.worker.handlers import Defer, Done, Fail
 from catcher.modules.worker.handlers_pipeline import (
     DEFER_FALLBACK_S,
@@ -23,6 +23,7 @@ from catcher.modules.worker.handlers_pipeline import (
     handle_youtube_fetch,
 )
 from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable
+from catcher.modules.youtube.pg_gate import PostgresGate
 
 VID = "nGVZS_wUDGM"
 OTHER_VID = "AAAAAAAAAAA"
@@ -167,6 +168,56 @@ def test_a_429_opens_the_breaker_and_defers_without_counting_an_attempt(harness)
     harness.clock.advance(3600)  # an hour later the breaker is still open: the job is not even due
     assert harness.drain(max_jobs=1) == []
     assert harness.fetch_calls == [VID]
+
+
+@pytest.fixture
+def held_gate_row(pg_engine):
+    """Another session holds the `youtube` row lock until the test ends (a stuck worker, a long migration)."""
+    with pg_engine.connect() as holder:
+        holder.execute(text("select 1 from resources where name = 'youtube' for update"))
+        yield
+        holder.rollback()
+
+
+@pytest.mark.parametrize("trouble", ["the database is down", "the gate row is locked"])
+def test_a_database_error_in_the_gate_defers_the_fetch_job_by_60_seconds(harness, request, trouble):
+    staged_clip(harness)  # the item waits for YouTube and its fetch job is queued
+    url = harness.ctx.engine.url
+    if trouble == "the database is down":  # nothing listens on port 1: the connection is refused
+        broken = create_engine(url.set(host="127.0.0.1", port=1), connect_args={"connect_timeout": 2})
+    else:  # the row lock is not granted within 50 ms
+        request.getfixturevalue("held_gate_row")
+        broken = create_engine(url, connect_args={"options": "-c lock_timeout=50"})
+    harness.gate.engine = broken
+    try:
+        assert harness.drain(max_jobs=2) == ["deferred"]
+    finally:
+        broken.dispose()
+
+    [job] = jobs_of(harness, "youtube.fetch")
+    assert (job.status, job.attempts) == ("queued", 0)
+    assert job.run_after == harness.clock() + timedelta(seconds=60)
+    assert "YouTube gate unavailable" in (job.reason or "")
+    assert item_of(harness, "yt.md").status == "waiting_youtube"
+    assert harness.fetch_calls == []  # a database error never opens the gate
+
+
+def test_the_worker_context_gate_is_a_postgres_gate_sharing_the_frozen_clock(harness):
+    clock = FrozenClock()  # 2026-10-02 12:00, days before the real time
+    ctx = build_context(harness.ctx.settings, clock=clock)
+    try:
+        assert ctx.services.youtube is not None
+        gate = ctx.services.youtube.gate
+        assert isinstance(gate, PostgresGate) and gate.engine is ctx.engine  # one engine, the worker's
+        assert gate.reserve() is None  # the open row seeded by the fixture
+        wait = gate.peek()
+        settings = ctx.settings
+        assert wait is not None and not wait.blocked
+        start = clock.timestamp()  # the gap starts at the frozen time, not at time.time()
+        assert start + settings.youtube_min_gap_s <= wait.until
+        assert wait.until <= start + settings.youtube_min_gap_s + settings.youtube_gap_jitter_s
+    finally:
+        ctx.engine.dispose()
 
 
 @pytest.mark.parametrize(

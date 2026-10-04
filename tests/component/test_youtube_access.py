@@ -1,11 +1,16 @@
+import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from catcher.modules.youtube.access import YoutubeAccess
+from catcher.core.config import Settings
+from catcher.modules.pipeline.process import default_services
+from catcher.modules.youtube.access import GATE_RETRY_S, YoutubeAccess, build_access
 from catcher.modules.youtube.cache import FactsCache
 from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable, Segment, YoutubeFacts
-from catcher.modules.youtube.gate import Gate, Wait, YoutubeGate
+from catcher.modules.youtube.gate import Gate, GateUnavailable, Wait, YoutubeGate
 
 VID = "nGVZS_wUDGM"
 
@@ -327,3 +332,107 @@ def test_facts_deferred_carries_the_gate_time(tmp_path):
     assert still.value.until == block.value.until
 
     assert FactsDeferred("later").until is None  # the old way to raise it still works
+
+
+class UnavailableGate(FakeGate):
+    """A gate whose database is down: every call named in `failing` raises GateUnavailable."""
+
+    def __init__(self, clock: Clock, *failing: str) -> None:
+        super().__init__(clock)
+        self.failing = set(failing)
+
+    def _maybe_fail(self, call: str) -> None:
+        if call in self.failing:
+            self.events.append(f"{call} failed")
+            raise GateUnavailable("the YouTube gate row 'youtube' is unavailable: connection refused")
+
+    def peek(self) -> Wait | None:
+        self._maybe_fail("peek")
+        return super().peek()
+
+    def reserve(self) -> Wait | None:
+        self._maybe_fail("reserve")
+        return super().reserve()
+
+    def record_success(self, started_at: float | None = None) -> None:
+        self._maybe_fail("record_success")
+        super().record_success(started_at)
+
+    def record_block(self, started_at: float | None = None) -> float:
+        self._maybe_fail("record_block")
+        return super().record_block(started_at)
+
+
+def test_a_gate_that_is_unavailable_defers_and_never_fetches(tmp_path):
+    clock = Clock()
+    fetch = Fetcher()
+    access = YoutubeAccess(fetch, UnavailableGate(clock, "peek", "reserve"), clock=clock)
+
+    with pytest.raises(FactsDeferred, match="YouTube gate unavailable") as deferred:
+        access.get(VID, facts_dir=tmp_path / "facts")
+    assert deferred.value.until == clock.now + GATE_RETRY_S == clock.now + 60
+    assert fetch.calls == []  # a database hiccup never opens the gate
+
+    wait = access.wait_needed(VID, facts_dir=tmp_path / "facts")  # the read-only question: wait a minute
+    assert wait is not None and wait.until == clock.now + 60
+    assert fetch.calls == []
+
+
+def test_a_block_the_gate_cannot_record_defers_for_a_whole_breaker_step(tmp_path, caplog):
+    """A 429 is real news: when the gate cannot record it, the fetch waits the first breaker step (not the
+    one-minute retry of an unavailable gate), so the next document does not call YouTube during the block."""
+    clock = Clock()
+    fetch = Fetcher(error=HttpError("HTTP Error 429: Too Many Requests"))
+    gate = UnavailableGate(clock, "record_block")
+    block_s = 6 * 3600
+    access = YoutubeAccess(fetch, gate, clock=clock, unrecorded_block_s=block_s)
+
+    with caplog.at_level(logging.ERROR, logger="catcher.youtube"), pytest.raises(FactsDeferred) as deferred:
+        access.get(VID, facts_dir=tmp_path / "facts")
+    assert deferred.value.until == clock.now + block_s
+    assert fetch.calls == [VID]
+    assert not (tmp_path / "facts").exists()  # nothing saved: the fetch did not work
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("could not record" in m for m in errors), errors
+
+    clock.now += 3600  # an hour later, with a gate that would let a fetch through: still no call
+    with pytest.raises(FactsDeferred, match="blocked until") as again:
+        access.get("BBBBBBBBBBB", facts_dir=tmp_path / "facts")
+    assert again.value.until == deferred.value.until
+    wait = access.wait_needed("BBBBBBBBBBB", facts_dir=tmp_path / "facts")
+    assert wait is not None and wait.blocked and wait.until == deferred.value.until
+    assert fetch.calls == [VID]  # once, not twice
+
+    clock.now = deferred.value.until  # the step has passed: the gate decides again
+    fetch.error = None
+    assert access.get("BBBBBBBBBBB", facts_dir=tmp_path / "facts").title == "T"
+    assert fetch.calls == [VID, "BBBBBBBBBBB"]
+
+
+def test_a_success_the_gate_cannot_record_still_returns_the_facts(tmp_path, caplog):
+    clock = Clock()
+    fetch = Fetcher()
+    access = YoutubeAccess(fetch, UnavailableGate(clock, "record_success"), clock=clock)
+
+    with caplog.at_level(logging.ERROR, logger="catcher.youtube"):
+        assert access.get(VID, facts_dir=tmp_path / "facts").title == "T"
+    assert (tmp_path / "facts" / f"{VID}.json").exists()  # a fetch that worked is never thrown away
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+def test_build_access_uses_a_given_gate(tmp_path):
+    settings = Settings(catcher_state_dir=tmp_path / "state")
+    gate = FakeGate(Clock())
+
+    assert build_access(settings, gate).gate is gate
+    assert build_access(settings, gate).unrecorded_block_s == settings.youtube_block_hours * 3600
+    assert isinstance(build_access(settings).gate, YoutubeGate)  # the Stage A CLI keeps the file gate
+    assert default_services(settings, gate=gate).youtube.gate is gate  # type: ignore[union-attr]
+
+
+def test_the_access_layer_imports_no_sqlalchemy():
+    """The Stage A CLI keeps the file gate and needs no database: importing the access layer (which handles
+    `GateUnavailable`) must not pull in SQLAlchemy."""
+    code = "import sys, catcher.modules.youtube.access; print('sqlalchemy' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "False"

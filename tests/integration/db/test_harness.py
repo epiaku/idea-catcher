@@ -10,6 +10,7 @@ from catcher.modules.llm.service import BackendUnavailable
 from catcher.modules.worker.handlers import Done, HandlerContext
 from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.facts import FactsDeferred
+from catcher.modules.youtube.pg_gate import PostgresGate
 
 
 def test_the_harness_builds_two_git_repos_and_an_idle_worker(harness, sh):
@@ -29,13 +30,14 @@ def test_the_harness_builds_two_git_repos_and_an_idle_worker(harness, sh):
     with session_scope(harness.ctx.engine) as session:
         assert harness.jobs(session) == []
 
-    # The fake YouTube counts its calls and sits behind a real YoutubeAccess with a gate in a tmp folder.
+    # The fake YouTube counts its calls and sits behind a real YoutubeAccess with the worker's Postgres gate.
     youtube = harness.ctx.services.youtube
     assert youtube is not None
     facts = youtube.get("AAAAAAAAAAA", facts_dir=None)
     assert facts.video_id == "AAAAAAAAAAA"
     assert harness.fetch_calls == ["AAAAAAAAAAA"]
-    assert harness.state_dir in youtube.gate.state_file.parents  # never the real state folder
+    # never the real state folder: the worker's gate is the `youtube` row in the test database
+    assert isinstance(youtube.gate, PostgresGate) and youtube.gate.engine is harness.ctx.engine
     with pytest.raises(FactsDeferred):  # the real gate holds a second fetch inside the gap ...
         youtube.get("BBBBBBBBBBB", facts_dir=None)
     assert harness.fetch_calls == ["AAAAAAAAAAA"]  # ... and a held fetch is not a call

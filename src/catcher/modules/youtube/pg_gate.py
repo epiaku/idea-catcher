@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from catcher.core.db import session_scope
 from catcher.modules.queue.models import Resource
+from catcher.modules.youtube.gate import GateUnavailable
 from catcher.modules.youtube.gate_rules import (
     GateState,
     Wait,
@@ -57,10 +58,6 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _US = 1_000_000
 _LAST_SECOND = (datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC) - _EPOCH).total_seconds()
 _TIMES = ("next_allowed_at", "blocked_until", "blocked_at")
-
-
-class GateUnavailable(RuntimeError):
-    """The gate could not read or write its row (the database is down, a lock timed out): do not fetch."""
 
 
 def _floor_us(seconds: float) -> int:
