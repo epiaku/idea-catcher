@@ -8,6 +8,7 @@ from catcher.modules.youtube.gate_rules import (
     after_block,
     after_reserve,
     after_success,
+    block_length_hours,
     clamp,
     closed_state,
     wait_for,
@@ -89,6 +90,13 @@ def test_a_negative_or_nan_value_is_rejected(damage):
     values = {"next_allowed_at": 0.0, "blocked_until": 0.0, "blocked_at": 0.0, "streak": 0} | damage
     with pytest.raises(ValueError):
         clamp(GateState(**values), NOW)
+
+
+def test_a_huge_streak_stays_at_24_hours_without_a_huge_number():
+    """A damaged streak (up to 2**31 in the database) must not build a giant integer under the row lock."""
+    assert block_length_hours(2**31 - 1, 6.0) == 24
+    state = after_block(GateState(0.0, 0.0, 0.0, 2**31 - 2), NOW, None, block_hours=6.0)
+    assert (state.streak, state.blocked_until) == (2**31 - 1, NOW + 24 * HOUR)
 
 
 def test_closed_state_blocks_for_at_least_one_hour():

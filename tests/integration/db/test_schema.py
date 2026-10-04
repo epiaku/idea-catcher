@@ -306,11 +306,12 @@ def test_upgrade_seeds_the_open_youtube_row_and_downgrade_removes_it(fresh_datab
     assert len(_youtube_rows(fresh_database_url)) == 1
 
 
-def test_every_db_test_starts_with_the_open_youtube_row(session, pg_engine):
-    rows = session.execute(
-        text(
-            "select next_allowed_at, blocked_until, blocked_at, streak, concurrency from resources"
-            " where name = 'youtube'"
-        )
-    ).all()
+def test_every_db_test_starts_with_the_open_youtube_row(pg_engine):
+    with pg_engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "select next_allowed_at, blocked_until, blocked_at, streak, concurrency from resources"
+                " where name = 'youtube'"
+            )
+        ).all()
     assert [tuple(row) for row in rows] == [(None, None, None, 0, 1)]
