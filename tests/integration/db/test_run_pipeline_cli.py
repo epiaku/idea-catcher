@@ -161,3 +161,6 @@ def test_a_run_that_loses_its_lock_stops_with_exit_1_before_the_next_document(
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert len(_inbox(repos.ideas)) == 1  # the second document was not started
     assert sh(repos.ideas, "log", "--oneline") == commits  # nothing was committed after the lock was lost
+    assert sh(repos.ideas, "status", "--porcelain") != ""  # the first one is changed, not committed
+    assert any(line.startswith("published") for line in result.output.splitlines())  # what was done
+    assert "1 document(s) were finished and are NOT committed" in result.output

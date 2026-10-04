@@ -38,12 +38,17 @@ from catcher.modules.youtube.facts import (
     FactsUnavailable,
     FetchSkipped,
     YoutubeFacts,
-    fetch_facts,
 )
 from catcher.modules.youtube.gate import Gate
 from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.process")
+
+
+def _no_fetch_without_the_gate(video_id: str) -> YoutubeFacts:
+    raise FactsUnavailable(
+        f"no YouTube fetcher for {video_id}: YouTube is asked only through the gate (`default_services`)"
+    )
 
 
 @dataclass
@@ -52,12 +57,12 @@ class Services:
     profiles: ProfilesConfig
     backends: BackendFactory
     tags: TagList
-    facts: FactsFetcher = fetch_facts
+    # Called directly only when `youtube` is None, which only tests do (they pass a fake): `default_services`
+    # always sets `youtube`, and its `facts` is the access's own fetcher, behind the gate.
+    facts: FactsFetcher = _no_fetch_without_the_gate
     glossary: Glossary = field(default_factory=Glossary)
     context: str = ""  # who Epiaku is, for the Channel Application part of YouTube summaries
-    youtube: YoutubeAccess | None = (
-        None  # the saved facts, the gap and the breaker. None: fetch directly (tests)
-    )
+    youtube: YoutubeAccess | None = None  # the saved facts, the gap and the breaker (None: tests only)
 
 
 @dataclass

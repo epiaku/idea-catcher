@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     youtube_skip_manifests: bool = False  # skip the video-format request (try by hand before turning on)
     youtube_wait_max_s: float = 1800.0  # with --wait-youtube: the longest wait for the gap inside a run
     youtube_negative_ttl_h: float = 24.0  # a video without captions is asked about again after this long
-    catcher_state_dir: Path = Path("~/.catcher/state")  # this machine's state (the YouTube gate); not in git
+    catcher_state_dir: Path = Path("~/.catcher/state")  # the Stage A gate file, only for --import-file
     git_author_name: str = "idea-catcher"
     git_author_email: str = "idea-catcher@users.noreply.github.com"
     artifact_max_mb: int = 25

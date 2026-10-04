@@ -8,7 +8,7 @@ import socket
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -17,7 +17,7 @@ from alembic import command as alembic_command
 from dotenv import load_dotenv
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError, OperationalError
+from sqlalchemy.exc import ArgumentError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from catcher import __version__
@@ -42,7 +42,7 @@ from catcher.modules.pipeline.inbox import (
 from catcher.modules.pipeline.inputs import prompt_input
 from catcher.modules.pipeline.process import ProcessOptions, default_services, process_note
 from catcher.modules.pipeline.publish import write_page
-from catcher.modules.pipeline.run import RunOptions, run_pipeline
+from catcher.modules.pipeline.run import RunLockLost, RunOptions, RunReport, run_pipeline
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
 from catcher.modules.queue.models import JOB_STATUSES, Job
@@ -302,36 +302,33 @@ def run_pipeline_cmd(
         refresh_llm=refresh_llm,
     )
     _check_database_url(settings.database_url)
-    try:
-        with _run_lock(settings) as lock_check:  # before any file is touched
-            opts.lock_check = lock_check
+    with ExitStack() as stack:
+        try:  # before any file is touched; released when the command ends, however it ends
+            opts.lock_check = stack.enter_context(_run_lock(settings))
+        except WorkerAlreadyRunning as e:
+            log.error("%s", RUN_BUSY)
+            typer.echo(RUN_BUSY, err=True)
+            raise typer.Exit(2) from e
+        except OperationalError as e:
+            log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
+            typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
+            raise typer.Exit(2) from e
+        try:
             report = run_pipeline(
                 ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
             )
-    except WorkerAlreadyRunning as e:
-        log.error("%s", RUN_BUSY)
-        typer.echo(RUN_BUSY, err=True)
-        raise typer.Exit(2) from e
-    except WorkerLockLost as e:
-        log.error("%s", RUN_LOST)
-        typer.echo(RUN_LOST, err=True)
-        raise typer.Exit(1) from e
-    except OperationalError as e:
-        log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
-        typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
-        raise typer.Exit(2) from e
-    for item in report.items:
-        page = f"{item.page} (saved reply)" if item.page and item.llm_saved else item.page or ""
-        detail = " ".join(part for part in (page, item.message) if part)
-        typer.echo(f"{item.status:<14} {item.doc_class:<15} {item.doc_id:<24} {detail}")
-    for problem in report.problems:
-        typer.echo(f"{'error':<14} {problem}")
-    for rel, error in report.unreadable.items():
-        typer.echo(f"{'unreadable':<14} {rel}: {error}")
-    for query in report.not_found:
-        typer.echo(f'{"not-found":<14} no document named "{query}" in inbox/')
-    for query in report.not_in_archive:
-        typer.echo(f'{"not-found":<14} no document named "{query}" in archive/')
+        except RunLockLost as e:
+            _print_items(e.report)
+            done = sum(1 for item in e.report.items if item.status in CHANGED_BY_A_RUN)
+            typer.echo(f"{done} document(s) were finished and are NOT committed", err=True)
+            log.error("%s", RUN_LOST)
+            typer.echo(RUN_LOST, err=True)
+            raise typer.Exit(1) from e
+        except SQLAlchemyError as e:  # the lock's own errors are handled above; this one came from the run
+            log.error("a database error stopped the run: %s", getattr(e, "orig", None) or type(e).__name__)
+            typer.echo(RUN_DB_ERROR, err=True)
+            raise typer.Exit(1) from e
+    _print_items(report)
     typer.echo(f"summary: {report.counts()} committed={report.committed} pushed={report.pushed}")
     if report.problems:
         raise typer.Exit(2)  # a wrong path, like `scan`, `reason` and `render`
@@ -345,9 +342,31 @@ def run_pipeline_cmd(
 RUN_BUSY = "another worker or run is already running; one at a time: nothing was done"
 RUN_LOST = (
     "the run lost its database lock (the connection to Postgres was lost or restarted); it stopped before "
-    "the next document and committed nothing, so no worker or other run works beside it: the files it "
+    "the next step and committed nothing, so no worker or other run works beside it: the files it "
     "already changed are not committed (see `git status`); run it again"
 )
+RUN_DB_ERROR = (
+    "a database error stopped the run (see the log): documents may already have been moved and may not "
+    "be committed; check `git status` in both repos, then run it again"
+)
+# The statuses of a document whose files the run changed (moved, archived, published or filed).
+CHANGED_BY_A_RUN = frozenset({"published", "deferred", "failed", "duplicate", "artifact", "requeued"})
+
+
+def _print_items(report: RunReport) -> None:
+    """One line per document of the run, then the problems and the names that were not found."""
+    for item in report.items:
+        page = f"{item.page} (saved reply)" if item.page and item.llm_saved else item.page or ""
+        detail = " ".join(part for part in (page, item.message) if part)
+        typer.echo(f"{item.status:<14} {item.doc_class:<15} {item.doc_id:<24} {detail}")
+    for problem in report.problems:
+        typer.echo(f"{'error':<14} {problem}")
+    for rel, error in report.unreadable.items():
+        typer.echo(f"{'unreadable':<14} {rel}: {error}")
+    for query in report.not_found:
+        typer.echo(f'{"not-found":<14} no document named "{query}" in inbox/')
+    for query in report.not_in_archive:
+        typer.echo(f'{"not-found":<14} no document named "{query}" in archive/')
 
 
 @contextmanager

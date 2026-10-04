@@ -981,3 +981,65 @@ def test_retry_deferred_flag_on_the_command_line(repos, make_services, monkeypat
     ok = CliRunner().invoke(app, [*base, "--retry-deferred"])
     assert ok.exit_code == 0, ok.output
     assert "requeued" in ok.output and "published" in ok.output
+
+
+# ---- the run lock's check (`RunOptions.lock_check`, `WorkerLock.check` in `catcher run pipeline`) ----------
+
+
+class LockGone(RuntimeError):
+    pass
+
+
+def lose_the_lock_when(condition):
+    """A lock check that passes until `condition()` holds, then raises (as `WorkerLock.check` does)."""
+
+    def check() -> None:
+        if condition():
+            raise LockGone("the lock connection died")
+
+    return check
+
+
+def commits(repos, sh) -> tuple[str, str]:
+    return sh(repos.ideas, "log", "--oneline"), sh(repos.docs, "log", "--oneline")
+
+
+def test_a_lock_lost_during_a_document_stops_the_run_before_the_next_one(repos, make_services, sh):
+    from catcher.modules.pipeline.run import RunLockLost
+
+    before = commits(repos, sh)
+    opts = RunOptions(lock_check=lose_the_lock_when(lambda: len(in_inbox(repos.ideas)) == 1))
+    with pytest.raises(RunLockLost) as lost:
+        run_pipeline(repos.ideas, repos.docs, opts, make_services())
+    assert isinstance(lost.value.__cause__, LockGone)
+    assert lost.value.report.counts() == {"published": 1}  # what was done; the second one was not started
+    assert len(in_inbox(repos.ideas)) == 1
+    assert commits(repos, sh) == before  # nothing committed
+    assert sh(repos.ideas, "status", "--porcelain") != ""  # the finished one is changed, not committed
+
+
+def test_a_lock_lost_after_the_last_document_stops_the_run_before_the_artifacts(repos, make_services, sh):
+    from catcher.modules.pipeline.run import RunLockLost
+
+    src = add_artifact(repos)
+    before = commits(repos, sh)
+    opts = RunOptions(lock_check=lose_the_lock_when(lambda: in_inbox(repos.ideas) == []))
+    with pytest.raises(RunLockLost) as lost:
+        run_pipeline(repos.ideas, repos.docs, opts, make_services())
+    assert lost.value.report.counts() == {"published": 2}
+    assert src.exists() and not (repos.ideas / "archive/artifacts").exists()  # the artifact was not touched
+    assert not (repos.docs / "idea-bucket/artifacts").exists()
+    assert commits(repos, sh) == before
+
+
+def test_a_lock_lost_after_the_artifacts_stops_the_run_before_the_commit(repos, make_services, sh):
+    from catcher.modules.pipeline.run import RunLockLost
+
+    src = add_artifact(repos)
+    before = commits(repos, sh)
+    opts = RunOptions(lock_check=lose_the_lock_when(lambda: not src.exists()))  # only the last check sees it
+    with pytest.raises(RunLockLost) as lost:
+        run_pipeline(repos.ideas, repos.docs, opts, make_services())
+    assert lost.value.report.counts() == {"published": 2, "artifact": 1}
+    assert commits(repos, sh) == before  # no commit after the lock was lost
+    assert sh(repos.docs, "status", "--porcelain") != ""  # the pages are written, not committed

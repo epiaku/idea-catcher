@@ -29,7 +29,8 @@ def _ignore_the_real_dotenv(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _private_state_dir(monkeypatch, tmp_path_factory):
-    """The YouTube gate and the run lock live in the state folder: never the developer's real one."""
+    """The Stage A file gate (`youtube gate --import-file`) reads the state folder: never the developer's
+    real one."""
     monkeypatch.setenv("CATCHER_STATE_DIR", str(tmp_path_factory.mktemp("state")))
 
 

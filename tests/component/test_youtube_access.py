@@ -498,8 +498,8 @@ def test_build_access_uses_a_given_gate(tmp_path):
 
 
 def test_the_access_layer_imports_no_sqlalchemy():
-    """The Stage A CLI keeps the file gate and needs no database: importing the access layer (which handles
-    `GateUnavailable`) must not pull in SQLAlchemy."""
+    """The access layer itself stays free of SQLAlchemy (the unit and component tests use it with an in-memory
+    gate): `build_access` imports the Postgres gate only when it builds one."""
     code = "import sys, catcher.modules.youtube.access; print('sqlalchemy' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert out.strip() == "False"
@@ -543,7 +543,7 @@ def test_build_access_without_a_gate_builds_a_postgres_gate(monkeypatch, connect
     gate.engine.dispose()
 
 
-def test_a_clip_is_deferred_with_gate_unavailable_when_reason_runs_without_a_database(
+def test_a_clip_is_deferred_with_gate_unavailable_when_the_database_is_down(
     monkeypatch, connections, make_note, tmp_path
 ):
     from catcher.modules.pipeline.process import ProcessOptions, process_note

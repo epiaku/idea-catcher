@@ -82,8 +82,9 @@ class RunOptions:
     wait_youtube: bool = False  # sleep through a short gap between YouTube calls instead of waiting
     retry_deferred: bool = False  # first put the documents a temporary error stalled back into inbox/
     refresh_llm: bool = False  # call the LLM even when a good reply is saved in llm/ (`--requeue` reuses it)
-    # The run lock's check (`WorkerLock.check` of `catcher run pipeline`): called before each document and
-    # before the commit; it raises when the lock is lost, which stops the run there. None: no check (tests).
+    # The run lock's check (`WorkerLock.check` of `catcher run pipeline`): called before each document, before
+    # the artifacts and before the commit; when it raises, the run stops there with RunLockLost and commits
+    # nothing. None: no check (tests).
     lock_check: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
 
@@ -101,6 +102,15 @@ class RunReport:
 
     def counts(self) -> dict[str, int]:
         return dict(Counter(item.status for item in self.items))
+
+
+class RunLockLost(RuntimeError):
+    """The run lock was lost (`RunOptions.lock_check` raised, the cause): the run stopped there and committed
+    nothing. `report` is what it did so far: those documents are changed in the files but not committed."""
+
+    def __init__(self, report: RunReport) -> None:
+        super().__init__("the run lock was lost: the run stopped and committed nothing")
+        self.report = report
 
 
 @dataclass
@@ -227,7 +237,8 @@ def copy_artifacts(
 
 def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     """One run over the inbox. It takes no lock itself: `catcher run pipeline` holds the worker's Postgres
-    lock around it (one worker or run at a time), and `opts.lock_check` says when that lock was lost."""
+    lock around it (one worker or run at a time), and `opts.lock_check` says when that lock was lost: then
+    it raises RunLockLost, which carries the report so far."""
     return _run(ideas, docs, opts, svc)
 
 
@@ -330,12 +341,14 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     for position, note in enumerate(ordered, start=1):
         who = f"({position}/{total}) {note_label(note)}"
         item = ItemReport(note.doc_id, note.doctype.name, "skipped")
+        limited = opts.limit is not None and state.attempted >= opts.limit
+        if not limited:  # before this document is touched or reported: a lost lock stops the run here
+            _check_the_lock(opts, report)
         report.items.append(item)
-        if opts.limit is not None and state.attempted >= opts.limit:
+        if limited:
             item.message = "run limit reached"
             left_by_limit += 1  # one line for all of them after the loop: an inbox can hold hundreds
             continue
-        _check_the_lock(opts)  # before this document is touched: a lost lock stops the run here
         vid = video_id(str(note.doc.fm.get("source") or "")) if note.doctype.name == "youtube" else None
         if vid and svc.youtube is not None:
             # A clip that must wait for YouTube stays in inbox/ untouched: the next run picks it up.
@@ -429,6 +442,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
         )
     if left_by_limit:
         log.info("limit of %d reached: %d note(s) stay in inbox/", opts.limit, left_by_limit)
+    _check_the_lock(opts, report)  # artifacts are moved and copied too
     copy_artifacts(scan, ideas, docs, opts, svc, report, touched_ideas, touched_docs)
     counts = report.counts()
     log.info(
@@ -438,7 +452,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
         ", ".join(f"{n} {status}" for status, n in sorted(counts.items())) or "nothing to do",
     )
     if not opts.dry_run:
-        _check_the_lock(opts)  # no commit after the lock was lost
+        _check_the_lock(opts, report)  # no commit (and no pull or push) after the lock was lost
         author = (svc.settings.git_author_name, svc.settings.git_author_email)
         published = report.counts().get("published", 0)
         artifacts = report.counts().get("artifact", 0)
@@ -463,7 +477,13 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
     return report
 
 
-def _check_the_lock(opts: RunOptions) -> None:
-    """Raise (WorkerLockLost) when the run lock is gone; the exception ends the run, nothing is committed."""
-    if opts.lock_check is not None:
+def _check_the_lock(opts: RunOptions, report: RunReport) -> None:
+    """Raise RunLockLost (with the report so far) when the run lock is gone: the run ends there, nothing is
+    committed."""
+    if opts.lock_check is None:
+        return
+    try:
         opts.lock_check()
+    except Exception as e:
+        log.error("the run lock was lost: the run stops here and commits nothing")
+        raise RunLockLost(report) from e
