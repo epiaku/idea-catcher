@@ -81,7 +81,7 @@ def after_success(state: GateState, started_at: float | None) -> GateState:
 def block_length_hours(streak: int, block_hours: float) -> float:
     """How long block number `streak` lasts: `block_hours`, then twice as long, up to 24 hours. The exponent
     stops at 16 (far past 24 hours), so a damaged huge streak never builds a huge number."""
-    return min(block_hours * 2 ** min(streak - 1, 16), max(MAX_BLOCK_HOURS, block_hours))
+    return min(block_hours * 2 ** min(streak - 1, 16), MAX_BLOCK_HOURS)
 
 
 def after_block(state: GateState, now: float, started_at: float | None, *, block_hours: float) -> GateState:

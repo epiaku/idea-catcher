@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     youtube_request_delay_s: float = 10.0  # seconds between the requests inside one fetch
     youtube_min_gap_s: float = 120.0  # minimum seconds between the start of two fetches (2 minutes)
     youtube_gap_jitter_s: float = 300.0  # up to this many random extra seconds on the gap
-    youtube_block_hours: float = 6.0  # wait after the first block; doubles each time, at most 24 hours
+    # wait after the first block; doubles each time, at most 24 hours. More than 0 (0 would turn the breaker
+    # off) and at most 24 (the gate's ceiling: a longer value would be read back as damage)
+    youtube_block_hours: float = Field(default=6.0, gt=0, le=24)
     youtube_offline: bool = False  # never call YouTube, use the saved facts only
     youtube_skip_manifests: bool = False  # skip the video-format request (try by hand before turning on)
     youtube_wait_max_s: float = 1800.0  # with --wait-youtube: the longest wait for the gap inside a run

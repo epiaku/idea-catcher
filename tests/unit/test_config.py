@@ -57,3 +57,15 @@ def test_llm_block_s_defaults_to_ten_minutes_and_must_be_positive(monkeypatch):
         monkeypatch.setenv("LLM_BLOCK_S", bad)
         with pytest.raises(ValidationError, match="llm_block_s"):
             Settings()
+
+
+def test_youtube_block_hours_must_be_more_than_0_and_at_most_24(monkeypatch):
+    """0 or less would turn the breaker off; more than 24 disagrees with the 24 hour ceiling of the gate."""
+    monkeypatch.setenv("YOUTUBE_BLOCK_HOURS", "24")
+    assert Settings().youtube_block_hours == 24
+    monkeypatch.setenv("YOUTUBE_BLOCK_HOURS", "0.5")
+    assert Settings().youtube_block_hours == 0.5
+    for bad in ("0", "-1", "25", "nan"):
+        monkeypatch.setenv("YOUTUBE_BLOCK_HOURS", bad)
+        with pytest.raises(ValidationError, match="youtube_block_hours"):
+            Settings()

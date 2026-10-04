@@ -99,6 +99,12 @@ def test_a_huge_streak_stays_at_24_hours_without_a_huge_number():
     assert (state.streak, state.blocked_until) == (2**31 - 1, NOW + 24 * HOUR)
 
 
+def test_the_longest_block_is_exactly_24_hours_whatever_the_first_step():
+    assert block_length_hours(1, 30.0) == 24
+    assert block_length_hours(3, 6.0) == 24
+    assert block_length_hours(1, 6.0) == 6
+
+
 def test_closed_state_blocks_for_at_least_one_hour():
     assert closed_state(NOW, 6) == GateState(
         next_allowed_at=0.0, blocked_until=NOW + 6 * HOUR, blocked_at=NOW, streak=1
