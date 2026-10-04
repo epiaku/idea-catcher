@@ -26,7 +26,6 @@ import math
 import random
 import time
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -285,19 +284,25 @@ class PostgresGate:
         return self._transaction(work)
 
     def import_state(self, state: GateState) -> bool:
-        """Write `state` (from the Stage A state file) into the row; True when written.
+        """Merge `state` (from the Stage A state file) into the row; True when the row changed.
 
-        A block is never shortened: when the row holds a block that still runs and ends later than the one in
-        `state`, nothing is written and the answer is False. The gap is never shortened either: the later of
-        the two `next_allowed_at` is kept."""
+        The merge can only make the gate more careful: every field keeps the larger of the row's value and
+        the file's (the later gap, the later block, the newer `blocked_at`, the higher streak). So a block is
+        never shortened, a streak is never reset, and a newer `blocked_at` is never replaced by an older one.
+        When the row already covers the file, nothing is written and the answer is False."""
 
         def work(session: Session) -> bool:
             current, now = self._read(session)
-            if current.blocked_until > now and current.blocked_until > state.blocked_until:
+            file = clamp(state, now)  # damage in `state` raises ValueError, as it does for a row
+            merged = GateState(
+                next_allowed_at=max(current.next_allowed_at, file.next_allowed_at),
+                blocked_until=max(current.blocked_until, file.blocked_until),
+                blocked_at=max(current.blocked_at, file.blocked_at),
+                streak=max(current.streak, file.streak),
+            )
+            if merged == current:
                 return False
-            new = clamp(state, now)  # damage in `state` raises ValueError, as it does for a row
-            new = replace(new, next_allowed_at=max(new.next_allowed_at, current.next_allowed_at))
-            self._write(session, new, now)
+            self._write(session, merged, now)
             return True
 
         return self._transaction(work)

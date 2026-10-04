@@ -496,9 +496,9 @@ def test_import_state_never_shortens_a_longer_block(pg_engine: Engine):
     assert gate.import_state(GateState(0.0, START + 12 * HOUR, START, 2)) is True  # a longer one is kept
     assert gate.snapshot().blocked_until == START + 12 * HOUR > until
 
-    clock.now += 13 * HOUR  # the row's block is over: it is not a block any more, and does not refuse
-    assert gate.import_state(GateState(0.0, 0.0, 0.0, 0)) is True
-    assert gate.snapshot() == GateState(0.0, 0.0, 0.0, 0)
+    clock.now += 13 * HOUR  # the row's block is over, but an open file still resets nothing (streak kept)
+    assert gate.import_state(GateState(0.0, 0.0, 0.0, 0)) is False
+    assert gate.snapshot() == GateState(0.0, START + 12 * HOUR, START, 2)
 
 
 def test_import_state_never_shortens_the_gap(pg_engine: Engine):
@@ -506,7 +506,7 @@ def test_import_state_never_shortens_the_gap(pg_engine: Engine):
     gate = _pg_gate(pg_engine, clock)
     assert gate.reserve() is None
     gap_until = START + GAP + 0.5 * JITTER
-    assert gate.import_state(GateState(START + 10, 0.0, 0.0, 0)) is True
+    assert gate.import_state(GateState(START + 10, 0.0, 0.0, 0)) is False  # the row covers it
     assert gate.snapshot().next_allowed_at == gap_until
     assert gate.import_state(GateState(gap_until + 50, 0.0, 0.0, 0)) is True
     assert gate.snapshot().next_allowed_at == gap_until + 50
@@ -521,3 +521,48 @@ def test_snapshot_and_import_state_raise_gate_unavailable_when_the_database_is_d
                 call()
     finally:
         broken.dispose()
+
+
+def test_import_state_keeps_the_streak_of_an_expired_block(pg_engine: Engine):
+    """Blocked three times, the last block just over, no fetch worked since: the next block must be 24 hours.
+    An open or older file must not reset the streak (the next 429 would give only 6 hours)."""
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    _execute(
+        pg_engine,
+        "update resources set blocked_until = :until, blocked_at = :at, streak = 3 where name = 'youtube'",
+        until=datetime.fromtimestamp(START - HOUR, UTC),
+        at=datetime.fromtimestamp(START - 25 * HOUR, UTC),
+    )
+    before = _row(pg_engine)
+    assert gate.import_state(GateState(0.0, 0.0, 0.0, 0)) is False
+    assert gate.import_state(GateState(0.0, START - 2 * HOUR, START - 30 * HOUR, 1)) is False
+    assert _row(pg_engine) == before
+    assert gate.snapshot().streak == 3
+    assert gate.record_block() == START + 24 * HOUR  # block 4: 24 hours, not a first block of 6
+
+
+def test_import_state_keeps_a_newer_blocked_at(pg_engine: Engine):
+    """A longer file block with an older record time lengthens the block, but keeps the row's newer
+    `blocked_at`: a fetch that started between the two and then worked must not close the block."""
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    gate.record_block()  # until START + 6 h, recorded at START, block 1
+    assert gate.import_state(GateState(0.0, START + 8 * HOUR, START - 2 * HOUR, 1)) is True
+    assert gate.snapshot() == GateState(0.0, START + 8 * HOUR, START, 1)
+
+    gate.record_success(started_at=START - HOUR)  # started before our newer block: older news
+    assert gate.peek() == Wait(START + 8 * HOUR, blocked=True)
+
+
+def test_importing_the_same_state_twice_changes_nothing_the_second_time(pg_engine: Engine):
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    imported = GateState(
+        START + 100.1234567, START + 12 * HOUR + 0.5, START - 60, 2
+    )  # not whole microseconds
+    assert gate.import_state(imported) is True
+    after_first = _row(pg_engine)
+    clock.now += 5
+    assert gate.import_state(imported) is False
+    assert _row(pg_engine) == after_first  # updated_at too: nothing was written

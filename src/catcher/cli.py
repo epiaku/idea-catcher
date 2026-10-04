@@ -366,26 +366,36 @@ def _same_file(path: Path, before: os.stat_result) -> bool:
 
 
 def _import_state_file(gate: PostgresGate, file_gate: YoutubeGate, before: os.stat_result) -> None:
-    """Copy the state file into the row, through the file gate's own reader (a damaged file reads closed and
-    is kept as `.corrupt`, as on every read). A longer block in the row is never shortened: exit 2."""
+    """Merge the state file into the row, through the file gate's own reader (a damaged file reads closed and
+    is kept as `.corrupt`, as on every read). The merge only makes the gate more careful; when the row
+    already covers the file, nothing changes: exit 2."""
     gate.snapshot()  # the database is reached before the file is read: a damaged file stays as it is
-    state = file_gate.snapshot()
+    try:
+        state = file_gate.snapshot()
+    except OSError as e:  # e.g. a damaged file in a folder that cannot be written: it cannot be repaired
+        log.error("the YouTube gate file %s could not be read or repaired: %s", file_gate.state_file, e)
+        typer.echo(
+            f"the state file {file_gate.state_file} could not be read or repaired "
+            f"({e.strerror or type(e).__name__}): nothing imported",
+            err=True,
+        )
+        raise typer.Exit(2) from None
     kept = file_gate.state_file.with_suffix(".corrupt")
     if _same_file(kept, before):  # the reader moved the file aside: it was damaged
         typer.echo(
             f"the state file {file_gate.state_file} was damaged: kept as {kept.name}, imported as closed"
         )
-    if not gate.import_state(state):
-        now = _gate_clock()
-        held = gate.snapshot()
+    changed = gate.import_state(state)
+    now = _gate_clock()
+    held = _gate_text(gate.snapshot(), now)
+    if not changed:
         typer.echo(
-            f"not imported: the database already holds a longer block until "
-            f"{clock_text(held.blocked_until, now)} (the file: {_gate_text(state, now)})",
+            f"not imported: the database already holds this state or a stricter one (youtube: {held}; "
+            f"the file: {_gate_text(state, now)})",
             err=True,
         )
         raise typer.Exit(2)
-    text = _gate_text(state, _gate_clock())
-    typer.echo(f"imported: {'open (nothing to carry over)' if text == 'open' else text}")
+    typer.echo(f"imported: {'open (nothing to carry over)' if held == 'open' else held}")
 
 
 @youtube_app.command("gate")
@@ -394,15 +404,15 @@ def youtube_gate(
         bool,
         typer.Option(
             "--import-file",
-            help="copy youtube-gate.json from CATCHER_STATE_DIR (the Stage A gate) into the database once; "
-            "a longer block in the database is never shortened",
+            help="merge youtube-gate.json from CATCHER_STATE_DIR (the Stage A gate) into the database once; "
+            "the merge only makes the gate more careful (a block, a gap or a streak is never lowered)",
         ),
     ] = False,
 ) -> None:
     """Show the YouTube gate the worker uses (the row `youtube` in DATABASE_URL): open, the gap, or a block.
 
-    Exit codes: 0 done; 2 nothing to import, the database already holds a longer block, DATABASE_URL is
-    malformed or the database cannot be reached."""
+    Exit codes: 0 done; 2 nothing to import, the database already holds this state or a stricter one, the
+    state file cannot be read or repaired, DATABASE_URL is malformed or the database cannot be reached."""
     settings = Settings()
     _check_database_url(settings.database_url)
     file_gate = YoutubeGate(
@@ -426,12 +436,10 @@ def youtube_gate(
     except GateUnavailable as e:
         cause = e.__cause__
         detail = getattr(cause, "orig", None) or cause or e
-        if isinstance(cause, OperationalError):
+        if isinstance(cause, OperationalError):  # logged only, as the other database commands do
             log.error("cannot reach the database in DATABASE_URL: %s", detail)
-            typer.echo("cannot reach the database in DATABASE_URL (see the log)", err=True)
         else:
             log.error("the YouTube gate in DATABASE_URL is unavailable: %s", detail)
-            typer.echo("the YouTube gate in DATABASE_URL is unavailable (see the log)", err=True)
         raise typer.Exit(2) from None
     finally:
         engine.dispose()

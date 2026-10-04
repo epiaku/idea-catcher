@@ -140,16 +140,20 @@ def test_import_file_with_an_open_state_says_there_is_nothing_to_carry_over(
 def test_import_file_never_shortens_a_longer_block(runner: CliRunner, engine, state_dir: Path) -> None:
     _set_row(engine, blocked_until=T + 20 * HOUR, blocked_at=T - HOUR, streak=3)
     before = _row(engine)
-    _write_state(state_dir, blocked_until=T + 2 * HOUR, blocked_at=T - 60, streak=1.0)
+    _write_state(state_dir, blocked_until=T + 2 * HOUR, blocked_at=T - 2 * HOUR, streak=1.0)
 
     result = runner.invoke(app, ["youtube", "gate", "--import-file"])
 
     assert result.exit_code == 2, result.output
-    assert (
-        f"not imported: the database already holds a longer block until {_clock(T + 20 * HOUR)}"
-        in result.output
-    )
+    assert "not imported: the database already holds this state or a stricter one" in result.output
     assert _row(engine) == before
+
+    # A shorter file block recorded later only moves `blocked_at` forward: the block and the streak stay.
+    _write_state(state_dir, blocked_until=T + 2 * HOUR, blocked_at=T - 60, streak=1.0)
+    newer = runner.invoke(app, ["youtube", "gate", "--import-file"])
+    assert newer.exit_code == 0, newer.output
+    assert f"imported: blocked until {_clock(T + 20 * HOUR)} (block 3)" in newer.output.splitlines()
+    assert _row(engine) == (0.0, T + 20 * HOUR, T - 60, 3)
 
 
 def test_import_file_without_a_file_says_so_and_changes_nothing(
@@ -187,7 +191,7 @@ def test_gate_exits_2_when_the_database_is_unreachable(
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://catcher:s3cr3t-pw@127.0.0.1:1/catcher")
     result = runner.invoke(app, command)
     assert result.exit_code == 2, result.output
-    assert "cannot reach the database in DATABASE_URL" in result.output
+    assert result.output.count("cannot reach the database in DATABASE_URL") == 1  # said once, not twice
     assert "s3cr3t-pw" not in result.output
     assert "Traceback" not in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
@@ -204,3 +208,34 @@ def test_gate_exits_2_on_a_malformed_database_url_without_the_password(
     assert "DATABASE_URL is not a valid database URL" in result.output
     assert "s3cr3t-pw" not in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_import_file_twice_says_the_second_time_that_nothing_changed(
+    runner: CliRunner, engine, state_dir: Path
+) -> None:
+    _write_state(state_dir, blocked_until=T + 12 * HOUR, blocked_at=T - 60, streak=2.0)
+    assert runner.invoke(app, ["youtube", "gate", "--import-file"]).exit_code == 0
+    before = _row(engine)
+    again = runner.invoke(app, ["youtube", "gate", "--import-file"])
+    assert again.exit_code == 2, again.output
+    assert "not imported: the database already holds this state or a stricter one" in again.output
+    assert _row(engine) == before
+
+
+def test_import_file_exits_2_when_a_damaged_file_cannot_be_repaired(
+    runner: CliRunner, engine, state_dir: Path
+) -> None:
+    state_dir.mkdir(parents=True)
+    (state_dir / "youtube-gate.lock").touch()  # the lock can be taken; the folder is read-only
+    (state_dir / "youtube-gate.json").write_text("{not json", encoding="utf-8")
+    before = _row(engine)
+    state_dir.chmod(0o500)
+    try:
+        result = runner.invoke(app, ["youtube", "gate", "--import-file"])
+    finally:
+        state_dir.chmod(0o700)
+    assert result.exit_code == 2, result.output
+    assert "could not be read or repaired" in result.output
+    assert "Traceback" not in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert _row(engine) == before
