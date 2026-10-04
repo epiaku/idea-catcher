@@ -91,8 +91,9 @@ class ProcessedPage:
 def default_services(
     settings: Settings, *, gate: Gate | None = None, clock: Callable[[], float] = time.time
 ) -> Services:
-    """The real services; `gate` replaces the YouTube file gate (the worker passes its Postgres gate) and
-    `clock` the YouTube access's own clock (the worker passes its context clock)."""
+    """The real services. YouTube goes through the Postgres gate: `build_access` builds one on DATABASE_URL,
+    or `gate` is the one to use (the worker passes its own); `clock` is the YouTube access's own clock (the
+    worker passes its context clock)."""
     access = build_access(settings, gate, clock=clock)
     return Services(
         settings=settings,

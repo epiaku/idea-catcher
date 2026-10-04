@@ -7,7 +7,7 @@ import signal
 import socket
 import threading
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any
@@ -209,6 +209,7 @@ def render(
 ) -> None:
     """Summarize one document and write its page into the docs checkout (no inbox change, no git)."""
     settings = Settings()
+    _check_database_url(settings.database_url)  # a YouTube clip's facts go through the gate in the database
     docs_repo = docs or settings.docs_repo
     note = _read_document(document)
     note.name = f"{calculated_stem(str(note.doc.fm['captured']), secrets.token_hex(3), name_title(note))}.md"
@@ -278,7 +279,14 @@ def run_pipeline_cmd(
         typer.Option("--refresh-llm", help="call the LLM again even when a good reply is saved in llm/"),
     ] = False,
 ) -> None:
-    """Process the documents in inbox/: publish pages, file failures and duplicates, and commit."""
+    """Process the documents in inbox/: publish pages, file failures and duplicates, and commit.
+
+    It needs the database: first it takes the worker's lock in DATABASE_URL (also for --dry-run), so one
+    worker or run works at a time, and holds it until the run ends.
+
+    Exit codes: 0 done; 1 a document failed or a name was not found, or the run lost its database lock (it
+    stopped before the next document and committed nothing); 2 a wrong path, DATABASE_URL is malformed, the
+    database cannot be reached, or a worker or another run is running (nothing was done)."""
     settings = Settings()
     signal.signal(signal.SIGTERM, _terminate)  # a `kill` ends the run like Ctrl-C: the document goes back
     opts = RunOptions(
@@ -293,9 +301,25 @@ def run_pipeline_cmd(
         retry_deferred=retry_deferred,
         refresh_llm=refresh_llm,
     )
-    report = run_pipeline(
-        ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
-    )
+    _check_database_url(settings.database_url)
+    try:
+        with _run_lock(settings) as lock_check:  # before any file is touched
+            opts.lock_check = lock_check
+            report = run_pipeline(
+                ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
+            )
+    except WorkerAlreadyRunning as e:
+        log.error("%s", RUN_BUSY)
+        typer.echo(RUN_BUSY, err=True)
+        raise typer.Exit(2) from e
+    except WorkerLockLost as e:
+        log.error("%s", RUN_LOST)
+        typer.echo(RUN_LOST, err=True)
+        raise typer.Exit(1) from e
+    except OperationalError as e:
+        log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
+        typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
+        raise typer.Exit(2) from e
     for item in report.items:
         page = f"{item.page} (saved reply)" if item.page and item.llm_saved else item.page or ""
         detail = " ".join(part for part in (page, item.message) if part)
@@ -318,6 +342,28 @@ def run_pipeline_cmd(
     raise typer.Exit(1 if failed else 0)
 
 
+RUN_BUSY = "another worker or run is already running; one at a time: nothing was done"
+RUN_LOST = (
+    "the run lost its database lock (the connection to Postgres was lost or restarted); it stopped before "
+    "the next document and committed nothing, so no worker or other run works beside it: the files it "
+    "already changed are not committed (see `git status`); run it again"
+)
+
+
+@contextmanager
+def _run_lock(settings: Settings) -> Iterator[Callable[[], None]]:
+    """The worker's Postgres advisory lock (`WorkerLock`, the same key) for the whole run; yields its check.
+
+    Raises WorkerAlreadyRunning when a worker or another run holds it, and OperationalError when the
+    database cannot be reached."""
+    engine = make_worker_engine(settings.database_url)
+    try:
+        with WorkerLock(engine) as lock:
+            yield lock.check
+    finally:
+        engine.dispose()
+
+
 youtube_app = typer.Typer(no_args_is_help=True, help="YouTube helpers.")
 app.add_typer(youtube_app, name="youtube")
 
@@ -331,16 +377,43 @@ def youtube_group() -> None:
 def youtube_facts(url: str) -> None:
     """Print the facts (counts, description, transcript) for one video as JSON.
 
-    It goes through the same gap and breaker as a run (YOUTUBE_MIN_GAP_S, YOUTUBE_BLOCK_HOURS), and saves
-    nothing. To try it twice in a row, set YOUTUBE_MIN_GAP_S=0 for the second call.
+    It goes through the same gap and breaker as a run and the worker (the YouTube gate in DATABASE_URL:
+    YOUTUBE_MIN_GAP_S, YOUTUBE_BLOCK_HOURS), and saves nothing. To try it twice in a row, set
+    YOUTUBE_MIN_GAP_S=0 for the second call.
+
+    Exit codes: 0 done; 2 the gap or a block stops it, the facts are unavailable, DATABASE_URL is malformed
+    or the database cannot be reached (then YouTube is not asked).
     """
+    settings = Settings()
+    _check_database_url(settings.database_url)
     vid = video_id(url) or url
+    access = build_access(settings)
     try:
-        facts = build_access(Settings()).get(vid, facts_dir=None)
+        facts = access.get(vid, facts_dir=None)
     except FactsUnavailable as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(2) from e
+        if isinstance(e.__cause__, GateUnavailable):  # the gate's database is down: no call to YouTube
+            _log_gate_unavailable(e.__cause__)
+            typer.echo(
+                "the YouTube gate is unavailable (the database): nothing was asked of YouTube", err=True
+            )
+        else:
+            typer.echo(str(e), err=True)
+        raise typer.Exit(2) from None
+    finally:
+        gate = getattr(access, "gate", None)
+        if isinstance(gate, PostgresGate):
+            gate.engine.dispose()
     typer.echo(facts.model_dump_json(indent=2))
+
+
+def _log_gate_unavailable(error: GateUnavailable) -> None:
+    """Log why the Postgres gate could not answer, without the URL (it holds the password)."""
+    cause = error.__cause__
+    detail = getattr(cause, "orig", None) or cause or error
+    if isinstance(cause, OperationalError):  # logged only, as the other database commands do
+        log.error("cannot reach the database in DATABASE_URL: %s", detail)
+    else:
+        log.error("the YouTube gate in DATABASE_URL is unavailable: %s", detail)
 
 
 def _gate_clock() -> float:
@@ -434,12 +507,7 @@ def youtube_gate(
             state = gate.snapshot()
             typer.echo(f"youtube: {_gate_text(state, _gate_clock())}")
     except GateUnavailable as e:
-        cause = e.__cause__
-        detail = getattr(cause, "orig", None) or cause or e
-        if isinstance(cause, OperationalError):  # logged only, as the other database commands do
-            log.error("cannot reach the database in DATABASE_URL: %s", detail)
-        else:
-            log.error("the YouTube gate in DATABASE_URL is unavailable: %s", detail)
+        _log_gate_unavailable(e)
         raise typer.Exit(2) from None
     finally:
         engine.dispose()

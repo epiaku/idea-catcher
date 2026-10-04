@@ -1,12 +1,12 @@
 import logging
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from catcher import __version__
-from catcher.core.files import file_lock
 from catcher.core.git import GitError, commit_paths, pull, push
 from catcher.modules.llm.trace import LLM_DIR, TraceStore
 from catcher.modules.pipeline.inbox import (
@@ -82,6 +82,9 @@ class RunOptions:
     wait_youtube: bool = False  # sleep through a short gap between YouTube calls instead of waiting
     retry_deferred: bool = False  # first put the documents a temporary error stalled back into inbox/
     refresh_llm: bool = False  # call the LLM even when a good reply is saved in llm/ (`--requeue` reuses it)
+    # The run lock's check (`WorkerLock.check` of `catcher run pipeline`): called before each document and
+    # before the commit; it raises when the lock is lost, which stops the run there. None: no check (tests).
+    lock_check: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -223,17 +226,9 @@ def copy_artifacts(
 
 
 def run_pipeline(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
-    """One run over the inbox. Only one run at a time per machine: a second one is refused, because both
-    would pick up the same documents. A dry run changes nothing, so it needs no lock."""
-    if opts.dry_run:
-        return _run(ideas, docs, opts, svc)
-    lock_file = svc.settings.catcher_state_dir.expanduser() / "pipeline.lock"
-    with file_lock(lock_file, blocking=False) as held:
-        if not held:
-            message = f"another catcher run is in progress on this machine ({lock_file}): nothing was done"
-            log.error(message)
-            return RunReport(problems=[message])
-        return _run(ideas, docs, opts, svc)
+    """One run over the inbox. It takes no lock itself: `catcher run pipeline` holds the worker's Postgres
+    lock around it (one worker or run at a time), and `opts.lock_check` says when that lock was lost."""
+    return _run(ideas, docs, opts, svc)
 
 
 def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
@@ -340,6 +335,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             item.message = "run limit reached"
             left_by_limit += 1  # one line for all of them after the loop: an inbox can hold hundreds
             continue
+        _check_the_lock(opts)  # before this document is touched: a lost lock stops the run here
         vid = video_id(str(note.doc.fm.get("source") or "")) if note.doctype.name == "youtube" else None
         if vid and svc.youtube is not None:
             # A clip that must wait for YouTube stays in inbox/ untouched: the next run picks it up.
@@ -442,6 +438,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
         ", ".join(f"{n} {status}" for status, n in sorted(counts.items())) or "nothing to do",
     )
     if not opts.dry_run:
+        _check_the_lock(opts)  # no commit after the lock was lost
         author = (svc.settings.git_author_name, svc.settings.git_author_email)
         published = report.counts().get("published", 0)
         artifacts = report.counts().get("artifact", 0)
@@ -464,3 +461,9 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
             report.problems.append(f"{e}: the changes are in the files but not (fully) committed or pushed")
     log.info("run finished: %s committed=%s pushed=%s", report.counts(), report.committed, report.pushed)
     return report
+
+
+def _check_the_lock(opts: RunOptions) -> None:
+    """Raise (WorkerLockLost) when the run lock is gone; the exception ends the run, nothing is committed."""
+    if opts.lock_check is not None:
+        opts.lock_check()

@@ -290,3 +290,62 @@ def test_import_file_exits_2_when_a_damaged_file_cannot_be_repaired(
     assert "Traceback" not in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert _row(engine) == before
+
+
+# ---- catcher youtube facts goes through the Postgres gate ------------------------------------------------
+
+
+@pytest.fixture
+def fetches(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The real `build_access`, with YouTube itself replaced: the videos it was asked for."""
+    from catcher.modules.youtube import access as access_mod
+
+    calls: list[str] = []
+
+    def fetch_facts(video_id: str, **kwargs) -> YoutubeFacts:
+        calls.append(video_id)
+        return YoutubeFacts(video_id=video_id, url="u", fetched_at="2026-10-04")
+
+    monkeypatch.setattr(access_mod, "fetch_facts", fetch_facts)
+    return calls
+
+
+def test_youtube_facts_exits_2_when_the_gate_is_unavailable(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, fetches: list[str]
+) -> None:
+    url = "postgresql+psycopg://catcher:s3cr3t-pw@127.0.0.1:1/catcher"
+    monkeypatch.setenv("DATABASE_URL", url)
+    result = runner.invoke(app, ["youtube", "facts", "https://youtu.be/MBPHU7aaklM"])
+    assert result.exit_code == 2, result.output
+    assert "the YouTube gate is unavailable" in result.output
+    assert "cannot reach the database in DATABASE_URL" in result.output
+    assert url not in result.output and "s3cr3t-pw" not in result.output
+    assert "Traceback" not in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert fetches == []  # no gate, no call to YouTube
+
+
+def test_youtube_facts_goes_through_the_postgres_gate(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch, fetches: list[str]
+) -> None:
+    monkeypatch.setattr(cli, "build_access", _access_on_the_frozen_clock)
+    _set_row(engine, blocked_until=T + 2 * HOUR, blocked_at=T - HOUR, streak=1)
+    blocked = runner.invoke(app, ["youtube", "facts", "MBPHU7aaklM"])
+    assert blocked.exit_code == 2, blocked.output
+    assert "blocked until" in blocked.output
+    assert fetches == []  # the block in the row stops it: YouTube is not asked
+
+    _set_row(engine)  # the gate is open again
+    monkeypatch.setenv("YOUTUBE_MIN_GAP_S", "600")
+    monkeypatch.setenv("YOUTUBE_GAP_JITTER_S", "0")
+    ok = runner.invoke(app, ["youtube", "facts", "MBPHU7aaklM"])
+    assert ok.exit_code == 0, ok.output
+    assert '"video_id": "MBPHU7aaklM"' in ok.output
+    assert fetches == ["MBPHU7aaklM"]
+    assert _row(engine)[0] == T + 600  # the fetch reserved the gap in the row
+
+
+def _access_on_the_frozen_clock(settings):
+    from catcher.modules.youtube.access import build_access
+
+    return build_access(settings, clock=lambda: T)

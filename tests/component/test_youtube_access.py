@@ -11,8 +11,9 @@ from catcher.modules.pipeline.process import default_services
 from catcher.modules.youtube.access import GATE_RETRY_S, YoutubeAccess, build_access
 from catcher.modules.youtube.cache import FactsCache
 from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable, Segment, YoutubeFacts
-from catcher.modules.youtube.gate import Gate, GateUnavailable, Wait, YoutubeGate
+from catcher.modules.youtube.gate import Gate, GateUnavailable, Wait
 from catcher.modules.youtube.gate_rules import OPEN
+from catcher.modules.youtube.pg_gate import PostgresGate
 
 VID = "nGVZS_wUDGM"
 
@@ -492,7 +493,7 @@ def test_build_access_uses_a_given_gate(tmp_path):
 
     assert build_access(settings, gate).gate is gate
     assert build_access(settings, gate).unrecorded_block_s == settings.youtube_block_hours * 3600
-    assert isinstance(build_access(settings).gate, YoutubeGate)  # the Stage A CLI keeps the file gate
+    assert isinstance(build_access(settings).gate, PostgresGate)  # no gate given: the Postgres gate
     assert default_services(settings, gate=gate).youtube.gate is gate  # type: ignore[union-attr]
 
 
@@ -502,3 +503,65 @@ def test_the_access_layer_imports_no_sqlalchemy():
     code = "import sys, catcher.modules.youtube.access; print('sqlalchemy' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert out.strip() == "False"
+
+
+CLOSED_DATABASE = "postgresql+psycopg://catcher:s3cr3t-pw@127.0.0.1:1/catcher"  # nothing listens on port 1
+
+
+@pytest.fixture
+def connections():
+    """Every connection SQLAlchemy starts to open (also one that is refused), from any engine."""
+    from sqlalchemy import Engine, event
+
+    seen: list[str] = []
+
+    def record(dialect, conn_rec, cargs, cparams):
+        seen.append(str(cparams.get("host")))
+
+    event.listen(Engine, "do_connect", record)
+    try:
+        yield seen
+    finally:
+        event.remove(Engine, "do_connect", record)
+
+
+def test_build_access_without_a_gate_builds_a_postgres_gate(monkeypatch, connections):
+    monkeypatch.setenv("DATABASE_URL", CLOSED_DATABASE)
+    monkeypatch.setenv("YOUTUBE_MIN_GAP_S", "123")
+    monkeypatch.setenv("YOUTUBE_GAP_JITTER_S", "7")
+    monkeypatch.setenv("YOUTUBE_BLOCK_HOURS", "3")
+    clock = Clock()
+    access = build_access(Settings(), clock=clock)  # the database is down: building still works
+    gate = access.gate
+    assert isinstance(gate, PostgresGate)
+    assert connections == []  # building the access made no connection
+    assert (gate.min_gap_s, gate.jitter_s, gate.block_hours, gate.clock) == (123, 7, 3, clock)
+    assert gate.engine.url.port == 1
+    with pytest.raises(GateUnavailable):  # the first gate call is the first connection, and it fails closed
+        gate.peek()
+    assert connections == ["127.0.0.1"]
+    gate.engine.dispose()
+
+
+def test_a_clip_is_deferred_with_gate_unavailable_when_reason_runs_without_a_database(
+    monkeypatch, connections, make_note, tmp_path
+):
+    from catcher.modules.pipeline.process import ProcessOptions, process_note
+
+    monkeypatch.setenv("DATABASE_URL", CLOSED_DATABASE)
+    services = default_services(Settings())  # the real services: their gate is the Postgres gate
+    fetch = Fetcher()
+    assert services.youtube is not None
+    services.youtube.fetch = fetch
+    note = make_note(
+        "youtube",
+        doc_id=VID,
+        root=tmp_path,
+        source=f"https://www.youtube.com/watch?v={VID}",
+        body="page scrape\n",
+    )
+    with pytest.raises(FactsDeferred, match="YouTube gate unavailable"):
+        process_note(note, services, ProcessOptions(profile="fake", facts_dir=tmp_path / "facts"))
+    assert fetch.calls == []  # no database, no gate: YouTube is never asked
+    assert connections  # the gate did try its database
+    services.youtube.gate.engine.dispose()  # type: ignore[attr-defined]

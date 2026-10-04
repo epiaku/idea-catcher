@@ -61,7 +61,7 @@ def test_a_dry_run_does_not_need_the_docs_folder(tmp_path, make_services):
     assert report.problems == []
 
 
-def test_the_pipeline_command_with_wrong_paths_exits_2_and_says_which_path(tmp_path, caplog):
+def test_the_pipeline_command_with_wrong_paths_exits_2_and_says_which_path(tmp_path, caplog, no_run_lock):
     args = ["run", "pipeline", "--ideas", str(tmp_path / "nope"), "--docs", str(tmp_path / "also-nope")]
     result = CliRunner().invoke(app, [*args, "--profile", "fake"])
     assert result.exit_code == 2

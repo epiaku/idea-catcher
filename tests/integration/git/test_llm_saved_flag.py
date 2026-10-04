@@ -57,7 +57,9 @@ def test_the_flag_is_false_on_a_first_run_true_on_a_reused_reply_and_false_on_re
     assert [i.llm_saved for i in published(fresh)] == [False, False]
 
 
-def test_the_command_line_marks_only_the_item_served_from_a_saved_reply(repos, make_services, monkeypatch):
+def test_the_command_line_marks_only_the_item_served_from_a_saved_reply(
+    repos, make_services, monkeypatch, no_run_lock
+):
     run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
     monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())
     base = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs)]

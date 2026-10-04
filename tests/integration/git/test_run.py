@@ -199,7 +199,7 @@ def test_unrelated_docs_changes_are_not_committed(repos, make_services, sh):
     assert sh(repos.docs, "status", "--porcelain").splitlines() == [" M README.md"]
 
 
-def test_cli_run_pipeline(repos, monkeypatch):
+def test_cli_run_pipeline(repos, monkeypatch, no_run_lock):
     monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
     args = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs), "--profile", "fake"]
     result = CliRunner().invoke(app, args)
@@ -456,7 +456,7 @@ def test_a_named_short_clip_is_processed_when_its_longer_clip_is_not_selected(re
     assert (clips / "chat long.md").exists()
 
 
-def test_cli_file_option_warns_and_exits_with_1_when_nothing_matches(repos, monkeypatch):
+def test_cli_file_option_warns_and_exits_with_1_when_nothing_matches(repos, monkeypatch, no_run_lock):
     monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
     args = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs), "--profile", "fake"]
     result = CliRunner().invoke(app, [*args, "--file", "Nope.md", "-f", "systeme"])
@@ -621,7 +621,7 @@ def test_requeue_does_not_overwrite_a_file_already_in_the_inbox(repos, make_serv
     )  # the edit was used
 
 
-def test_requeue_flag_on_the_command_line(repos, make_services, monkeypatch):
+def test_requeue_flag_on_the_command_line(repos, make_services, monkeypatch, no_run_lock):
     run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
     monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())
     base = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs)]
@@ -886,28 +886,6 @@ def process_note_of_run():
     return process_note
 
 
-def test_a_second_run_at_the_same_time_is_refused_and_touches_nothing(repos, make_services):
-    from catcher.core.files import file_lock
-
-    services = make_services()
-    lock = services.settings.catcher_state_dir / "pipeline.lock"
-    with file_lock(lock, blocking=False) as held:
-        assert held
-        report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
-    assert report.items == [] and "another catcher run is in progress" in report.problems[0]
-    assert len(in_inbox(repos.ideas)) == 2
-    assert run_pipeline(repos.ideas, repos.docs, RunOptions(), services).counts() == {"published": 2}
-
-
-def test_a_dry_run_does_not_need_the_run_lock(repos, make_services):
-    from catcher.core.files import file_lock
-
-    services = make_services()
-    with file_lock(services.settings.catcher_state_dir / "pipeline.lock", blocking=False):
-        report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), services)
-    assert report.counts() == {"would_publish": 2}
-
-
 def test_a_failed_pull_is_a_reported_problem_and_nothing_is_changed(repos, make_services, monkeypatch):
     from catcher.core.git import GitError
 
@@ -995,7 +973,7 @@ def test_two_different_clips_with_one_id_warn_that_the_later_page_replaces_the_e
     assert "replaces the earlier one" in caplog.text
 
 
-def test_retry_deferred_flag_on_the_command_line(repos, make_services, monkeypatch):
+def test_retry_deferred_flag_on_the_command_line(repos, make_services, monkeypatch, no_run_lock):
     chats = FakeBackend([UsageLimitReached("limit", backend="openai")])
     run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
     monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())

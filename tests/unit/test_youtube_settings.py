@@ -4,6 +4,7 @@ from catcher.cli import _facts_dir_of
 from catcher.core.config import Settings
 from catcher.modules.youtube import access as access_mod
 from catcher.modules.youtube.access import build_access
+from catcher.modules.youtube.pg_gate import PostgresGate
 
 
 def test_the_defaults_are_the_agreed_ones(monkeypatch):
@@ -41,7 +42,7 @@ def test_build_access_passes_the_settings_on(monkeypatch, tmp_path):
     access = build_access(Settings())
     access.fetch("abc")
     assert seen["request_delay_s"] == 7 and seen["skip_manifests"] is True
-    assert access.gate.min_gap_s == 123 and access.gate.state_file.parent == tmp_path / "state"
+    assert isinstance(access.gate, PostgresGate) and access.gate.min_gap_s == 123
     assert access.offline is True
 
 
@@ -60,7 +61,7 @@ def test_the_state_folder_is_expanded_from_the_home_directory():
     assert isinstance(Settings().catcher_state_dir, Path)
 
 
-def test_the_run_command_has_the_youtube_flags(monkeypatch):
+def test_the_run_command_has_the_youtube_flags(monkeypatch, no_run_lock):
     from typer.testing import CliRunner
 
     import catcher.cli as cli

@@ -25,7 +25,7 @@ from catcher.modules.youtube.facts import (
     fetch_facts,
     is_gone_for_good,
 )
-from catcher.modules.youtube.gate import Gate, GateUnavailable, Wait, YoutubeGate, is_block_error
+from catcher.modules.youtube.gate import Gate, GateUnavailable, Wait, is_block_error
 
 log = logging.getLogger("catcher.youtube")
 
@@ -93,8 +93,8 @@ class YoutubeAccess:
         try:
             pending = self.gate.peek()
         except GateUnavailable as e:
-            # Closed, never open: the document waits a minute, like a gap. Only the Stage A run asks this,
-            # and its file gate never raises GateUnavailable; a Wait (not FactsDeferred) keeps the contract.
+            # Closed, never open: the document waits a minute, like a gap (the database of the gate is
+            # down); a Wait (not FactsDeferred) keeps the contract of this read-only question.
             return Wait(self._retry_at(e), blocked=False)
         if (
             pending is not None
@@ -227,9 +227,12 @@ class YoutubeAccess:
 def build_access(
     settings: Settings, gate: Gate | None = None, *, clock: Callable[[], float] = time.time
 ) -> YoutubeAccess:
-    """The real thing, from the settings (`YOUTUBE_*` in `.env`). A given `gate` (the worker's Postgres gate)
-    replaces the file gate in CATCHER_STATE_DIR, which the Stage A CLI keeps. `clock` (seconds since the
-    epoch) is the access's own time, for its deferrals and a fetch's start (the worker passes its own)."""
+    """The real thing, from the settings (`YOUTUBE_*` in `.env`). Without a `gate` it builds the Postgres
+    gate on DATABASE_URL (the row `youtube` in `resources`, the one every worker and run shares); the worker
+    passes the gate it built on its own engine. Building connects to nothing: the first gate call is the
+    first connection, so a database that is down defers a clip (`YouTube gate unavailable`) and never lets
+    a fetch through. `clock` (seconds since the epoch) is the access's own time and the gate's, for the
+    deferrals and a fetch's start (the worker passes its own)."""
     languages = settings.transcript_language_list
 
     def fetch(video_id: str) -> YoutubeFacts:
@@ -241,11 +244,16 @@ def build_access(
         )
 
     if gate is None:
-        gate = YoutubeGate(
-            settings.catcher_state_dir,
+        # Imported here: the access layer itself (and its tests with an in-memory gate) needs no SQLAlchemy.
+        from catcher.core.db import make_worker_engine
+        from catcher.modules.youtube.pg_gate import PostgresGate
+
+        gate = PostgresGate(
+            make_worker_engine(settings.database_url),  # creating an engine opens no connection
             min_gap_s=settings.youtube_min_gap_s,
             jitter_s=settings.youtube_gap_jitter_s,
             block_hours=settings.youtube_block_hours,
+            clock=clock,
         )
     return YoutubeAccess(
         fetch,

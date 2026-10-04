@@ -182,7 +182,7 @@ def test_refresh_llm_calls_the_model_again_and_overwrites_the_trace(repos, make_
     assert sh(repos.ideas, "status", "--porcelain") == ""
 
 
-def test_requeue_with_refresh_llm_calls_the_model_again(repos, make_services, monkeypatch):
+def test_requeue_with_refresh_llm_calls_the_model_again(repos, make_services, monkeypatch, no_run_lock):
     # The flags reach the run: `--requeue` leaves `refresh_llm` off, `--refresh-llm` turns it on
     seen: list[RunOptions] = []
 

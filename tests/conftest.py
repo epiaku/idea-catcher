@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,26 @@ def _ignore_the_real_dotenv(monkeypatch):
 def _private_state_dir(monkeypatch, tmp_path_factory):
     """The YouTube gate and the run lock live in the state folder: never the developer's real one."""
     monkeypatch.setenv("CATCHER_STATE_DIR", str(tmp_path_factory.mktemp("state")))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_database(monkeypatch):
+    """DATABASE_URL defaults to the developer's own database: a test that does not name its own database
+    gets one nobody listens on, so it can never take a lock or change a row there."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://catcher:catcher@127.0.0.1:1/catcher")
+
+
+@pytest.fixture
+def no_run_lock(monkeypatch):
+    """`catcher run pipeline` takes the worker's lock in Postgres first. The tests of its options and its
+    output, which run without Docker, hold a stand-in instead; the lock itself is tested on a real database
+    in tests/integration/db/test_run_pipeline_cli.py."""
+
+    @contextmanager
+    def held(settings):
+        yield lambda: None
+
+    monkeypatch.setattr("catcher.cli._run_lock", held)
 
 
 @pytest.fixture
