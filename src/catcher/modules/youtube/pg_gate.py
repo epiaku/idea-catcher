@@ -30,7 +30,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
 
-from sqlalchemy import Engine, Row, extract, select, update
+from sqlalchemy import Engine, Numeric, Row, extract, select, type_coerce, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -115,7 +115,8 @@ class PostgresGate:
     # ---- the row ----------------------------------------------------------------------------------
 
     def _select(self, session: Session) -> Row | None:
-        columns = [extract("epoch", getattr(Resource, key)) for key in _TIMES]
+        # `extract` is typed Integer in SQLAlchemy; Postgres gives a numeric with the fraction of a second
+        columns = [type_coerce(extract("epoch", getattr(Resource, key)), Numeric) for key in _TIMES]
         return session.execute(
             select(*columns, Resource.streak).where(Resource.name == self.name).with_for_update()
         ).first()

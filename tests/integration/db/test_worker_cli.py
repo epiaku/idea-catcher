@@ -271,6 +271,23 @@ def test_a_fetch_job_added_by_hand_waits_while_the_youtube_gate_is_closed(
     assert line.endswith(f"  waiting for youtube until {_local_clock(now + timedelta(hours=6), now)}")
 
 
+def test_jobs_list_never_replaces_an_error_with_the_wait(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = utc_now()
+    monkeypatch.setattr(cli, "utc_now", lambda: now)
+    with session_scope(engine) as session:
+        fetch, _ = enqueue(session, type="youtube.fetch", now=now, resource="youtube")
+        fetch.error = "the last attempt crashed"  # queued again after a failed attempt
+        session.execute(
+            text("update resources set blocked_until = :until where name = 'youtube'"),
+            {"until": now + timedelta(hours=6)},
+        )
+    result = runner.invoke(app, ["jobs", "list"])
+    [line] = result.output.strip().splitlines()
+    assert line.endswith("  the last attempt crashed")
+
+
 def test_jobs_list_shows_no_wait_for_a_damaged_resource_time(runner: CliRunner, engine) -> None:
     """'infinity' cannot be loaded into Python, and the claim treats it as open: no crash, no wait shown."""
     with session_scope(engine) as session:

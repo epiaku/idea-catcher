@@ -403,7 +403,10 @@ def test_the_clock_is_read_under_the_row_lock(pg_engine: Engine, caplog, call):
             clock.now += waited  # time passes while the call waits for the lock ...
             if call == "record_block":  # ... and the other worker records its 3rd block: 24 hours
                 holder.execute(
-                    text("update resources set blocked_until = :until, blocked_at = :at, streak = 3"),
+                    text(
+                        "update resources set blocked_until = :until, blocked_at = :at, streak = 3"
+                        " where name = 'youtube'"
+                    ),
                     {
                         "until": datetime.fromtimestamp(clock.now + 24 * HOUR, UTC),
                         "at": datetime.fromtimestamp(clock.now, UTC),

@@ -692,7 +692,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 7. **Schedules:** cron strings in `.env`, an explicit timezone, one scheduler, and a small table with `last_fired_at` so a missed slot runs once.
 8. **Time:** every queue and gate query takes `now` from Python (never SQL `now()`), so tests can freeze it.
 9. **One generic `resource` table** (YouTube, `openai`, `freellmapi`, `git`): `name`, `next_allowed_at`, `blocked_until`, `blocked_at`, `streak`, `concurrency`. A used-up budget is remembered between runs. A missing or damaged row means **closed**, like the Stage A gate file. *B4 built the `youtube` row; the LLM resources come in B5.*
-10. **Reconcile and the mirror:** Postgres is the truth for processing state. `catcher reconcile` rebuilds item state, name and class from the folders and the frontmatter; it cannot rebuild attempts, tokens, events or the gate (which restarts closed). The frontmatter mirror uses **`stage`, `stage_reason`, `stage_since`**; reconcile also reads the Stage A names (`analyzed_at`, `deferred_at`, `deferred_reason`).
+10. **Reconcile and the mirror:** Postgres is the truth for processing state. `catcher reconcile` rebuilds item state, name and class from the folders and the frontmatter; it cannot rebuild attempts, tokens, events or the YouTube gate. While the database lives, a missing `youtube` row means **closed** (the gate inserts it closed and logs an ERROR). A freshly migrated database starts **open** (migration `0004` seeds the row open; seeding it closed would make every new install wait `YOUTUBE_BLOCK_HOURS` for nothing), so after a rebuild run `catcher youtube gate --import-file` if the old Stage A file holds a block; B5's `reconcile` closes the gate, because a rebuild may have lost a block. The frontmatter mirror uses **`stage`, `stage_reason`, `stage_since`**; reconcile also reads the Stage A names (`analyzed_at`, `deferred_at`, `deferred_reason`).
 11. **Our own queue first.** Procrastinate only if the queue core passes about 300 lines or shows concurrency bugs; switching later changes the tables, and that is accepted.
 12. **Dry runs never go through the queue**; the CLI runs them inline. So the "one run at a time" dedupe only ever sees real runs. The dedupe key is part of the job row (`dedupe_key`), not tied to a job type.
 13. **Job status** is `queued`, `running`, `succeeded`, `failed`, `cancelled` (text with check constraints). Deferral is `queued` with a future `run_after` and a reason; the word *deferred* belongs to the item. A higher `priority` number goes first.
@@ -829,37 +829,39 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 - **One set of rules, two gates.** `modules/youtube/gate_rules.py` holds the rules as pure functions (gap plus jitter, the breaker 6/12/24 hours, "a newer block wins", a time more than 24 hours ahead is damage). The file gate (`gate.py`, the Stage A CLI, `CATCHER_STATE_DIR`) and the new `PostgresGate` (`pg_gate.py`, the worker) both use them, and one contract test suite runs against both.
 - **The row `youtube` in `resources`.** Migration `0004` inserts it open. `PostgresGate` locks it (`SELECT ... FOR UPDATE`, in a short transaction) and reads its clock after the lock. A missing row is inserted closed, a damaged one rewritten closed, with an ERROR in the log.
-- **The worker uses it** (`build_context`); the Stage A commands keep the file gate. The two do not see each other.
-- **The claim skips jobs whose resource is closed**, in the same statement (`FOR UPDATE SKIP LOCKED` stays): a waiting `youtube.fetch` job stays `queued`, counts no attempt and writes no event, the worker idles, and `catcher jobs list` shows `waiting for youtube until <time>`. Both places that queue a fetch job set `resource="youtube"`.
+- **The worker uses it** (`build_context`, with the context clock for the gate and for the YouTube access); the Stage A commands keep the file gate. The two do not see each other.
+- **The claim skips jobs whose resource is closed**, in the same statement (`FOR UPDATE SKIP LOCKED` stays): a waiting `youtube.fetch` job stays `queued`, counts no attempt and writes no event, the worker idles, and `catcher jobs list` shows `waiting for youtube until <time>`. Both places that queue a fetch job set `resource="youtube"`, and so does `catcher jobs add youtube.fetch` (the type-to-resource map `JOB_RESOURCES` in `worker/app.py`).
 - **`catcher youtube gate`** shows the row; **`--import-file`** merges the old `youtube-gate.json` into it once. How to use them: [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate).
 
 **Changed from the plan** (B4):
 
 - **The handler reserves, the claim only skips.** The B4 row said the claim reserves the slot in its transaction. Instead the `youtube.fetch` handler reserves right before the fetch, in its own short transaction, and the row lock guarantees the gap; the claim only skips fetch jobs while the gate's time is in the future. Same safety, a simpler claim. A reserve that still gets a wait (a race, the jitter) defers the job to the slot, as in B3.
-- **The claim's 24-hour horizon.** A resource time more than 24 hours ahead counts as open in the claim, so a damaged value cannot hold every fetch job back forever: the job is claimed, and the gate repairs the row (cut to 24 hours).
-- **A database error never opens the gate.** When the gate cannot read or write its row, no fetch is made and the job waits 60 seconds. A 429 whose block cannot be recorded makes the worker hold back for the first breaker step (`YOUTUBE_BLOCK_HOURS`) in memory: a restart forgets it.
-- **The import is a merge.** `--import-file` keeps the larger of each value (the gap, the end of the block, `blocked_at`, the streak), so it never shortens a block or resets the streak. When the row already covers the file it changes nothing and exits 2.
-- **Decision 10 and the migration disagree.** Decision 10 says the gate restarts closed after a rebuild; migration `0004` seeds the row open. A database that is deleted and rebuilt therefore starts open: B5's reconcile must close it, or bring the block back with `--import-file` from a file that still has it.
+- **The claim's 24-hour horizon.** A resource time more than 24 hours ahead counts as open in the claim, so a damaged value cannot hold every fetch job back forever: the job is claimed, and the gate repairs the row (an end time cut to 24 hours, a `blocked_at` cut to now). `YOUTUBE_BLOCK_HOURS` is limited to more than 0 and at most 24, so a real block is never longer than the horizon.
+- **A database error never opens the gate.** When the gate cannot read or write its row, no fetch is made and the job waits 60 seconds. A 429 whose block cannot be recorded makes the worker hold back for the first breaker step (`YOUTUBE_BLOCK_HOURS`) in memory, and the block is written into the row as soon as the gate answers again (before any other gate call), so `catcher youtube gate` and a restarted worker see it. Only a restart before the database answers again forgets it.
+- **The import is a merge.** `--import-file` keeps the larger of each value (the gap, the end of the block, `blocked_at`, the streak), so it never shortens a block or resets the streak. When the row already covers the file it changes nothing, says `nothing to import: ...` and exits 0.
+- **A rebuilt database starts with the gate open.** Migration `0004` seeds the row open (a fresh install must not wait 6 hours), and its downgrade deletes the row. A database that is deleted and rebuilt, or downgraded and upgraded, during a block therefore loses that block: bring it back with `--import-file` from a Stage A file that still has it; B5's reconcile closes the gate (decision 10).
 
 **Open items after B4** (deferred minors from the B4 reviews that matter later):
 
 *Robustness*
 
-- The claim's horizon is a fixed 24 hours, but a `YOUTUBE_BLOCK_HOURS` above 24 is allowed and cut to 24 hours by the gate with a false "damaged" ERROR: cap the setting at 24.
-- A far-future `blocked_at` is kept as it is (clamping limits only the end times): clamp `blocked_at` in the shared rules, for both gates.
 - The queue imports the 24-hour constant from the YouTube module: move it to a neutral constant in the queue when B5 adds a second resource.
-- The `YoutubeAccess` built in `build_context` uses the real time, not the context clock, so the 60 s and 6 h deferrals ignore a frozen clock in tests: pass the clock in.
-- `--import-file` exits 2 when the database already covers the file; a re-run should say "nothing to import" and exit 0.
-- A `youtube.fetch` added by hand (`jobs add`) and fetch jobs queued before B4 carry no resource, so they are claimed and deferred instead of waiting.
+- Fetch jobs queued before B4 carry no resource, so they are claimed and deferred instead of waiting (harmless: the handler's reserve still guards, and they resolve themselves).
+- Damaged-file edge cases of the gate, all failing closed: the identity of a damaged file is compared outside the file lock; a streak above the 32-bit limit gives a vague exit 2 on import; a refused import of a damaged file still renames it; the repair's ERROR log comes before the commit; an int32-max streak in the row overflows on the next block.
+
+*Two gates on one machine (decision for the user)*
+
+- The Stage A commands (`run pipeline`, `youtube facts`) use the file gate and the worker uses the row: a block the worker records does not stop the Stage A commands, and the two do not share the gap. Today's rule: let one of them do the YouTube clips. A cheap guard for a later stage: the Stage A commands also consult the Postgres gate (best effort) when `DATABASE_URL` answers.
 
 *Tests*
 
 - The two "gate unavailable" tests do not assert why (lock timeout or connection error), nor the ERROR line.
+- `test_two_engines_reserving_together_get_one_go_ahead` is evidence of the row lock, not proof (it also passes when the threads happen to run one after the other); the lock is also pinned by `test_the_clock_is_read_under_the_row_lock`.
 
 *For B5*
 
 - The LLM resources (`openai`, `freellmapi`) and the per-profile or per-backend blocking move into `resources` (today the worker's `BackendBlocks` is in memory).
-- Reconcile and the open `youtube` row of a rebuilt database (see above).
+- Reconcile closes the `youtube` row (writes the closed state unless told the gate is open), because a rebuilt database starts it open and may have lost a block (decision 10).
 
 **Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 

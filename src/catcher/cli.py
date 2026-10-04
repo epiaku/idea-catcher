@@ -721,7 +721,7 @@ def jobs_list(
     for job, closed_until in rows:
         run_after = job.run_after.isoformat(timespec="seconds")
         reason = job.error or job.reason or ""
-        if job.status == "queued" and closed_until is not None:  # the claim skips it until then
+        if job.status == "queued" and closed_until is not None and not job.error:  # skipped until then
             until = clock_text(closed_until.timestamp(), now.timestamp())
             reason = f"waiting for {job.resource} until {until}"
         typer.echo(
