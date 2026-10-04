@@ -1,5 +1,6 @@
-"""The YouTube gate in Postgres: the same behaviour as the file gate (a contract suite run on both), plus
-what only a shared database brings (two workers at once, a missing or damaged row, time zones, errors)."""
+"""The YouTube gate in Postgres: the same behaviour as the in-memory test gate (a contract suite run on
+both), plus what only a shared database brings (two workers at once, a missing or damaged row, time zones,
+errors)."""
 
 import logging
 import math
@@ -9,10 +10,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
+from memory_gate import InMemoryGate
 from sqlalchemy import Engine, create_engine, event, text
 
 from catcher.core.db import make_engine, make_worker_engine
-from catcher.modules.youtube.gate import Gate, Wait, YoutubeGate
+from catcher.modules.youtube.gate import Gate, Wait
 from catcher.modules.youtube.gate_rules import GateState
 from catcher.modules.youtube.pg_gate import GateUnavailable, PostgresGate
 
@@ -37,14 +39,22 @@ class EpochClock:
 MakeGate = Callable[..., Gate]
 
 
-@pytest.fixture(params=["file", "postgres"])
-def make_gate(request, tmp_path, pg_engine: Engine) -> MakeGate:
-    """A factory for the gate under test; every gate it makes shares one state (a folder or the row)."""
+@pytest.fixture(params=["memory", "postgres"])
+def make_gate(request, pg_engine: Engine) -> MakeGate:
+    """A factory for the gate under test; every gate it makes shares one state (the in-memory state or the
+    row). In memory one state is one gate: a further call returns that same gate, so the state carries over
+    (two gate objects over one state, as two workers on the row), with the clock, rng and hours of the
+    latest call."""
+    memory: list[InMemoryGate] = []
 
     def make(clock: EpochClock, *, rng: Callable[[], float] = lambda: 0.5, hours: float = 6.0) -> Gate:
         options = {"min_gap_s": GAP, "jitter_s": JITTER, "block_hours": hours, "clock": clock, "rng": rng}
-        if request.param == "file":
-            return YoutubeGate(tmp_path / "state", **options)
+        if request.param == "memory":
+            if not memory:
+                memory.append(InMemoryGate(**options))
+            gate = memory[0]
+            gate.clock, gate.rng, gate.block_hours = clock, rng, hours
+            return gate
         return PostgresGate(pg_engine, **options)
 
     return make
@@ -74,7 +84,7 @@ def _execute(engine: Engine, sql: str, **params) -> None:
         connection.execute(text(sql), params)
 
 
-# ---- the contract: the file gate and the Postgres gate behave the same ----------------------------------
+# ---- the contract: the in-memory gate and the Postgres gate behave the same -------------------------
 
 
 def test_peek_changes_nothing(make_gate):

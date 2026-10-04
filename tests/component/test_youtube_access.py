@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from memory_gate import InMemoryGate
 
 from catcher.core.config import Settings
 from catcher.modules.pipeline.process import default_services
@@ -11,6 +12,7 @@ from catcher.modules.youtube.access import GATE_RETRY_S, YoutubeAccess, build_ac
 from catcher.modules.youtube.cache import FactsCache
 from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable, Segment, YoutubeFacts
 from catcher.modules.youtube.gate import Gate, GateUnavailable, Wait, YoutubeGate
+from catcher.modules.youtube.gate_rules import OPEN
 
 VID = "nGVZS_wUDGM"
 
@@ -51,7 +53,7 @@ class HttpError(Exception):
 
 def make(tmp_path, fetch, clock=None, **kw):
     clock = clock or Clock()
-    gate = YoutubeGate(tmp_path / "state", min_gap_s=600, jitter_s=0, block_hours=6, clock=clock)
+    gate = InMemoryGate(min_gap_s=600, jitter_s=0, block_hours=6, clock=clock)
     sleeps: list[float] = []
 
     def sleep(seconds: float) -> None:
@@ -210,7 +212,7 @@ def test_a_dry_run_uses_saved_facts_but_never_asks_youtube_or_the_gate(tmp_path)
     access, _, _ = make(tmp_path, fetch)
     with pytest.raises(FetchSkipped):
         access.get(VID, facts_dir=tmp_path / "facts", fetch_allowed=False)
-    assert fetch.calls == [] and not access.gate.state_file.exists()
+    assert fetch.calls == [] and access.gate.state == OPEN  # the gate was never touched: no state recorded
     access.get(VID, facts_dir=tmp_path / "facts")  # a real fetch saves the facts ...
     assert (
         access.get(VID, facts_dir=tmp_path / "facts", fetch_allowed=False).title == "T"

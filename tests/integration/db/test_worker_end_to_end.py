@@ -10,6 +10,7 @@ and a deferred item that is retried later reads the saved facts."""
 from pathlib import Path
 
 from golden import EXPECTED, PAGES, compare_pages
+from memory_gate import InMemoryGate
 from sqlalchemy import select
 from worker_harness import ExternalCall, FrozenHarness, RaisingBackend
 
@@ -20,7 +21,6 @@ from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.youtube.access import YoutubeAccess
 from catcher.modules.youtube.facts import YoutubeFacts
-from catcher.modules.youtube.gate import YoutubeGate
 
 MAX_JOBS = 200  # 44 documents: a pipeline.run, then an llm.reason per page (and a fetch per clip at most)
 SIX_PROVEN = "youtube source - 6 Proven Strategies That Turn Viewers In To Buyers.md"
@@ -98,7 +98,7 @@ def test_the_worker_matches_stage_a_on_the_same_data(frozen_harness, make_servic
 
     services = make_services(facts=no_youtube)
     services.backends = lambda profile: RaisingBackend(model_calls)
-    gate = YoutubeGate(tmp_path / "stage-a-gate", min_gap_s=600, jitter_s=0, block_hours=6)
+    gate = InMemoryGate(min_gap_s=600, jitter_s=0, block_hours=6)
     services.youtube = YoutubeAccess(no_youtube, gate, wait_max_s=0)
     report = run_pipeline(stage_a["idea-bucket"], stage_a["epiaku-docs"], RunOptions(), services)
     assert report.counts() == {"published": 43, "artifact": 1}

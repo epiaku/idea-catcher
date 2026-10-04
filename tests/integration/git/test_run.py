@@ -12,6 +12,7 @@ from catcher.modules.llm.service import BudgetExhausted, UsageLimitReached
 from catcher.modules.pipeline.inbox import deferred_in_output, slugify_title
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.youtube.facts import FactsUnavailable
+from catcher.modules.youtube.gate_rules import OPEN
 
 REPO = Path(__file__).parents[3]
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
@@ -698,8 +699,9 @@ def clip(vid: str) -> str:
 
 def youtube_services(make_services, tmp_path, yt_facts, *, error=None, wait_max_s=1800.0):
     """Services whose 'YouTube' is a counter, behind the real gate (a 10 minute gap) and the saved facts."""
+    from memory_gate import InMemoryGate
+
     from catcher.modules.youtube.access import YoutubeAccess
-    from catcher.modules.youtube.gate import YoutubeGate
 
     calls: list[str] = []
     clock, sleeps = FakeClock(), []
@@ -714,7 +716,7 @@ def youtube_services(make_services, tmp_path, yt_facts, *, error=None, wait_max_
         sleeps.append(seconds)
         clock.now += seconds
 
-    gate = YoutubeGate(tmp_path / "state", min_gap_s=600, jitter_s=0, block_hours=6, clock=clock)
+    gate = InMemoryGate(min_gap_s=600, jitter_s=0, block_hours=6, clock=clock)
     services = make_services(facts=fetch)
     services.youtube = YoutubeAccess(fetch, gate, clock=clock, sleep=sleep, wait_max_s=wait_max_s)
     return services, calls, clock, sleeps
@@ -789,7 +791,8 @@ def test_a_dry_run_saves_no_facts(repos, make_services, yt_facts, tmp_path):
     assert statuses(report) == {"AAAAAAAAAAA": "would_fetch"}
     assert calls == []  # a dry run never asks YouTube, so it cannot cost a request
     assert not (repos.ideas / "facts").exists()  # a dry run changes no files in the repos
-    assert not (tmp_path / "state" / "youtube-gate.json").exists()  # and it does not use up the gap either
+    # and it does not use up the gap either: the gate was never touched, no state recorded
+    assert services.youtube.gate.state == OPEN
 
 
 def test_a_429_opens_the_breaker_and_every_other_clip_waits_without_a_call(

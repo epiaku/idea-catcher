@@ -10,13 +10,13 @@ import shutil
 from pathlib import Path
 
 from golden import EXPECTED, PAGES, compare_pages
+from memory_gate import InMemoryGate
 
 from catcher.core.frontmatter import load
 from catcher.core.testdata import reset_test_repos
 from catcher.modules.llm.service import TransientBackendError
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.youtube.access import YoutubeAccess
-from catcher.modules.youtube.gate import YoutubeGate
 
 
 class ExternalCall(AssertionError):
@@ -39,7 +39,7 @@ def offline_services(make_services, tmp_path: Path, model_calls: list[str], yout
 
     services = make_services(facts=no_youtube)
     services.backends = lambda profile: RaisingBackend()
-    gate = YoutubeGate(tmp_path / "gate", min_gap_s=600, jitter_s=0, block_hours=6)
+    gate = InMemoryGate(min_gap_s=600, jitter_s=0, block_hours=6)
     services.youtube = YoutubeAccess(no_youtube, gate, wait_max_s=0)
     return services
 

@@ -85,10 +85,11 @@ def test_build_page_needs_no_backend(name, make_note, make_services, make_result
 def test_allow_fetch_false_never_calls_youtube_even_outside_a_dry_run(
     with_access, make_note, make_services, yt_facts, tmp_path
 ):
+    from memory_gate import InMemoryGate
+
     from catcher.modules.youtube.access import YoutubeAccess
     from catcher.modules.youtube.cache import FactsCache
     from catcher.modules.youtube.facts import FetchSkipped
-    from catcher.modules.youtube.gate import YoutubeGate
 
     calls: list[str] = []
 
@@ -98,7 +99,7 @@ def test_allow_fetch_false_never_calls_youtube_even_outside_a_dry_run(
 
     svc = make_services(facts=fetch)
     if with_access:
-        svc.youtube = YoutubeAccess(fetch, YoutubeGate(tmp_path / "state", jitter_s=0), wait_max_s=0)
+        svc.youtube = YoutubeAccess(fetch, InMemoryGate(jitter_s=0), wait_max_s=0)
     note = make("youtube", make_note, tmp_path)
     opts = ProcessOptions(allow_fetch=False, facts_dir=tmp_path / "facts")
     assert opts.dry_run is False
