@@ -1,7 +1,7 @@
 """The contract between the worker and its job handlers."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ from catcher.core.config import Settings
 from catcher.core.db import require_aware
 from catcher.modules.pipeline.process import Services
 from catcher.modules.queue.models import Job
+from catcher.modules.worker.blocks import BackendBlocks
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class HandlerContext:
     ideas: Path
     docs: Path
     clock: Callable[[], datetime]
+    backend_blocks: BackendBlocks = field(default_factory=BackendBlocks)  # per worker process, not persisted
 
 
 Handler = Callable[[HandlerContext, Job], HandlerResult]

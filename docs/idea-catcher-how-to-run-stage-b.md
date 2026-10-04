@@ -10,7 +10,7 @@ This page shows how to run what Stage B built: a **Postgres job queue** and a **
 
 ## In short
 
-1. Start a Postgres and create the tables (`docker run ...`, `catcher db upgrade`).
+1. Start a Postgres and create the tables (`docker compose up -d db`, `catcher db upgrade`).
 2. Put a job on the queue: `catcher jobs add pipeline.run`.
 3. Run the worker: `catcher worker --once` does every job that is due, then exits.
 4. Look at the jobs: `catcher jobs list`.
@@ -33,13 +33,8 @@ export DOCS_REPO=tmp/ic/epiaku-docs
 The same steps, on `IDEAS_REPO` and `DOCS_REPO` from your `.env`. **This calls the real models and, for YouTube clips, YouTube**, so it costs money within the budget caps and the [YouTube gap](../idea-catcher-how-to-run/#youtube-gap) applies. Start small.
 
 ```bash
-# 0. Postgres and the tables (once per container; the data goes with --rm)
-docker run --rm -d --name catcher-db -p 5432:5432 \
-  -e POSTGRES_USER=catcher -e POSTGRES_PASSWORD=catcher -e POSTGRES_DB=catcher \
-  pgvector/pgvector:pg17
-# Stop Postgres
-# docker stop catcher-db
-
+# 0. Postgres and the tables (the data stays in a Docker volume when you stop it)
+docker compose up -d db
 uv run catcher db upgrade
 
 # 1. see what is in the inbox first, free (Stage A, no database, no model)
@@ -64,7 +59,7 @@ git -C /path/to/epiaku-docs log --stat -1
 uv run catcher jobs add pipeline.publish
 uv run catcher worker --once
 
-docker stop catcher-db                       # when you are done
+docker compose down                          # when you are done (the data stays)
 ```
 
 - **Keys and budgets.** `notes` use FreeLLMApi, `clippings` and `youtube` use OpenAI, and the keys have budget caps. A document that cannot be answered is `deferred` (not lost): its job still `succeeded`, and the working copy in `output/` says `stage: deferred` and why. Retry it with `jobs add pipeline.run --param retry_deferred=true`.
@@ -75,21 +70,18 @@ docker stop catcher-db                       # when you are done
 
 The queue and the state tables live in Postgres. Stage A needs none of this: `run pipeline` and the other commands above never touch the database. The schema commands, the tests, the [worker and the `jobs` commands](#worker) use it.
 
-**Start a Postgres 17 for development** (the image has pgvector, as in the design):
+**Start a Postgres 17 for development** with the `compose.yaml` in the repo root (the image has pgvector, as in the design):
 
 ```bash
-docker run --rm -d --name catcher-db -p 5432:5432 \
-  -e POSTGRES_USER=catcher -e POSTGRES_PASSWORD=catcher -e POSTGRES_DB=catcher \
-  pgvector/pgvector:pg17
+docker compose up -d db        # start it; the data lives in the volume catcher-pgdata
+docker compose ps              # is it running (and healthy)?
+docker compose down            # stop it; the data stays, so the next `up` has your tables and jobs
+docker compose down -v         # stop it and delete the data
 ```
 
-When you are done (`--rm` removes the container and its data):
+If an older container from `docker run ... --name catcher-db` is still running, stop it first (`docker stop catcher-db`): both want port 5432.
 
-```bash
-docker stop catcher-db
-```
-
-This matches the default `DATABASE_URL`, `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`. To use another port or server, set `DATABASE_URL` in `.env` or in the shell (see [Configuration](../idea-catcher-configuration/)). There is no `compose.yaml` yet.
+This matches the default `DATABASE_URL`, `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`. To use another port or server, set `DATABASE_URL` in `.env` or in the shell (see [Configuration](../idea-catcher-configuration/)). The compose file has only the database for now: the worker joins it in step B7.
 
 **Create and drop the tables:**
 
@@ -120,9 +112,7 @@ In Stage B the same work runs as **jobs** in the Postgres queue. `catcher jobs a
 
 ```bash
 # 1. a Postgres and the tables (see Database above)
-docker run --rm -d --name catcher-db -p 5432:5432 \
-  -e POSTGRES_USER=catcher -e POSTGRES_PASSWORD=catcher -e POSTGRES_DB=catcher \
-  pgvector/pgvector:pg17
+docker compose up -d db
 uv run catcher db upgrade
 
 # 2. fresh test repos, one pipeline.run job, and a worker that runs everything that is due, then exits
@@ -137,7 +127,7 @@ uv run catcher jobs add pipeline.publish --param push=false --param pull=false
 uv run catcher worker --once --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 git -C tmp/ic/epiaku-docs log --stat -1        # the pages
 
-docker stop catcher-db                         # when you are done (removes the data)
+docker compose down                            # when you are done (the data stays, `down -v` deletes it)
 ```
 
 What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 documents and queues one `llm.reason` job per document (a clip without saved facts gets a `youtube.fetch` job first). **One `worker --once` runs them all**, because it keeps going while jobs are due: it ends with `ran 44 job(s): succeeded=44` after about 2 seconds, all from saved replies. The pages and the moved files are in the repos, but **nothing is committed until `pipeline.publish`**, which makes one commit per repo (`idea-catcher: process the inbox (pipeline.publish)` and `idea-catcher: publish pages (pipeline.publish)`).
@@ -153,6 +143,7 @@ What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 docum
 - **A fresh answer:** `uv run catcher jobs add pipeline.run --param refresh_llm=true` calls the model even when a reply is saved, so it costs money with real keys. With the empty key above it only shows that the documents defer (`OPENAI_API_KEY is not set`). With `refresh_llm=true` a rerun after a crash also skips the reply the first try saved, so **the model can be paid twice**; without it the model is paid once.
 - **Dry runs never go through the queue.** `jobs add` refuses a `dry_run` parameter (exit code 2): use `run pipeline --dry-run`.
 - **A job's status is not a document's status.** A document that defers (the LLM is down, a budget is used up) or fails for good is an item outcome: its job still `succeeded`. The item states are in the `job_items` table (there is no command for them yet) and in the working copy in `output/` (`stage: deferred`), as in Stage A. A job `failed` means the job itself went wrong: a git error, a parameter the job carries that is wrong, or an unexpected error in the code. When a failed job carries a document (`llm.reason`, `youtube.fetch`), the worker marks that document `failed` with the job's error and moves its working copy to `failed/`, unless another queued or running job carries it; a `requeue` runs it again.
+- **A backend that is down or out of budget is not called again for a while.** After one document finds its LLM backend out of its usage limit or budget, or down, the next documents that need that backend are `deferred` without a call until the cool-down ends (`LLM_BLOCK_S`, 10 minutes; a saved reply is still used). Retry them later with `jobs add pipeline.run --param retry_deferred=true`. The worker keeps this in memory only: a restart forgets it.
 - **`worker --once` exits 0 even when a job failed.** Look at `jobs list`. A job deferred to a later time (a YouTube gap) is not due, so `--once` leaves it.
 - **Exit codes of `catcher worker`:** `0` it stopped normally (also when jobs failed); `1` it lost its one-worker lock (see below), or with `--once` a claim hit a database error (`could not claim a job`) or a job could not be finished (`error=1` in the summary; the reaper puts it back after its lease); `2` another worker runs, `DATABASE_URL` is malformed, or the database cannot be reached.
 

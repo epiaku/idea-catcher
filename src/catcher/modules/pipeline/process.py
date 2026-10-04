@@ -1,6 +1,7 @@
 import json
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -10,13 +11,13 @@ from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import Profile, ProfilesConfig, load_profiles, resolve_profile
 from catcher.modules.llm.schemas import Summary, YoutubeSummary
 from catcher.modules.llm.service import (
+    BackendBlocked,
     BackendFactory,
     InputRejected,
     LlmRequest,
     LlmResult,
     LlmTrace,
     Recorder,
-    UsageLimitReached,
     reason,
 )
 from catcher.modules.llm.trace import TraceStore
@@ -61,7 +62,8 @@ class Services:
 class ProcessOptions:
     profile: str | None = None
     dry_run: bool = False
-    blocked_backends: frozenset[str] = frozenset()
+    blocked_backends: frozenset[str] = frozenset()  # not called; a saved reply is still used
+    blocked_reasons: dict[str, str] = field(default_factory=dict)  # backend -> why and until when (worker)
     facts_dir: Path | None = (
         None  # where the saved YouTube facts live (`facts/` in idea-bucket); None: no saving
     )
@@ -98,9 +100,15 @@ def default_services(settings: Settings) -> Services:
     )
 
 
+BLOCKED_IN_THIS_RUN = "a usage limit was reached earlier: not called again in this run"
+
+
 def check_not_blocked(profile: Profile, opts: ProcessOptions) -> None:
+    """Raise BackendBlocked when the profile's backend must not be called (`opts.blocked_backends`). The
+    message is the one in `opts.blocked_reasons` (the worker says until when), else Stage A's."""
     if profile.backend in opts.blocked_backends:
-        raise UsageLimitReached("usage limit was reached earlier in this run", backend=profile.backend)
+        message = opts.blocked_reasons.get(profile.backend, BLOCKED_IN_THIS_RUN)
+        raise BackendBlocked(message, backend=profile.backend)
 
 
 def facts_for(note: Note, vid: str, svc: Services, opts: ProcessOptions) -> YoutubeFacts:
@@ -169,6 +177,7 @@ def ask_llm(
     llm_dir: Path | None = None,
     dry_run: bool = False,
     refresh_llm: bool = False,
+    before_call: Callable[[Profile], None] | None = None,
 ) -> LlmResult:
     if facts is None and not note.doc.body.strip():
         raise InputRejected(f"{note.doc_id}: the document is empty")
@@ -199,6 +208,7 @@ def ask_llm(
         recorder=recorder,
         replayer=replayer,
         keep_prompt=svc.settings.llm_trace_prompt,
+        before_call=before_call,
     )
     if result.from_saved:
         log.debug("%s: using the saved LLM reply (no call)", note_label(note))
@@ -303,8 +313,16 @@ def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPa
     profile_name, profile = resolve_profile(
         svc.profiles, requested=opts.profile, class_default=note.doctype.llm_profile
     )
-    check_not_blocked(profile, opts)
-    facts = get_facts(note, svc, opts)
+    if profile.backend in opts.blocked_backends:
+        # Only the model call is blocked: saved facts and a saved reply still make the page. YouTube is never
+        # asked for a document whose model cannot be called now.
+        try:
+            facts = get_facts(note, svc, replace(opts, allow_fetch=False))
+        except FetchSkipped:
+            check_not_blocked(profile, opts)
+            raise
+    else:
+        facts = get_facts(note, svc, opts)
     result = ask_llm(
         note,
         svc,
@@ -313,6 +331,7 @@ def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPa
         llm_dir=opts.llm_dir,
         dry_run=opts.dry_run,
         refresh_llm=opts.refresh_llm,
+        before_call=lambda p: check_not_blocked(p, opts),  # after the saved-reply lookup, before the call
     )
     return build_page(note, svc, result, facts)
 

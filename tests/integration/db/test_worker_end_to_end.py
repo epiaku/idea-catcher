@@ -130,6 +130,7 @@ def test_an_llm_failure_makes_no_youtube_call(frozen_harness, sh):
     assert (h.ideas / "facts" / f"{SIX_PROVEN_VID}.json").is_file()  # the fetch saved the facts
 
     h.backends.chat = FakeBackend()  # the model is back
+    h.clock.advance(h.ctx.settings.llm_block_s + 1)  # and the worker's block of it has ended (LLM_BLOCK_S)
     h.add_job("pipeline.run", retry_deferred=True)
     assert set(h.drain(max_jobs=MAX_JOBS)) == {"succeeded"}
 

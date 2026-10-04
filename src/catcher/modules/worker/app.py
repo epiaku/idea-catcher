@@ -8,6 +8,7 @@ from typing import Any
 from catcher.core.config import Settings
 from catcher.core.db import make_worker_engine, utc_now
 from catcher.modules.pipeline.process import default_services
+from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.handlers import Handler, HandlerContext
 from catcher.modules.worker.handlers_pipeline import (
     handle_llm_reason,
@@ -71,4 +72,5 @@ def build_context(
         ideas=ideas or settings.ideas_repo,
         docs=docs or settings.docs_repo,
         clock=clock,
+        backend_blocks=BackendBlocks(),  # this worker's memory of blocked LLM backends (in memory only)
     )

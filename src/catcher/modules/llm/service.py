@@ -64,6 +64,11 @@ class BudgetExhausted(UsageLimitReached):
     """The API key's budget is used up: calls fail until it is raised or renewed."""
 
 
+class BackendBlocked(UsageLimitReached):
+    """The backend is not called: it hit a usage limit or its budget (or was down) earlier. Raised before a
+    call, never by a backend, so it does not start a new block."""
+
+
 class InvalidOutput(LlmError):
     pass
 
@@ -162,7 +167,11 @@ def reason(
     recorder: Recorder | None = None,
     replayer: Replayer | None = None,
     keep_prompt: bool = False,
+    before_call: Callable[[Profile], None] | None = None,
 ) -> LlmResult:
+    """The model's answer to `req`: a saved reply when `replayer` has a good one (no call), else a call.
+    `before_call(profile)` runs only when the model is about to be called; it may raise (a blocked backend),
+    so a saved reply is never held back by it."""
     profile = profiles.profiles[req.profile]
     schema = SCHEMAS[req.schema_name]
     prompt, version = render_prompt(req.task, req.input)
@@ -176,6 +185,8 @@ def reason(
             return _from_saved(req, saved, schema, profile, version, key)
         except InvalidOutput as e:  # edited by hand, or the schema changed: ask the model instead
             log.warning("%s: the saved LLM reply is no longer valid, calling the model: %s", req.task, e)
+    if before_call is not None:
+        before_call(profile)
     backend = backends(profile)
     backend_name = backend.name
     attempts: list[LlmAttempt] = []

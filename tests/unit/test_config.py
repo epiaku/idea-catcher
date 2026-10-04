@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from catcher.core.config import PROJECT_ROOT, Settings
 
 
@@ -43,3 +46,14 @@ def test_settings_llm_trace_defaults(monkeypatch):
     monkeypatch.setenv("LLM_TRACE_PROMPT", "1")
     settings = Settings()
     assert settings.llm_trace is False and settings.llm_trace_prompt is True
+
+
+def test_llm_block_s_defaults_to_ten_minutes_and_must_be_positive(monkeypatch):
+    monkeypatch.delenv("LLM_BLOCK_S", raising=False)
+    assert Settings().llm_block_s == 600
+    monkeypatch.setenv("LLM_BLOCK_S", "90")
+    assert Settings().llm_block_s == 90
+    for bad in ("0", "-5"):
+        monkeypatch.setenv("LLM_BLOCK_S", bad)
+        with pytest.raises(ValidationError, match="llm_block_s"):
+            Settings()

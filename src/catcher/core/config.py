@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]  # where `profiles.yaml` lives; the repos sit beside it
@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     llm_trace: bool = True  # every LLM call of a run leaves a trace in `llm/` of the idea-bucket
     llm_trace_prompt: bool = False  # also save the full prompt in the trace (large; it holds the document)
     llm_cache: bool = True  # read a saved good reply in `llm/` before calling the model
+    # worker: a backend that hit a usage limit, its budget or was down is not called for this many seconds
+    llm_block_s: int = Field(default=600, gt=0)
     transcript_languages: str = "en"
     # How we talk to YouTube. A ban is per IP and about request rate, so we go slowly and stop when told no.
     youtube_request_delay_s: float = 10.0  # seconds between the requests inside one fetch

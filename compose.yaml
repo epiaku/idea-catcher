@@ -1,0 +1,24 @@
+# Development database for the Idea Catcher (Stage B). B7 adds the worker next to it.
+#   docker compose up -d db      start it (the data lives in the volume `catcher-pgdata`)
+#   docker compose down          stop and remove the container, keep the data
+#   docker compose down -v       stop and delete the data too
+# The defaults match DATABASE_URL: postgresql+psycopg://catcher:catcher@localhost:5432/catcher
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: catcher
+      POSTGRES_PASSWORD: catcher
+      POSTGRES_DB: catcher
+    ports:
+      - "5432:5432"
+    volumes:
+      - catcher-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catcher -d catcher"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  catcher-pgdata:

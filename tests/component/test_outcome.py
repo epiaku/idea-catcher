@@ -2,6 +2,7 @@ import pytest
 
 from catcher.modules.llm.profiles import UnknownProfile
 from catcher.modules.llm.service import (
+    BackendBlocked,
     BackendUnavailable,
     BudgetExhausted,
     InputRejected,
@@ -71,3 +72,9 @@ def test_an_unknown_exception_is_a_failed_outcome_naming_its_type():
     assert outcome.kind == "failed"
     assert outcome.unexpected is True
     assert outcome.message.startswith("unexpected KeyError")
+
+
+def test_a_blocked_backend_is_deferred_naming_the_backend_not_as_a_new_usage_limit():
+    outcome = classify(BackendBlocked("not called again until 12:10", "openai"))
+    assert (outcome.kind, outcome.backend, outcome.budget) == ("deferred", "openai", False)
+    assert outcome.message == "openai: not called again until 12:10"

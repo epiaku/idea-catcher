@@ -5,6 +5,7 @@ from typing import Literal
 
 from catcher.modules.llm.profiles import UnknownProfile
 from catcher.modules.llm.service import (
+    BackendBlocked,
     BackendUnavailable,
     BudgetExhausted,
     InputRejected,
@@ -32,6 +33,8 @@ def classify(error: BaseException) -> Outcome:
         return Outcome("interrupted", "back in inbox/")
     if isinstance(error, BudgetExhausted):
         return Outcome("deferred", f"budget reached ({error.backend})", backend=error.backend, budget=True)
+    if isinstance(error, BackendBlocked):  # not called at all: the message says until when, and why
+        return Outcome("deferred", f"{error.backend}: {error}", backend=error.backend)
     if isinstance(error, UsageLimitReached):
         return Outcome("deferred", f"usage limit ({error.backend}): {error}", backend=error.backend)
     if isinstance(error, BackendUnavailable):

@@ -12,6 +12,9 @@ YouTube), the saved LLM reply before the model, then the file effects of Stage A
 a new fetch job) in one commit. The model call runs outside any transaction. It is safe to run twice: a
 committed outcome is not redone, and a final page already in `output/` (a crash before the commit) is only
 recorded as published; a crash before `finish` reruns from the saved reply, so the model is paid once.
+A backend that hit a usage limit or its budget, or was down, is blocked for LLM_BLOCK_S in this worker's
+memory (`blocks.py`): the next documents that need it are deferred without a call; a saved reply is still
+used.
 
 `youtube.fetch` gets the facts of one staged clip and queues its `llm.reason`. The YouTube call runs with
 no session open and never sleeps: a closed gate (the gap, or the breaker after a 429) defers the job to the
@@ -34,6 +37,8 @@ from catcher import __version__
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import FrontmatterError
 from catcher.core.git import GIT_LOCK, GitError, ahead_of_upstream, commit_managed, has_remote, pull, push
+from catcher.modules.llm.profiles import resolve_profile
+from catcher.modules.llm.service import BackendBlocked, BackendUnavailable, UsageLimitReached
 from catcher.modules.llm.trace import LLM_DIR
 from catcher.modules.pipeline.doctypes import DESTINATIONS, destination_dir
 from catcher.modules.pipeline.inbox import (
@@ -78,6 +83,7 @@ from catcher.modules.queue.items import (
 )
 from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import enqueue, live_job_carries
+from catcher.modules.worker.blocks import Block
 from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
 from catcher.modules.youtube.facts import FactsDeferred
@@ -507,12 +513,15 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResu
         log.info("%s: the page was already made, marking it published", note_label(note))
         return _item_outcome(ctx, name, "published")
 
+    blocks = ctx.backend_blocks.entries(now)
     opts = ProcessOptions(
         profile=params.profile,
         refresh_llm=params.refresh_llm,
         allow_fetch=False,  # facts come from youtube.fetch; this job never calls YouTube
         facts_dir=ideas / FACTS_DIR,
         llm_dir=ideas / LLM_DIR,
+        blocked_backends=frozenset(blocks),  # not called; a saved reply is still served
+        blocked_reasons={backend: _blocked_reason(block) for backend, block in blocks.items()},
     )
     who = note_label(note)
     try:
@@ -520,6 +529,7 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResu
     except Exception as e:  # an LLM or facts problem is the item's outcome, as in Stage A
         outcome = classify(e)
         log_outcome(who, outcome, outcome.message, e)
+        _remember_block(ctx, note, params, e)
         if outcome.kind in ("would_fetch", "waiting"):  # no saved facts: back to youtube.fetch
             return _wait_for_youtube(ctx, name, params)
         state = RunState(blocked=set(), budget_blocked={}, attempted=1, seen_ids=set())
@@ -539,6 +549,32 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResu
     finish(ideas, note, processed)
     log.info("%s: published %s", who, processed.filename)
     return _item_outcome(ctx, name, "published")
+
+
+def _blocked_reason(block: Block) -> str:
+    """The deferred reason of a document whose backend is blocked: until when, and what the call said."""
+    return f"not called again until {block.until.isoformat(timespec='seconds')} (earlier: {block.cause})"
+
+
+def _remember_block(ctx: HandlerContext, note: Note, params: ReasonParams, error: Exception) -> None:
+    """A model call that failed because its backend is unavailable (a usage limit, its budget, or down: a
+    BackendUnavailable) blocks that backend for LLM_BLOCK_S, so the next documents make no call. Anything else
+    blocks nothing: bad output, a rejected document, missing facts, or the deferral of a block already running
+    (that would make the block last for ever). The block is in this worker's memory only (see `blocks.py`)."""
+    if not isinstance(error, BackendUnavailable) or isinstance(error, BackendBlocked):
+        return
+    if isinstance(error, UsageLimitReached):  # a usage limit or the budget: the backend says which it is
+        backend = error.backend
+    else:  # down: the backend of the profile this document used
+        _, profile = resolve_profile(
+            ctx.services.profiles, requested=params.profile, class_default=note.doctype.llm_profile
+        )
+        backend = profile.backend
+    until = ctx.clock() + timedelta(seconds=ctx.settings.llm_block_s)  # from the failure: a call can hang
+    ctx.backend_blocks.block(backend, until, str(error))
+    log.warning(
+        "LLM backend %s is not called again until %s: %s", backend, until.isoformat(timespec="seconds"), error
+    )
 
 
 def _wait_for_llm(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:

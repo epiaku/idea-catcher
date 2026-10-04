@@ -6,6 +6,7 @@ from catcher.core.frontmatter import parse
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import UsageLimitReached
 from catcher.modules.pipeline.process import ProcessOptions, process_note
+from catcher.modules.youtube.cache import FactsCache
 from catcher.modules.youtube.facts import Chapter, FactsUnavailable
 
 GEMINI = "https://gemini.google.com/app/925d9b0b4ca21b63?is_sa=1"
@@ -425,3 +426,19 @@ def test_the_direct_prompt_also_lists_only_named_tools(make_note, make_services,
         ProcessOptions(),
     )
     assert "never generic categories such as" in direct.prompts[0]
+
+
+def test_a_blocked_backend_serves_a_clip_from_its_saved_facts_and_reply(
+    make_note, make_services, yt_facts, tmp_path
+):
+    facts_dir, llm_dir = tmp_path / "facts", tmp_path / "llm"
+    FactsCache(facts_dir).put(yt_facts)
+    opts = ProcessOptions(facts_dir=facts_dir, llm_dir=llm_dir)
+    process_note(youtube_note(make_note, tmp_path), make_services(facts=lambda vid: yt_facts), opts)
+
+    fetched: list[str] = []
+    chats = FakeBackend([UsageLimitReached("must not be called", backend="openai")])
+    services = make_services(chat_backend=chats, facts=lambda vid: fetched.append(vid) or yt_facts)
+    opts.blocked_backends = frozenset({"openai"})
+    again = process_note(youtube_note(make_note, tmp_path), services, opts)
+    assert again.llm.from_saved is True and chats.prompts == [] and fetched == []

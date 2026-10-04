@@ -66,8 +66,8 @@ flowchart TB
 ```mermaid
 flowchart TB
   p0["process_note"] --> p1["choose the LLM profile:<br/>the class default, or --profile"]
-  p1 --> p2{"was this backend blocked<br/>earlier in this run?"}
-  p2 -->|"yes"| d1["deferred: usage limit reached earlier"]
+  p1 --> p2{"is this backend blocked?<br/>Stage A: earlier in this run<br/>worker: until LLM_BLOCK_S ends"}
+  p2 -->|"yes: saved facts only, never YouTube<br/>no saved facts: deferred"| p3
   p2 -->|"no"| p3{"which class?"}
 
   p3 -->|"note, ai-chat, web-clip"| t1["build the LLM input:<br/>the text, the title hint, the allowed tags,<br/>the tags from the capture,<br/>the glossary (notes only)"]
@@ -80,7 +80,7 @@ flowchart TB
   y3 -->|"yes"| y4["build the LLM input:<br/>facts, transcript, description,<br/>the business context"]
   g1 --> g2["build the LLM input:<br/>the Gemini chat only"]
 
-  t1 --> llm["the LLM call<br/>see diagram 4"]
+  t1 --> llm["the LLM call, see diagram 4<br/>a saved reply in llm/ first<br/>no saved reply and the backend blocked:<br/>deferred here, no call"]
   y4 --> llm
   g2 --> llm
 
@@ -221,7 +221,7 @@ sequenceDiagram
 | **Saved facts** | Before every fetch | A video is fetched once, ever. A retry, a requeue or a rerun reads `facts/<id>.json` |
 | **The offline switch** | `YOUTUBE_OFFLINE=1` | Never call YouTube (development and tests) |
 | **LLM retries** | Inside the backend | A 5xx, a timeout or a dropped connection is retried up to 5 calls, with 2, 4, 8 and 16 seconds between them. One more call if the JSON is invalid |
-| **The usage-limit block** | During a run | A used-up budget, a 429 or a bad key blocks that backend for the rest of the run. The other documents that need it are deferred at once, without a call |
+| **The usage-limit block** | During a run | A used-up budget, a 429 or a bad key blocks that backend for the rest of the run. The other documents that need it are deferred at once, without a call (a saved reply is still used). The worker blocks a backend for `LLM_BLOCK_S` after any backend-unavailable error |
 | **The run lock** | Start of a real run | Only one `catcher run pipeline` at a time on a machine (`pipeline.lock`). A second one is refused. A dry run needs no lock |
 | **A damaged gate file** | The YouTube gate | The file is kept as `youtube-gate.corrupt` and the gate closes for the block hours, because losing an active block is the expensive mistake |
 | **Empty or too long** | Before the LLM call | A document that is empty or longer than `LLM_MAX_INPUT_CHARS` fails without a call |

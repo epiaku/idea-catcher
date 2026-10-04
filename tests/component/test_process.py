@@ -4,7 +4,7 @@ import pytest
 
 from catcher.core.frontmatter import parse
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
-from catcher.modules.llm.service import UsageLimitReached
+from catcher.modules.llm.service import BackendBlocked, UsageLimitReached
 from catcher.modules.pipeline.glossary import Glossary, Term
 from catcher.modules.pipeline.process import ProcessOptions, process_note
 
@@ -138,3 +138,33 @@ def test_the_published_page_names_its_destination_folder(make_note, make_service
     processed = process_note(note, make_services(), ProcessOptions())
     assert note.destination == "web-clips"
     assert parse(processed.page).fm["destination"] == "web-clips"  # output/ shows where the page goes
+
+
+def test_a_blocked_backend_still_serves_a_saved_reply_without_a_call(make_note, make_services, tmp_path):
+    """Only the call is blocked: a document whose good reply is saved in llm/ is served from it."""
+    llm_dir = tmp_path / "llm"
+    note = make_note("ai-chat", doc_id="cf81e40b020519ef")
+    first = process_note(note, make_services(), ProcessOptions(llm_dir=llm_dir))
+    assert first.llm.from_saved is False
+
+    chats = FakeBackend([UsageLimitReached("must not be called", backend="openai")])
+    again = process_note(
+        make_note("ai-chat", doc_id="cf81e40b020519ef"),
+        make_services(chat_backend=chats),
+        ProcessOptions(llm_dir=llm_dir, blocked_backends=frozenset({"openai"})),
+    )
+    assert again.llm.from_saved is True and chats.prompts == []
+
+
+def test_a_blocked_backend_without_a_saved_reply_raises_the_neutral_message(
+    make_note, make_services, tmp_path
+):
+    chats = FakeBackend()
+    with pytest.raises(BackendBlocked, match="earlier") as info:
+        process_note(
+            make_note("ai-chat", doc_id="cf81e40b020519ef"),
+            make_services(chat_backend=chats),
+            ProcessOptions(llm_dir=tmp_path / "llm", blocked_backends=frozenset({"openai"})),
+        )
+    assert info.value.backend == "openai" and "in this run" in str(info.value)
+    assert chats.prompts == []

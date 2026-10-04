@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select, update
-from worker_harness import NOTES, WEB_CLIPS, RaisingBackend
+from worker_harness import GEMINI_CHAT, NOTES, WEB_CLIPS, RaisingBackend
 
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import load
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
-from catcher.modules.llm.service import BackendUnavailable
+from catcher.modules.llm.service import BackendUnavailable, BudgetExhausted, UsageLimitReached
 from catcher.modules.queue.items import set_item_status
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.worker import handlers_pipeline
@@ -389,6 +389,7 @@ def test_a_rerun_of_a_deferred_working_copy_publishes(harness):
     assert load(harness.ideas / "output" / name).fm["stage"] == "deferred"
     with session_scope(harness.ctx.engine) as session:  # a crash before the deferred status was committed
         set_item_status(session, name, "waiting_llm", now=harness.clock())
+    harness.clock.advance(harness.ctx.settings.llm_block_s + 1)  # the outage blocked the backend for a while
 
     assert rerun(harness, name) == Done({"item": "published"})
     assert load(harness.ideas / "output" / name).fm["stage"] == "published"
@@ -466,3 +467,172 @@ def test_a_top_level_and_a_nested_capture_publish_through_the_worker(harness, sh
     assert sh(harness.ideas, "rev-list", "--count", "HEAD", "^origin/main").strip() == "0"  # pushed
     published = sh(harness.ideas, "ls-files", "output").splitlines()
     assert f"output/{top.calculated_name}" in published and f"output/{nested.calculated_name}" in published
+
+
+# A backend that is down, rate limited or out of budget is not called again for LLM_BLOCK_S (F4)
+
+BLOCKED_UNTIL = "2026-10-02T12:10:00+00:00"  # the frozen clock (12:00) plus the default 600 s
+
+
+def two_notes(harness, *others: str) -> tuple[str, str]:
+    """Stage "YouTube walks" and a second note (plus `others`); both use the notes profile (the `fake`
+    backend in the tests)."""
+    (harness.ideas / "inbox/notes/second.md").write_text("A second idea to write up\n", encoding="utf-8")
+    stage(harness, only=["YouTube walks", "second", *others])
+    return item_of(harness, "YouTube walks.md").calculated_name, item_of(harness, "second.md").calculated_name
+
+
+def test_a_usage_limit_blocks_the_backend_and_the_next_document_makes_no_call(harness):
+    first, second = two_notes(harness)
+    harness.backends.note = FakeBackend([UsageLimitReached("freellmapi rate limit: 429", backend="fake")])
+
+    assert reason(harness, first) == Done({"item": "deferred"})
+    assert reason(harness, second) == Done({"item": "deferred"})
+
+    assert len(harness.backends.note.prompts) == 1  # only the first document called the backend
+    item = item_of(harness, "second.md")
+    assert item.status == "deferred"
+    assert f"fake: not called again until {BLOCKED_UNTIL}" in (item.error or "")
+    assert "429" in (item.error or "")  # the cause of the block
+    out = load(harness.ideas / "output" / second).fm
+    assert out["stage"] == "deferred" and "not called again" in out["deferred_reason"]
+
+
+def test_a_used_up_budget_blocks_the_backend_through_the_worker(harness):
+    (harness.ideas / "inbox/notes/second.md").write_text("A second idea to write up\n", encoding="utf-8")
+    harness.backends.note = FakeBackend([BudgetExhausted("freellmapi budget reached", backend="fake")])
+    harness.add_job("pipeline.run", only=["YouTube walks", "second"])
+
+    assert harness.drain(max_jobs=4) == ["succeeded"] * 3
+    assert len(harness.backends.note.prompts) == 1
+    assert [j.result for j in jobs_of(harness, "llm.reason")] == [{"item": "deferred"}] * 2
+    # the two notes have random ids and one capture time, so either may run first
+    errors = [item_of(harness, name).error or "" for name in ("YouTube walks.md", "second.md")]
+    assert len([e for e in errors if "budget reached" in e and "not called again" not in e]) == 1
+    assert len([e for e in errors if f"fake: not called again until {BLOCKED_UNTIL}" in e]) == 1
+
+
+def test_a_backend_that_is_down_is_not_called_for_the_next_document(harness):
+    first, second = two_notes(harness)
+    harness.backends.note = FakeBackend([BackendUnavailable("freellmapi unreachable: connection refused")])
+
+    assert reason(harness, first) == Done({"item": "deferred"})
+    assert reason(harness, second) == Done({"item": "deferred"})
+
+    assert len(harness.backends.note.prompts) == 1
+    error = item_of(harness, "second.md").error or ""
+    assert "not called again" in error and "connection refused" in error
+
+
+def test_after_the_cool_down_one_probe_is_made_and_a_failure_blocks_again(harness):
+    harness.ctx.settings = harness.ctx.settings.model_copy(update={"llm_block_s": 60})
+    first, second = two_notes(harness)
+    harness.backends.note = FakeBackend([BackendUnavailable("down")])
+    assert reason(harness, first) == Done({"item": "deferred"})
+    assert reason(harness, second) == Done({"item": "deferred"})
+    assert len(harness.backends.note.prompts) == 1
+
+    harness.clock.advance(61)  # the cool-down is over: the next document tries once (a probe)
+    stage(harness, requeue=["YouTube walks", "second"])
+    harness.backends.note = FakeBackend([BackendUnavailable("still down")])
+    assert reason(harness, first) == Done({"item": "deferred"})
+    assert reason(harness, second) == Done({"item": "deferred"})
+    assert len(harness.backends.note.prompts) == 1  # the probe failed: blocked again, no second call
+
+    harness.clock.advance(61)
+    stage(harness, requeue=["YouTube walks", "second"])
+    harness.backends.note = FakeBackend()  # it works again
+    assert reason(harness, first) == Done({"item": "published"})
+    assert reason(harness, second) == Done({"item": "published"})
+    assert len(harness.backends.note.prompts) == 2
+    assert len(pages(harness.docs, NOTES)) == 2
+
+
+def test_a_saved_reply_is_served_while_its_backend_is_blocked(harness):
+    first = staged_note(harness)
+    assert reason(harness, first) == Done({"item": "published"})  # its good reply is saved in llm/
+    [page] = pages(harness.docs, NOTES)
+
+    (harness.ideas / "inbox/notes/second.md").write_text("A second idea to write up\n", encoding="utf-8")
+    stage(harness, only=["second"])
+    second = item_of(harness, "second.md").calculated_name
+    harness.backends.note = FakeBackend([UsageLimitReached("429", backend="fake")])
+    assert reason(harness, second) == Done({"item": "deferred"})  # its backend is now blocked
+
+    stage(harness, requeue=["YouTube walks"])
+    assert reason(harness, first) == Done({"item": "published"})
+    assert len(harness.backends.note.prompts) == 1  # only the second document's call: the first was saved
+    assert pages(harness.docs, NOTES) == [page]
+
+
+def test_a_block_of_one_backend_leaves_the_other_backends_alone(harness):
+    first, second = two_notes(harness, "systeme")
+    harness.backends.note = FakeBackend([UsageLimitReached("429", backend="fake")])
+    assert reason(harness, first) == Done({"item": "deferred"})
+
+    chat = item_of(harness, "systeme.md").calculated_name  # the Gemini chat: clippings profile, openai
+    assert reason(harness, chat) == Done({"item": "published"})
+    assert len(harness.backends.chat.prompts) == 1
+
+
+def test_a_block_does_not_defer_a_document_run_with_the_fake_profile(harness):
+    stage(harness, only=["systeme"])  # the Gemini chat: clippings profile, openai
+    chat = item_of(harness, "systeme.md").calculated_name
+    harness.backends.chat = FakeBackend([UsageLimitReached("openai rate limit: 429", backend="openai")])
+    assert reason(harness, chat) == Done({"item": "deferred"})
+    assert harness.ctx.backend_blocks.active(harness.clock()) == frozenset({"openai"})
+
+    other = GEMINI_CHAT.replace("cf81e40b020519ef", "925d9b0b4ca21b63")  # another chat, same class
+    (harness.ideas / "inbox/clippings/other.md").write_text(other, encoding="utf-8")
+    stage(harness, only=["other"], profile="fake")
+    assert reason(harness, item_of(harness, "other.md").calculated_name) == Done({"item": "published"})
+    assert len(harness.backends.note.prompts) == 1 and len(harness.backends.chat.prompts) == 1
+
+
+def test_invalid_output_does_not_block_the_backend(harness):
+    first, second = two_notes(harness)
+    harness.backends.note = FakeBackend(["nope", "still nope"])
+
+    assert reason(harness, first) == Done({"item": "failed"})
+    assert reason(harness, second) == Done({"item": "published"})
+    assert len(harness.backends.note.prompts) == 3
+
+
+def test_a_document_deferred_for_its_facts_does_not_block_the_backend(harness, yt_facts):
+    harness.ctx.services.youtube.cache(harness.ideas / "facts").put(
+        yt_facts.model_copy(update={"transcript": None})  # saved facts without a transcript: deferred
+    )
+    stage(harness, only=["yt"])
+    clip = item_of(harness, "yt.md").calculated_name
+    assert reason(harness, clip) == Done({"item": "deferred"})
+
+    assert harness.ctx.backend_blocks.active(harness.clock()) == frozenset()
+
+
+def test_a_document_deferred_by_a_running_block_does_not_extend_it(harness):
+    """Otherwise the backend is never tried again while documents keep coming."""
+    first, second = two_notes(harness)
+    harness.backends.note = FakeBackend([UsageLimitReached("429", backend="fake")])
+    assert reason(harness, first) == Done({"item": "deferred"})
+    until = harness.ctx.backend_blocks.entries(harness.clock())["fake"].until
+
+    harness.clock.advance(30)
+    assert reason(harness, second) == Done({"item": "deferred"})  # deferred by the block, no call
+
+    assert len(harness.backends.note.prompts) == 1
+    assert harness.ctx.backend_blocks.entries(harness.clock())["fake"].until == until
+
+
+def test_refresh_llm_while_the_backend_is_blocked_is_deferred_with_no_call(harness):
+    first = staged_note(harness)
+    assert reason(harness, first) == Done({"item": "published"})  # a good reply is saved
+
+    (harness.ideas / "inbox/notes/second.md").write_text("A second idea to write up\n", encoding="utf-8")
+    stage(harness, only=["second"])
+    harness.backends.note = FakeBackend([UsageLimitReached("429", backend="fake")])
+    assert reason(harness, item_of(harness, "second.md").calculated_name) == Done({"item": "deferred"})
+
+    stage(harness, requeue=["YouTube walks"], refresh_llm=True)  # skip the saved reply: needs a call
+    assert reason(harness, first) == Done({"item": "deferred"})
+    assert len(harness.backends.note.prompts) == 1  # only the 429 of the second note: no call for the first
+    assert "not called again" in (item_of(harness, "YouTube walks.md").error or "")
