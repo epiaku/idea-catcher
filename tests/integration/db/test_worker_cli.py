@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,55 @@ def test_jobs_list_filters_by_status(runner: CliRunner, engine) -> None:
 
     bad = runner.invoke(app, ["jobs", "list", "--status", "lost"])
     assert bad.exit_code == 2
+
+
+def _local_clock(until: datetime, now: datetime) -> str:
+    """The gate's style: the local time, with the date when it is not today."""
+    moment, today = until.astimezone(), now.astimezone().date()
+    return moment.strftime("%H:%M") if moment.date() == today else moment.strftime("%Y-%m-%d %H:%M")
+
+
+@pytest.mark.parametrize(
+    ("column", "ahead"), [("next_allowed_at", timedelta(minutes=10)), ("blocked_until", timedelta(hours=20))]
+)
+def test_jobs_list_explains_a_fetch_job_that_waits_for_its_resource(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch, column: str, ahead: timedelta
+) -> None:
+    now = utc_now()
+    monkeypatch.setattr(cli, "utc_now", lambda: now)
+    with session_scope(engine) as session:
+        fetch, _ = enqueue(session, type="youtube.fetch", now=now, resource="youtube")
+        other, _ = enqueue(session, type="llm.reason", now=now)
+        fetch_id, other_id = fetch.id, other.id
+
+    open_gate = runner.invoke(app, ["jobs", "list"])
+    assert open_gate.exit_code == 0, open_gate.output
+    assert "waiting for" not in open_gate.output
+
+    with session_scope(engine) as session:
+        session.execute(
+            text(f"update resources set {column} = :until where name = 'youtube'"), {"until": now + ahead}
+        )
+    closed = runner.invoke(app, ["jobs", "list"])
+    assert closed.exit_code == 0, closed.output
+    lines = {line.split()[0]: line for line in closed.output.strip().splitlines()}
+    assert lines[str(fetch_id)].split()[1:3] == ["youtube.fetch", "queued"]
+    assert lines[str(fetch_id)].endswith(f"  waiting for youtube until {_local_clock(now + ahead, now)}")
+    assert "waiting for" not in lines[str(other_id)]
+
+
+def test_jobs_list_shows_no_wait_for_a_damaged_resource_time(runner: CliRunner, engine) -> None:
+    """'infinity' cannot be loaded into Python, and the claim treats it as open: no crash, no wait shown."""
+    with session_scope(engine) as session:
+        enqueue(session, type="youtube.fetch", now=utc_now(), resource="youtube")
+        session.execute(text("update resources set blocked_until = 'infinity' where name = 'youtube'"))
+
+    result = runner.invoke(app, ["jobs", "list"])
+
+    assert result.exit_code == 0, result.output
+    [line] = result.output.strip().splitlines()
+    assert line.split()[1:3] == ["youtube.fetch", "queued"]
+    assert "waiting for" not in line
 
 
 def test_worker_once_runs_a_registered_handler_and_exits(

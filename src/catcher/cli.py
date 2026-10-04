@@ -52,6 +52,7 @@ from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import build_access
 from catcher.modules.youtube.cache import FACTS_DIR
 from catcher.modules.youtube.facts import FactsUnavailable
+from catcher.modules.youtube.gate_rules import clock_text
 from catcher.modules.youtube.urls import video_id
 
 app = typer.Typer(
@@ -594,17 +595,24 @@ def jobs_list(
     ] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, help="show at most N jobs (newest first)")] = 50,
 ) -> None:
-    """List jobs, newest first: id, type, status, priority, run_after, reason (or error)."""
+    """List jobs, newest first: id, type, status, priority, run_after, reason (or error). A queued job whose
+    resource is closed (a fetch job while the YouTube gate waits) shows until when it waits."""
     if status is not None and status not in JOB_STATUSES:
         raise typer.BadParameter(f"must be one of {', '.join(JOB_STATUSES)}", param_hint="--status")
-    statement = select(Job).order_by(Job.created_at.desc(), Job.id).limit(limit)
+    now = utc_now()
+    statement = (
+        select(Job, queue.resource_closed_until(now)).order_by(Job.created_at.desc(), Job.id).limit(limit)
+    )
     if status is not None:
         statement = statement.where(Job.status == status)
     with _queue_session() as session:
-        jobs = list(session.scalars(statement))
-    for job in jobs:
+        rows = [(job, closed_until) for job, closed_until in session.execute(statement)]
+    for job, closed_until in rows:
         run_after = job.run_after.isoformat(timespec="seconds")
         reason = job.error or job.reason or ""
+        if job.status == "queued" and closed_until is not None:  # the claim skips it until then
+            until = clock_text(closed_until.timestamp(), now.timestamp())
+            reason = f"waiting for {job.resource} until {until}"
         typer.echo(
             f"{job.id}  {job.type:<16} {job.status:<9} {job.priority:>4}  {run_after}  {reason}".rstrip()
         )

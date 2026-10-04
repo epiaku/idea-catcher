@@ -1,8 +1,10 @@
 """The `youtube.fetch` handler: the facts of one staged clip, then `llm.reason`.
 
-A closed gate (the gap between two calls, or the breaker after a 429) defers the *job* to the gate's time with
-no attempt counted, and the item keeps waiting. A video YouTube cannot give facts for is an *item* state: the
-working copy is marked deferred and the job succeeds. Saved facts mean no second call to YouTube."""
+While the gate is closed (the gap between two calls, or the breaker after a 429) the claim leaves the
+fetch job queued, unclaimed. A job that meets a closed gate in the handler anyway (a race, or a 429 during its
+own fetch) is deferred to the gate's time with no attempt counted. Either way the item keeps waiting. A video
+YouTube cannot give facts for is an *item* state: the working copy is marked deferred and the job succeeds.
+Saved facts mean no second call to YouTube."""
 
 from datetime import timedelta
 
@@ -173,6 +175,45 @@ def test_a_429_opens_the_breaker_and_defers_without_counting_an_attempt(harness)
     harness.clock.advance(3600)  # an hour later the breaker is still open: the job is not even due
     assert harness.drain(max_jobs=1) == []
     assert harness.fetch_calls == [VID]
+
+
+def test_a_fetch_job_claimed_in_a_race_defers_to_the_slot_without_an_attempt(harness):
+    """The claim skips a fetch job while the gate is closed; a job claimed just before another fetch reserved
+    the slot still meets the gate in the handler, and is deferred to the slot."""
+    _, job = staged_clip(harness)
+    assert harness.gate.reserve() is None  # another fetch took the slot first
+    slot = harness.clock() + timedelta(seconds=600)
+
+    result = handle_youtube_fetch(harness.ctx, job)
+
+    assert isinstance(result, Defer)
+    assert result.run_after == slot
+    assert result.reason.startswith("YouTube: next call allowed at ")
+    assert harness.fetch_calls == []
+    [row] = jobs_of(harness, "youtube.fetch")
+    assert (row.status, row.attempts) == ("queued", 0)
+    assert item_of(harness, "yt.md").status == "waiting_youtube"
+
+
+@pytest.mark.parametrize("value", ["2100-01-01 00:00:00+00", "infinity"])
+def test_an_absurd_gate_time_is_claimed_once_and_repaired_by_the_gate(harness, value):
+    staged_clip(harness)
+    with session_scope(harness.ctx.engine) as session:
+        session.execute(
+            text("update resources set blocked_until = cast(:value as timestamptz) where name = 'youtube'"),
+            {"value": value},
+        )
+
+    assert harness.drain(max_jobs=2) == ["deferred"]  # claimed despite the damage, then the gate said wait
+
+    assert harness.fetch_calls == []
+    with session_scope(harness.ctx.engine) as session:
+        repaired = session.execute(
+            text("select blocked_until from resources where name = 'youtube'")
+        ).scalar_one()
+    assert harness.clock() < repaired <= harness.clock() + timedelta(hours=24)
+    [row] = jobs_of(harness, "youtube.fetch")
+    assert (row.status, row.attempts, row.run_after) == ("queued", 0, repaired)
 
 
 @pytest.fixture

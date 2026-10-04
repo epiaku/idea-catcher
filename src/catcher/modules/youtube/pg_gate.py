@@ -54,6 +54,10 @@ __all__ = ["GateUnavailable", "PostgresGate"]
 
 log = logging.getLogger("catcher.youtube")
 
+# The gate's row in `resources`, and the `resource` every `youtube.fetch` job carries (the claim skips those
+# jobs while this row is closed). Migration 0004 seeds the row under the same name, as a literal.
+YOUTUBE_RESOURCE = "youtube"
+
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _US = 1_000_000
 _LAST_SECOND = (datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC) - _EPOCH).total_seconds()
@@ -93,7 +97,7 @@ class PostgresGate:
         self,
         engine: Engine,
         *,
-        name: str = "youtube",
+        name: str = YOUTUBE_RESOURCE,
         min_gap_s: float = 120.0,
         jitter_s: float = 300.0,
         block_hours: float = 6.0,

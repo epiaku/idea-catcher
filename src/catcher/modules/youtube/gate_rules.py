@@ -31,10 +31,15 @@ class Wait:
     blocked: bool  # True: the breaker is open (hours). False: just the gap between two fetches
 
     def message(self, now: float | None = None) -> str:
-        moment = datetime.fromtimestamp(self.until)
-        today = datetime.fromtimestamp(now if now is not None else time.time()).date()
-        clock = moment.strftime("%H:%M") if moment.date() == today else moment.strftime("%Y-%m-%d %H:%M")
+        clock = clock_text(self.until, now if now is not None else time.time())
         return f"YouTube blocked until {clock}" if self.blocked else f"YouTube: next call allowed at {clock}"
+
+
+def clock_text(until: float, now: float) -> str:
+    """`until` as the local time a person reads: `HH:MM` today, `YYYY-MM-DD HH:MM` on another day."""
+    moment = datetime.fromtimestamp(until)
+    today = datetime.fromtimestamp(now).date()
+    return moment.strftime("%H:%M") if moment.date() == today else moment.strftime("%Y-%m-%d %H:%M")
 
 
 @dataclass(frozen=True)

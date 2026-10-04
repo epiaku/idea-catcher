@@ -15,6 +15,8 @@ branch_labels = None
 depends_on = None
 
 SEEDED_AT = datetime(2026, 10, 4, tzinfo=UTC)
+# 'youtube' below must match YOUTUBE_RESOURCE in catcher/modules/youtube/pg_gate.py. A migration keeps its
+# literal (it must not change when the code does), so the two are not linked by an import.
 
 
 def upgrade() -> None:

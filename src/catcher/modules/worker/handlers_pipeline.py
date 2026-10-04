@@ -87,13 +87,12 @@ from catcher.modules.worker.blocks import Block
 from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
 from catcher.modules.youtube.facts import FactsDeferred
+from catcher.modules.youtube.pg_gate import YOUTUBE_RESOURCE
 from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.worker.pipeline")
 
 NO_DOCUMENT = "staging row without a document"
-# Every `youtube.fetch` job names the gate's `resources` row: the claim leaves it queued while closed.
-YOUTUBE_RESOURCE = "youtube"
 DEFER_FALLBACK_S = 600  # a FactsDeferred without a time (a gate that does not say): ask again in 10 minutes
 
 

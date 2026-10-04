@@ -264,3 +264,34 @@ def test_the_oldest_fetch_job_is_claimed_first_when_the_slot_opens(session: Sess
         order.append(job.id)
 
     assert order == [oldest, middle, newest]
+
+
+@pytest.mark.parametrize("column", ["blocked_until", "next_allowed_at"])
+@pytest.mark.parametrize("value", ["2100-01-01 00:00:00+00", "infinity"])
+def test_claim_treats_an_absurd_resource_time_as_open(
+    session: Session, clock, column: str, value: str
+) -> None:
+    """More than 24 hours ahead is damage, not a block: the job is claimed so the gate can repair the row."""
+    job_id = _fetch(session, clock.now)
+    session.execute(
+        text(f"update resources set {column} = cast(:value as timestamptz) where name = 'youtube'"),
+        {"value": value},
+    )
+
+    claimed = claim(session, worker="w1", now=clock.now, lease_s=30)
+    assert claimed is not None
+    assert claimed.id == job_id
+
+
+@pytest.mark.parametrize("column", ["blocked_until", "next_allowed_at"])
+@pytest.mark.parametrize("hours", [23, 24])
+def test_claim_still_skips_a_closed_resource_up_to_24_hours_ahead(
+    session: Session, clock, column: str, hours: int
+) -> None:
+    _fetch(session, clock.now)
+    session.execute(
+        text(f"update resources set {column} = :until where name = 'youtube'"),
+        {"until": clock.now + timedelta(hours=hours)},
+    )
+
+    assert claim(session, worker="w1", now=clock.now, lease_s=30) is None

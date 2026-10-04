@@ -6,18 +6,30 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import exists, func, inspect, or_, select, text, update
+from sqlalchemy import ColumnElement, and_, case, exists, func, inspect, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
 from catcher.core.db import require_aware
 from catcher.modules.queue.models import Job, Resource
+from catcher.modules.youtube.gate_rules import MAX_BLOCK_HOURS
 
 # Same predicate as the partial unique index `uq_jobs_active_dedupe_key` on the model.
 _ACTIVE_DEDUPE = text("dedupe_key IS NOT NULL AND status IN ('queued','running')")
 _DEDUPE_ATTEMPTS = 3  # the active job can finish between our failed insert and our select
 _UNLOCKED: dict[str, Any] = {"locked_by": None, "lease_until": None}
+# A resource time further ahead than this is damage, not a wait: the claim treats it as open, so a job reaches
+# the gate, which repairs the row (the same 24 hours as the gate's own ceiling).
+_RESOURCE_HORIZON = timedelta(hours=MAX_BLOCK_HOURS)
+
+
+_RESOURCE_TIMES = (Resource.blocked_until, Resource.next_allowed_at)
+
+
+def _holds(column: Any, now: datetime) -> ColumnElement[bool]:
+    """A resource time that holds its jobs back at `now`: after `now`, and at most 24 hours ahead."""
+    return and_(column > now, column <= now + _RESOURCE_HORIZON)
 
 
 def _check_lease(lease_s: float) -> None:
@@ -95,9 +107,11 @@ def claim(
     `(locked_by, claim_seq)` on the returned job is the claim token for fencing later writes.
     `types` is a sequence of type names (a bare str is a TypeError); an empty sequence matches nothing.
 
-    A job whose `resource` names a `resources` row that is closed at `now` (`blocked_until > now` or
-    `next_allowed_at > now`) is not claimable: it waits in the queue without an attempt or an event. A job
-    without a resource, or whose resource has no row, is not affected (a missing row is the gate's business).
+    A job whose `resource` names a `resources` row that is closed at `now` (`blocked_until` or
+    `next_allowed_at` after `now`, see `resource_closed_until`) is not claimable: it waits in the queue
+    without an attempt or an event. A job without a resource, or whose resource has no row, is not affected
+    (a missing row is the gate's business), and neither is one whose time is more than 24 hours ahead
+    (damage, which the gate repairs once a job reaches it).
     The claim only reads the row and never locks it; the gate's own reserve holds the lock that keeps the gap.
     """
     require_aware(now)
@@ -106,7 +120,7 @@ def claim(
         raise TypeError("types must be a sequence of type names, not a str")
     closed = exists().where(
         Resource.name == Job.resource,
-        or_(Resource.blocked_until > now, Resource.next_allowed_at > now),
+        or_(*(_holds(column, now) for column in _RESOURCE_TIMES)),
     )
     statement = select(Job).where(Job.status == "queued", Job.run_after <= now, ~closed)
     if types is not None:
@@ -129,6 +143,16 @@ def claim(
     job.lease_until = now + timedelta(seconds=lease_s)
     session.flush()
     return job
+
+
+def resource_closed_until(now: datetime) -> ColumnElement[datetime | None]:
+    """A column for a select on `Job`: until when the claim leaves that job queued for its resource, or NULL
+    when it is claimable as far as the resource goes. The later of `blocked_until` and `next_allowed_at` that
+    holds the job at `now` (the claim's own rule), computed in SQL so a damaged value ('infinity') is never
+    loaded into Python."""
+    require_aware(now)
+    times = [case((_holds(column, now), column)) for column in _RESOURCE_TIMES]
+    return select(func.greatest(*times)).where(Resource.name == Job.resource).correlate(Job).scalar_subquery()
 
 
 def _fenced_update(session: Session, job: Job, values: dict[str, Any], *, attempts_delta: int = 0) -> bool:
