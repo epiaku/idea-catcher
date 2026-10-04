@@ -22,16 +22,29 @@ import random
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from catcher.core.files import file_lock, write_atomic
+from catcher.modules.youtube.gate_rules import (
+    MAX_BLOCK_HOURS,
+    OPEN,
+    GateState,
+    Wait,
+    after_block,
+    after_reserve,
+    after_success,
+    block_length_hours,
+    clamp,
+    closed_state,
+    wait_for,
+)
+
+__all__ = ["MAX_BLOCK_HOURS", "Gate", "Wait", "YoutubeGate", "is_block_error"]
 
 log = logging.getLogger("catcher.youtube")
 
-MAX_BLOCK_HOURS = 24.0
 _STATE_KEYS = ("next_allowed_at", "blocked_until", "blocked_at", "streak")
 _BOT_CHECKS = (
     "too many requests",
@@ -67,20 +80,6 @@ def is_block_error(error: BaseException) -> bool:
             if isinstance(part, BaseException):
                 stack.append(part)
     return False
-
-
-@dataclass(frozen=True)
-class Wait:
-    """Why a call to YouTube is not allowed yet, and until when (seconds since the epoch)."""
-
-    until: float
-    blocked: bool  # True: the breaker is open (hours). False: just the gap between two fetches
-
-    def message(self, now: float | None = None) -> str:
-        moment = datetime.fromtimestamp(self.until)
-        today = datetime.fromtimestamp(now if now is not None else time.time()).date()
-        clock = moment.strftime("%H:%M") if moment.date() == today else moment.strftime("%Y-%m-%d %H:%M")
-        return f"YouTube blocked until {clock}" if self.blocked else f"YouTube: next call allowed at {clock}"
 
 
 class Gate(Protocol):
@@ -120,18 +119,16 @@ class YoutubeGate:
         with file_lock(self.state_file.with_suffix(".lock")):
             yield
 
-    def _read(self, now: float) -> dict[str, float]:
+    def _read(self, now: float) -> GateState:
         try:
             raw = json.loads(self.state_file.read_text(encoding="utf-8"))
-            state = {key: self._number(raw, key) for key in _STATE_KEYS}
+            values = {key: self._number(raw, key) for key in _STATE_KEYS}
+            streak = values.pop("streak")  # a float in the file, an int in the rules
+            return clamp(GateState(**values, streak=int(streak)), now)
         except FileNotFoundError:
-            return dict.fromkeys(_STATE_KEYS, 0.0)
+            return OPEN
         except (ValueError, OSError, AttributeError, TypeError) as e:
             return self._fail_closed(now, e)
-        ceiling = now + MAX_BLOCK_HOURS * 3600  # a value from the far future is a damaged file, not a block
-        state["blocked_until"] = min(state["blocked_until"], ceiling)
-        state["next_allowed_at"] = min(state["next_allowed_at"], ceiling)
-        return state
 
     @staticmethod
     def _number(raw: dict[str, object], key: str) -> float:
@@ -140,38 +137,30 @@ class YoutubeGate:
             raise ValueError(f"{key} is {value!r}")
         return value
 
-    def _fail_closed(self, now: float, error: Exception) -> dict[str, float]:
+    def _fail_closed(self, now: float, error: Exception) -> GateState:
         """The state file is damaged: keep it for a look, and treat YouTube as blocked for `block_hours`."""
         kept = self.state_file.with_suffix(".corrupt")
         with suppress(OSError):
             os.replace(self.state_file, kept)
-        hours = max(self.block_hours, 1.0)
-        state = {
-            "next_allowed_at": 0.0,
-            "blocked_until": now + hours * 3600,
-            "blocked_at": now,
-            "streak": 1.0,
-        }
+        state = closed_state(now, self.block_hours)
         log.error(
             "the YouTube gate file %s is unreadable (%s): kept as %s, and no calls for %g hours to be safe",
             self.state_file,
             error,
             kept.name,
-            hours,
+            max(self.block_hours, 1.0),
         )
         self._write(state)
         return state
 
-    def _write(self, state: dict[str, float]) -> None:
-        write_atomic(self.state_file, json.dumps(state))  # never a half-written file
-
-    @staticmethod
-    def _wait(state: dict[str, float], now: float) -> Wait | None:
-        if now < state["blocked_until"]:
-            return Wait(state["blocked_until"], blocked=True)
-        if now < state["next_allowed_at"]:
-            return Wait(state["next_allowed_at"], blocked=False)
-        return None
+    def _write(self, state: GateState) -> None:
+        data = {
+            "next_allowed_at": state.next_allowed_at,
+            "blocked_until": state.blocked_until,
+            "blocked_at": state.blocked_at,
+            "streak": float(state.streak),  # a float, as the file has always had it
+        }
+        write_atomic(self.state_file, json.dumps(data))  # never a half-written file
 
     # ---- the gate ---------------------------------------------------------------------------------
 
@@ -179,18 +168,19 @@ class YoutubeGate:
         """Is a call allowed now? Changes nothing (apart from closing the gate over a damaged file)."""
         with self._locked():
             now = self.clock()
-            return self._wait(self._read(now), now)
+            return wait_for(self._read(now), now)
 
     def reserve(self) -> Wait | None:
         """Ask for a call. None means go ahead, and the gap to the next call has started."""
         with self._locked():
             now = self.clock()
             state = self._read(now)
-            wait = self._wait(state, now)
+            wait = wait_for(state, now)
             if wait is not None:
                 return wait
-            state["next_allowed_at"] = now + self.min_gap_s + self.rng() * self.jitter_s
-            self._write(state)
+            self._write(
+                after_reserve(state, now, min_gap_s=self.min_gap_s, jitter_s=self.jitter_s, rng=self.rng)
+            )
             return None
 
     def record_success(self, started_at: float | None = None) -> None:
@@ -198,12 +188,12 @@ class YoutubeGate:
         after it (by another process) is newer news and stays."""
         with self._locked():
             state = self._read(self.clock())
-            if started_at is not None and state["blocked_at"] > started_at:
+            new = after_success(state, started_at)
+            if new is state:
                 return
-            if state["streak"] or state["blocked_until"]:
+            if state.streak or state.blocked_until:
                 log.info("YouTube answered again: the breaker is closed")
-            state["streak"], state["blocked_until"] = 0.0, 0.0
-            self._write(state)
+            self._write(new)
 
     def record_block(self, started_at: float | None = None) -> float:
         """YouTube said no. Open the breaker (6 hours, then 12, then 24) and return when it ends.
@@ -213,17 +203,14 @@ class YoutubeGate:
         with self._locked():
             now = self.clock()
             state = self._read(now)
-            if started_at is not None and state["blocked_at"] >= started_at and state["blocked_until"] > now:
-                return state["blocked_until"]
-            state["streak"] += 1
-            hours = min(self.block_hours * 2 ** (state["streak"] - 1), max(MAX_BLOCK_HOURS, self.block_hours))
-            state["blocked_until"] = now + hours * 3600
-            state["blocked_at"] = now
-            self._write(state)
+            new = after_block(state, now, started_at, block_hours=self.block_hours)
+            if new is state:
+                return state.blocked_until
+            self._write(new)
             log.error(
                 "YouTube is blocking us (block %d): no calls for %g hours, until %s",
-                int(state["streak"]),
-                hours,
-                datetime.fromtimestamp(state["blocked_until"]).strftime("%Y-%m-%d %H:%M"),
+                new.streak,
+                block_length_hours(new.streak, self.block_hours),
+                datetime.fromtimestamp(new.blocked_until).strftime("%Y-%m-%d %H:%M"),
             )
-            return state["blocked_until"]
+            return new.blocked_until
