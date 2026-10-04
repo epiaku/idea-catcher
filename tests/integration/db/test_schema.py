@@ -270,3 +270,47 @@ def test_the_migration_0003_indexes_exist(pg_engine):
     assert defs["ix_jobs_running_lease"].endswith(
         "ON public.jobs USING btree (lease_until) WHERE (status = 'running'::text)"
     )
+
+
+def _youtube_rows(url: str) -> list[tuple]:
+    engine = make_engine(url)
+    try:
+        with engine.connect() as connection:
+            return [
+                tuple(row)
+                for row in connection.execute(
+                    text(
+                        "select name, next_allowed_at, blocked_until, blocked_at, streak, concurrency,"
+                        " updated_at from resources where name = 'youtube'"
+                    )
+                )
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_upgrade_seeds_the_open_youtube_row_and_downgrade_removes_it(fresh_database_url):
+    config = alembic_config(fresh_database_url)
+    command.upgrade(config, "0003")
+    assert _youtube_rows(fresh_database_url) == []
+    command.upgrade(config, "head")
+    assert _youtube_rows(fresh_database_url) == [
+        ("youtube", None, None, None, 0, 1, datetime(2026, 10, 4, tzinfo=UTC))
+    ]
+    command.downgrade(config, "-1")
+    assert _youtube_rows(fresh_database_url) == []
+    command.upgrade(config, "head")
+    command.downgrade(config, "base")
+    assert _tables(fresh_database_url) == set()
+    command.upgrade(config, "head")
+    assert len(_youtube_rows(fresh_database_url)) == 1
+
+
+def test_every_db_test_starts_with_the_open_youtube_row(session, pg_engine):
+    rows = session.execute(
+        text(
+            "select next_allowed_at, blocked_until, blocked_at, streak, concurrency from resources"
+            " where name = 'youtube'"
+        )
+    ).all()
+    assert [tuple(row) for row in rows] == [(None, None, None, 0, 1)]

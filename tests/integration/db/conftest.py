@@ -1,6 +1,7 @@
 import os
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -73,12 +74,25 @@ def _truncate_all(engine: Engine) -> None:
             cleanup.execute(text(f"truncate {names} restart identity cascade"))
 
 
+def seed_open_youtube_row(engine: Engine) -> None:
+    """The row migration 0004 seeds; a missing row means CLOSED, so a test that wants that deletes it."""
+    with session_scope(engine) as seeding:
+        seeding.execute(
+            text(
+                "insert into resources (name, streak, concurrency, updated_at)"
+                " values ('youtube', 0, 1, :at) on conflict (name) do nothing"
+            ),
+            {"at": datetime(2026, 10, 4, tzinfo=UTC)},
+        )
+
+
 @pytest.fixture(autouse=True)
 def _empty_tables(pg_engine: Engine) -> None:
     """Start every test on empty tables, also those that only use `pg_engine` and commit rows of their own.
 
     Skips with `pg_engine` when Docker is not available."""
     _truncate_all(pg_engine)
+    seed_open_youtube_row(pg_engine)
 
 
 @pytest.fixture
@@ -86,6 +100,7 @@ def session(pg_engine: Engine):
     with session_scope(pg_engine) as db_session:
         yield db_session
     _truncate_all(pg_engine)
+    seed_open_youtube_row(pg_engine)
 
 
 @pytest.fixture
