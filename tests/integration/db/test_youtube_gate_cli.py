@@ -195,8 +195,8 @@ def test_import_file_never_shortens_a_longer_block(runner: CliRunner, engine, st
 
     result = runner.invoke(app, ["youtube", "gate", "--import-file"])
 
-    assert result.exit_code == 2, result.output
-    assert "not imported: the database already holds this state or a stricter one" in result.output
+    assert result.exit_code == 0, result.output  # a re-run is not a failure
+    assert "nothing to import: the database already holds this state or a stricter one" in result.output
     assert _row(engine) == before
 
     # A shorter file block recorded later only moves `blocked_at` forward: the block and the streak stay.
@@ -268,8 +268,8 @@ def test_import_file_twice_says_the_second_time_that_nothing_changed(
     assert runner.invoke(app, ["youtube", "gate", "--import-file"]).exit_code == 0
     before = _row(engine)
     again = runner.invoke(app, ["youtube", "gate", "--import-file"])
-    assert again.exit_code == 2, again.output
-    assert "not imported: the database already holds this state or a stricter one" in again.output
+    assert again.exit_code == 0, again.output  # a re-run by the user does not look like a failure
+    assert "nothing to import: the database already holds this state or a stricter one" in again.output
     assert _row(engine) == before
 
 

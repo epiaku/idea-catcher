@@ -242,6 +242,35 @@ def test_jobs_list_explains_a_fetch_job_that_waits_for_its_resource(
     assert "waiting for" not in lines[str(other_id)]
 
 
+def test_a_fetch_job_added_by_hand_waits_while_the_youtube_gate_is_closed(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`jobs add youtube.fetch` carries the resource, as the pipeline's own fetch jobs do: the claim skips it
+    while the gate is closed, so it is never claimed and deferred for nothing."""
+    now = utc_now()
+    monkeypatch.setattr(cli, "utc_now", lambda: now)
+    result = runner.invoke(app, ["jobs", "add", "youtube.fetch", "--param", "calculated_name=clippings/x.md"])
+    assert result.exit_code == 0, result.output
+    other = runner.invoke(app, ["jobs", "add", "llm.reason", "--param", "calculated_name=notes/x.md"])
+    assert other.exit_code == 0, other.output
+    resources = {job.type: job.resource for job in _jobs(engine)}
+    assert resources == {"youtube.fetch": "youtube", "llm.reason": None}
+
+    with session_scope(engine) as session:
+        session.execute(
+            text("update resources set blocked_until = :until where name = 'youtube'"),
+            {"until": now + timedelta(hours=6)},
+        )
+    with session_scope(engine) as session:
+        claimed = queue.claim(session, worker="w", now=now, lease_s=60)
+        assert claimed is not None and claimed.type == "llm.reason"
+        assert queue.claim(session, worker="w", now=now, lease_s=60) is None  # the fetch job waits
+    listed = runner.invoke(app, ["jobs", "list", "--status", "queued"])
+    [line] = listed.output.strip().splitlines()
+    assert line.split()[1:3] == ["youtube.fetch", "queued"]
+    assert line.endswith(f"  waiting for youtube until {_local_clock(now + timedelta(hours=6), now)}")
+
+
 def test_jobs_list_shows_no_wait_for_a_damaged_resource_time(runner: CliRunner, engine) -> None:
     """'infinity' cannot be loaded into Python, and the claim treats it as open: no crash, no wait shown."""
     with session_scope(engine) as session:

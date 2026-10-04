@@ -77,6 +77,18 @@ def test_a_value_beyond_24_hours_is_clamped():
     assert clamp(OPEN, NOW) == OPEN
 
 
+def test_a_block_time_more_than_24_hours_ahead_is_cut_to_now():
+    """A far-future `blocked_at` (damage, or a hand-edited file imported) would make every success look older
+    than the block, so the breaker would never close again: it is cut to now. Up to 24 hours ahead stays."""
+    far = GateState(next_allowed_at=0.0, blocked_until=NOW + HOUR, blocked_at=NOW + 25 * HOUR, streak=1)
+    state = clamp(far, NOW)
+    assert state.blocked_at == NOW
+    assert (state.blocked_until, state.streak) == (NOW + HOUR, 1)
+    assert after_success(state, NOW + 1).blocked_until == 0.0  # a later fetch that works closes it again
+    near = GateState(next_allowed_at=0.0, blocked_until=NOW + HOUR, blocked_at=NOW + 24 * HOUR, streak=1)
+    assert clamp(near, NOW) == near
+
+
 @pytest.mark.parametrize(
     "damage",
     [

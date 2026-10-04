@@ -46,7 +46,7 @@ from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
 from catcher.modules.queue.models import JOB_STATUSES, Job
-from catcher.modules.worker.app import build_context, build_handlers, check_job
+from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import build_access
@@ -368,7 +368,7 @@ def _same_file(path: Path, before: os.stat_result) -> bool:
 def _import_state_file(gate: PostgresGate, file_gate: YoutubeGate, before: os.stat_result) -> None:
     """Merge the state file into the row, through the file gate's own reader (a damaged file reads closed and
     is kept as `.corrupt`, as on every read). The merge only makes the gate more careful; when the row
-    already covers the file, nothing changes: exit 2."""
+    already covers the file, nothing changes and that is said (exit 0: a re-run is not a failure)."""
     gate.snapshot()  # the database is reached before the file is read: a damaged file stays as it is
     try:
         state = file_gate.snapshot()
@@ -390,11 +390,10 @@ def _import_state_file(gate: PostgresGate, file_gate: YoutubeGate, before: os.st
     held = _gate_text(gate.snapshot(), now)
     if not changed:
         typer.echo(
-            f"not imported: the database already holds this state or a stricter one (youtube: {held}; "
-            f"the file: {_gate_text(state, now)})",
-            err=True,
+            f"nothing to import: the database already holds this state or a stricter one (youtube: {held}; "
+            f"the file: {_gate_text(state, now)})"
         )
-        raise typer.Exit(2)
+        return
     typer.echo(f"imported: {'open (nothing to carry over)' if held == 'open' else held}")
 
 
@@ -411,8 +410,9 @@ def youtube_gate(
 ) -> None:
     """Show the YouTube gate the worker uses (the row `youtube` in DATABASE_URL): open, the gap, or a block.
 
-    Exit codes: 0 done; 2 nothing to import, the database already holds this state or a stricter one, the
-    state file cannot be read or repaired, DATABASE_URL is malformed or the database cannot be reached."""
+    Exit codes: 0 done (also when the database already holds the file's state or a stricter one); 2 no state
+    file, the state file cannot be read or repaired, DATABASE_URL is malformed or the database cannot be
+    reached."""
     settings = Settings()
     _check_database_url(settings.database_url)
     file_gate = YoutubeGate(
@@ -687,7 +687,14 @@ def jobs_add(
         typer.echo(f"cannot queue {job_type}: {e}", err=True)
         raise typer.Exit(2) from None
     with _queue_session() as session:
-        job, _ = queue.enqueue(session, type=job_type, now=utc_now(), priority=priority, params=params)
+        job, _ = queue.enqueue(
+            session,
+            type=job_type,
+            now=utc_now(),
+            priority=priority,
+            params=params,
+            resource=JOB_RESOURCES.get(job_type),
+        )
         job_id = job.id
     typer.echo(f"job queued, version {__version__}, job id {job_id}")
 

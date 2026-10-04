@@ -19,7 +19,7 @@ from catcher.modules.worker.handlers_pipeline import (
     parse_publish_params,
     parse_reason_params,
 )
-from catcher.modules.youtube.pg_gate import PostgresGate
+from catcher.modules.youtube.pg_gate import YOUTUBE_RESOURCE, PostgresGate
 
 # Test-only seam: handlers merged into the registry. Production code never writes to it.
 EXTRA_HANDLERS: dict[str, Handler] = {}
@@ -44,6 +44,11 @@ PARAM_CHECKS: dict[str, Callable[[dict[str, Any]], object]] = {
     "llm.reason": parse_reason_params,
     "pipeline.publish": parse_publish_params,
 }
+
+
+# The `resources` row a job type waits for: the claim skips such a job while that row is closed. The handlers
+# that queue a fetch pass the same resource themselves (they cannot import this module: it imports them).
+JOB_RESOURCES: dict[str, str] = {"youtube.fetch": YOUTUBE_RESOURCE}
 
 
 def check_job(job_type: str, params: dict[str, Any]) -> None:

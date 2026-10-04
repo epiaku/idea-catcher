@@ -219,6 +219,28 @@ def test_a_missing_row_closes_the_gate_and_is_rewritten(pg_engine: Engine, caplo
     assert _row(pg_engine) == (None, START + 6 * HOUR, START, 1, START)
 
 
+def test_a_block_time_far_ahead_is_repaired_to_now(pg_engine: Engine, caplog):
+    """A `blocked_at` more than 24 hours ahead is damage: cut to now and written back, so a success can close
+    the breaker again. The block itself and the streak stay."""
+    clock = EpochClock()
+    gate = _pg_gate(pg_engine, clock)
+    _execute(
+        pg_engine,
+        "update resources set blocked_until = :until, blocked_at = :far, streak = 2 where name = 'youtube'",
+        until=datetime.fromtimestamp(START + HOUR, UTC),
+        far=datetime(2100, 1, 1, tzinfo=UTC),
+    )
+    with caplog.at_level(logging.ERROR, logger="catcher.youtube"):
+        assert gate.peek() == Wait(START + HOUR, blocked=True)
+    assert any("damaged" in record.getMessage() for record in caplog.records)
+    assert _row(pg_engine)[1:4] == (START + HOUR, START, 2)  # type: ignore[index]
+
+    clock.now = START + HOUR  # the block is over: a fetch that works closes the breaker
+    assert gate.reserve() is None
+    gate.record_success(clock.now)
+    assert _row(pg_engine)[1:4] == (None, START, 0)  # type: ignore[index]
+
+
 def test_damaged_values_close_the_gate(pg_engine: Engine, caplog):
     clock = EpochClock()
     gate = _pg_gate(pg_engine, clock)

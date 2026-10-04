@@ -8,8 +8,9 @@ rules and write the result back, so the two cannot drift apart:
   works again;
 - **newer news wins:** a block recorded after a fetch started is not doubled by that fetch's own block, and is
   not closed by that fetch's success;
-- **damage is not a block:** a value more than 24 hours ahead is cut to 24 hours; a negative or non-finite
-  value is damage (`ValueError`), and the gate then closes (`closed_state`).
+- **damage is not a block:** a gap or a block end more than 24 hours ahead is cut to 24 hours, and a block
+  time (`blocked_at`) more than 24 hours ahead is cut to now; a negative or non-finite value is damage
+  (`ValueError`), and the gate then closes (`closed_state`).
 
 Times are seconds since the epoch.
 """
@@ -97,7 +98,9 @@ def after_block(state: GateState, now: float, started_at: float | None, *, block
 
 def clamp(state: GateState, now: float) -> GateState:
     """Check a state that was read back. A negative or non-finite value raises `ValueError` (damage); a gap
-    or a block more than 24 hours ahead is cut to 24 hours (damage too, not a block)."""
+    or a block more than 24 hours ahead is cut to 24 hours (damage too, not a block). A block time more than
+    24 hours ahead is cut to now: left there, every success would look older than it and never close the
+    breaker again."""
     for key in ("next_allowed_at", "blocked_until", "blocked_at", "streak"):
         value = getattr(state, key)
         if not math.isfinite(value) or value < 0:
@@ -107,6 +110,7 @@ def clamp(state: GateState, now: float) -> GateState:
         state,
         blocked_until=min(state.blocked_until, ceiling),
         next_allowed_at=min(state.next_allowed_at, ceiling),
+        blocked_at=now if state.blocked_at > ceiling else state.blocked_at,
     )
 
 

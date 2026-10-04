@@ -9,7 +9,7 @@ It fails **closed**, like the file gate:
 - a **missing** row is inserted closed (blocked for `block_hours`) and an error is logged;
 - **damaged** values (negative, before 1970, 'infinity', past the year 9999, a negative streak) rewrite the
   row closed and log an error; a gap or a block more than 24 hours ahead is cut to 24 hours (damage too, not
-  a block) and logged;
+  a block), a block time more than 24 hours ahead is cut to now, and that is logged;
 - a **database error** (down, a lock timeout) raises `GateUnavailable` and changes nothing: the caller must
   not fetch.
 
@@ -194,7 +194,8 @@ class PostgresGate:
             return self._write(session, closed_state(now, self.block_hours), now), now
         if state != raw:
             log.error(
-                "the YouTube gate row %r is damaged (a time more than 24 hours ahead): cut to 24 hours",
+                "the YouTube gate row %r is damaged (a time more than 24 hours ahead): an end cut to 24"
+                " hours, a block time cut to now",
                 self.name,
             )
             state = self._write(session, state, now)
