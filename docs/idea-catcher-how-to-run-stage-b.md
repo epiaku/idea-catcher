@@ -63,7 +63,7 @@ docker compose down                          # when you are done (the data stays
 ```
 
 - **Keys and budgets.** `notes` use FreeLLMApi, `clippings` and `youtube` use OpenAI, and the keys have budget caps. A document that cannot be answered is `deferred` (not lost): its job still `succeeded`, and the working copy in `output/` says `stage: deferred` and why. Retry it with `jobs add pipeline.run --param retry_deferred=true`.
-- **YouTube clips.** A clip without saved facts gets a `youtube.fetch` job first. The gate lets one fetch through per gap (about 2 minutes), so the other fetch jobs wait in the queue. `worker --once` leaves a job that waits for a later time. **To work through a batch of clips, run the worker without `--once`** and let it run (stop it with Ctrl-C), or run `worker --once` again later.
+- **YouTube clips.** A clip without saved facts gets a `youtube.fetch` job first. The gate lets one fetch through per gap (about 2 minutes), so the other fetch jobs wait in the queue (`jobs list` says `waiting for youtube until <time>`; see [The YouTube gate](#youtube-gate)). `worker --once` leaves a job that waits for a later time. **To work through a batch of clips, run the worker without `--once`** and let it run (stop it with Ctrl-C), or run `worker --once` again later.
 - **One more run later:** add `pipeline.run` again (with a `limit` or without). Documents that are already done are not touched.
 
 ## Database {#database}
@@ -92,7 +92,7 @@ uv run catcher db downgrade -1   # roll back one migration; REVISION is required
 
 `catcher db downgrade base` drops **every table with all its rows**, so it asks for confirmation first (`--yes` skips the question). Without a REVISION the command fails and changes nothing.
 
-After `upgrade` the tables are `jobs`, `job_items`, `job_events`, `resources`, `schedules` and Alembic's `alembic_version`; after `downgrade base` only `alembic_version` is left.
+After `upgrade` the tables are `jobs`, `job_items`, `job_events`, `resources`, `schedules` and Alembic's `alembic_version`, and `resources` holds the row `youtube`, open (the [YouTube gate](#youtube-gate)); after `downgrade base` only `alembic_version` is left.
 
 **Run the database tests:**
 
@@ -153,3 +153,23 @@ What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 docum
 - **One worker at a time.** A second worker on the same database exits at once with code 2: `another worker is already running; run one worker at a time`. The lock lives on one database connection. Before every claim and every reap the worker checks that this connection still holds it; after a Postgres restart or a dropped connection it stops with exit code 1 (`the worker lost its database lock ...`), so a supervisor can start it again and it takes the lock again.
 - **No Postgres:** `cannot reach the database in DATABASE_URL` and exit code 2, for the worker and the `jobs` commands. A malformed `DATABASE_URL` gives `DATABASE_URL is not a valid database URL` and exit code 2; no message shows the URL (it holds the password).
 - **Do not run `run pipeline` (Stage A) on the checkout a worker uses.** Both move files in `inbox/` and commit; nothing stops that yet (an open item).
+
+## The YouTube gate {#youtube-gate}
+
+The worker keeps the YouTube gap and the breaker (the rules are in [YouTube and the gap between calls](../idea-catcher-how-to-run/#youtube-gap)) in Postgres, in the `resources` row `youtube`, so every worker on the database sees the same gate. The Stage A commands keep their own gate in `youtube-gate.json` in `CATCHER_STATE_DIR`: the two do not see each other (no shared gap, no shared block), so let one of them do the YouTube clips.
+
+```bash
+uv run catcher youtube gate                # youtube: open
+                                           # youtube: next call allowed at 20:41
+                                           # youtube: blocked until 2026-10-05 02:38 (block 1)
+uv run catcher youtube gate --import-file  # copy a block of the Stage A gate file to the worker, once
+```
+
+What you see (checked on 2026-10-04, on a throwaway database with a fake block):
+
+- **A fetch job that waits for the gate stays queued.** The worker does not take it until the gap or the block is over, so it does not count an attempt and fills no log. `jobs list` shows why: `youtube.fetch  queued  0  2026-10-04T18:38:52+00:00  waiting for youtube until 2026-10-05 02:38`. With only such jobs, `worker --once` ends at once with `ran 0 job(s)`; other job types still run. A `youtube.fetch` you add by hand with `jobs add` does not carry the gate, so it does not wait like this (it is taken and deferred; you do not need to add one).
+- **`--import-file` merges** `youtube-gate.json` from `CATCHER_STATE_DIR` into the row. It only makes the gate more careful: of each value (the gap, the end of a block, the block count) it keeps the later or the larger one. It prints `imported: blocked until 2026-10-05 08:38 (block 2)`. Run it again and nothing changes: `not imported: the database already holds this state or a stricter one (youtube: ...; the file: ...)` with exit code 2. With no file: `no state file at <path>: nothing to import` (exit 2). A damaged file is kept as `youtube-gate.corrupt` and imported as closed, as the Stage A gate does.
+- **A missing or damaged row means closed.** The gate rewrites the row as a block of `YOUTUBE_BLOCK_HOURS` and logs an ERROR. A time more than 24 hours ahead is damage, not a block: the gate cuts it to 24 hours (and until then the queue does not let it hold the fetch jobs back).
+- **The database cannot be reached during a fetch decision:** no fetch is made, the job waits 60 seconds and tries again, and the document stays `waiting_youtube`.
+- **A 429 that cannot be written to the row** (the database fails right then): the worker makes no YouTube call for the first breaker step (`YOUTUBE_BLOCK_HOURS`, 6 hours). It keeps that block in memory only, so a restart of the worker forgets it; look at `catcher youtube gate` and the log (`YouTube is blocking us`) before you start the worker again.
+- **Exit codes of `catcher youtube gate`:** `0` done; `2` nothing imported (no file, the database already holds this state or a stricter one, a file that cannot be read or repaired), `DATABASE_URL` is malformed, or the database cannot be reached (`cannot reach the database in DATABASE_URL`).

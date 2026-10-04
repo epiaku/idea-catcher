@@ -683,7 +683,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 **Stage B decisions (2026-10-02, after a design review against the Stage A code).** These change what the steps below mean; where a step text disagrees, this list wins.
 
 1. **A YouTube clip that has to wait is staged, not left in `inbox/`.** It gets a database row when it is first seen (state `waiting_youtube`, working copy in `output/` with the same `stage`), so it shows up in dashboards and survives a crash. The queue picks the oldest due clip first (`priority DESC, run_after, created_at`); a clip pushed to a later `run_after` does not block the others.
-   *Why the claim order is `priority DESC, run_after, created_at` and not plain `created_at`:* the YouTube gate defers a clip by setting its `run_after` to the gate's next slot, so while the gate is closed no clip can take a slot. Clips deferred to the same slot tie on `run_after` and then go oldest-first by `created_at`; a clip that arrives after the slot is open competes only with the clips that are due, so the gate path cannot starve an older clip. If B4 finds otherwise, the `ORDER BY` and its index (`ix_jobs_claim`) must be revisited.
+   *Why the claim order is `priority DESC, run_after, created_at` and not plain `created_at`:* the YouTube gate defers a clip by setting its `run_after` to the gate's next slot, so while the gate is closed no clip can take a slot. Clips deferred to the same slot tie on `run_after` and then go oldest-first by `created_at`; a clip that arrives after the slot is open competes only with the clips that are due, so the gate path cannot starve an older clip. If B4 finds otherwise, the `ORDER BY` and its index (`ix_jobs_claim`) must be revisited. *B4 (2026-10-04):* the order stays; the claim now also skips a fetch job while the gate is closed, and when the slot opens the oldest waiting fetch job is claimed first (tested).
 2. **The worker and the queue code are synchronous** (`reason()`, `yt-dlp` and Git block anyway), with one thread for the heartbeat and one for the scheduler.
 3. **Retries start simple.** The in-call retries stay as they are (`LLM_MAX_ATTEMPTS`). After them an item is `deferred` or `failed` (as in Stage A). There is **no job-level `max_attempts`/`dead`/`retry_delay` layer for LLM errors** at first; we add one only if this proves too little. A closed YouTube gate, a block or a used-up budget wait through `run_after` and do not count as a failure. A **scheduled** run re-queues the deferred items itself (what `--retry-deferred` does by hand). The only attempt counter is for **crashes**: a job whose lease expires counts one attempt and becomes `failed` after 3.
 4. **An item is identified by its calculated name** (`<subfolder>/<name>.md`), which is unique. Two captures with one `id` are two items. If both finish, two nearly identical pages may come out (rare, accepted); the page in `epiaku-docs` is still replaced by `id`.
@@ -691,7 +691,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 6. **Git:** the commit set is "everything in the managed folders" (`archive/ output/ failed/ duplicates/ facts/`, plus inbox deletions), not a list of touched paths. Push right after each commit; abort a failed rebase and report it. A `git` resource with concurrency 1. A requeue goes through the tool, not by hand. Once a worker exists, the CLI refuses to run against the live remote.
 7. **Schedules:** cron strings in `.env`, an explicit timezone, one scheduler, and a small table with `last_fired_at` so a missed slot runs once.
 8. **Time:** every queue and gate query takes `now` from Python (never SQL `now()`), so tests can freeze it.
-9. **One generic `resource` table** (YouTube, `openai`, `freellmapi`, `git`): `name`, `next_allowed_at`, `blocked_until`, `blocked_at`, `streak`, `concurrency`. A used-up budget is remembered between runs. A missing or damaged row means **closed**, like the Stage A gate file.
+9. **One generic `resource` table** (YouTube, `openai`, `freellmapi`, `git`): `name`, `next_allowed_at`, `blocked_until`, `blocked_at`, `streak`, `concurrency`. A used-up budget is remembered between runs. A missing or damaged row means **closed**, like the Stage A gate file. *B4 built the `youtube` row; the LLM resources come in B5.*
 10. **Reconcile and the mirror:** Postgres is the truth for processing state. `catcher reconcile` rebuilds item state, name and class from the folders and the frontmatter; it cannot rebuild attempts, tokens, events or the gate (which restarts closed). The frontmatter mirror uses **`stage`, `stage_reason`, `stage_since`**; reconcile also reads the Stage A names (`analyzed_at`, `deferred_at`, `deferred_reason`).
 11. **Our own queue first.** Procrastinate only if the queue core passes about 300 lines or shows concurrency bugs; switching later changes the tables, and that is accepted.
 12. **Dry runs never go through the queue**; the CLI runs them inline. So the "one run at a time" dedupe only ever sees real runs. The dedupe key is part of the job row (`dedupe_key`), not tied to a job type.
@@ -704,7 +704,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 | B1 (built 2026-10-02) | `compose.yaml` with only `db` (`pgvector/pgvector:pg17`), SQLAlchemy, Alembic. Tables `jobs`, `job_items`, `job_events`, plus **`resources`** (the YouTube gap and breaker, the LLM budgets) and the schedules | `docker compose up db`, `catcher db upgrade`, then look at the tables. Migrations upgrade from empty and downgrade |
 | B2 (built 2026-10-02) | **Our own queue module** on Postgres: `enqueue()`, `claim()` (`FOR UPDATE SKIP LOCKED`, `run_after`), `complete()`, a lease and heartbeat so a crashed worker's job comes back, `LISTEN/NOTIFY`. Azure-style semantics: `attempts`, `max_attempts` 5, a `dead` status, an invisible delay before a retry. **Priorities:** a new clip and a requeue you asked for by hand go first, a backfill goes last | Tests on **real Postgres with a fake clock**: two workers never claim the same job; a crashed worker's job comes back; backoff and `dead`; the priority order |
 | B3 (built 2026-10-03) | Job handlers that call the Stage A functions: `pipeline.run`, `llm.reason`, `pipeline.publish`, and a separate **`youtube.fetch`** (the rate-limited resource, idempotent, saved facts) so that **an LLM failure never causes a YouTube call**. Every handler is idempotent (overwrite by id already helps) | `catcher jobs add pipeline.run` + `catcher worker` on a copy of the repos gives the same pages as Stage A. A failing LLM makes no YouTube call |
-| B4   | **The YouTube gate moves into Postgres** (`resources`). The claim reserves the slot in the same transaction, so two workers can never break the gap. A 429 sets `blocked_until` and pushes `run_after` past it **without counting an attempt** | Fake clock: two workers cannot break the gap; a block stops every fetch; a working fetch closes the breaker |
+| B4 (built 2026-10-04) | **The YouTube gate moves into Postgres** (`resources`). The claim reserves the slot in the same transaction, so two workers can never break the gap. A 429 sets `blocked_until` and pushes `run_after` past it **without counting an attempt** | Fake clock: two workers cannot break the gap; a block stops every fetch; a working fetch closes the breaker |
 | B5   | **State, retries and metrics.** `job_items.status` (waiting, deferred, stuck, failed...), `stuck` after 3 days, per-backend blocking on a quota error, and how the in-call LLM retries (5 calls) and the job-level `retry_delay` add up. The **frontmatter mirror** (`stage`, `stage_reason`, `stage_since`) is written on status changes only. A `catcher reconcile` rebuilds the database from the folders. The metrics queries | Set `run_after` and the clock in tests. Stop FreeLLMApi and check that jobs defer. Delete the database and reconcile. Query the metrics with SQL |
 | B6   | **The scheduler loop in the worker** with three cron variables: `SCHEDULE_IDEAS_PULL` (often), `SCHEDULE_PIPELINE_RUN` and `SCHEDULE_PUBLISH` (a few times a day), plus a manual `catcher publish`. A missed slot runs once | Fake clock: each schedule fires on time; a missed slot runs once; the pull runs more often than the publish |
 | B7   | The worker in Compose next to `db`: the `repos` volume, the image (Python 3.12, `uv`, Git, `yt-dlp` + Deno) | `docker compose up`, then watch scheduled runs happen |
@@ -796,7 +796,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 **Open items after B3** (deferred minors from the B3 reviews that matter later):
 
-*For B4 (more than one worker)*
+*For more than one worker (not done in B4: B4 made the gate safe for more than one worker, one worker is still the rule)*
 
 - `fail_items_of` in the reaper checks the item status before it locks the row.
 - The reaper's file move to `failed/` after its commit is not fenced: re-check `status == "failed"` just before the move.
@@ -806,7 +806,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 *For B5 (reconcile and item states)*
 
 - A reset of an item does not clear `stage_reason` (and `failed_path`, `warnings`).
-- A `waiting_youtube` item's `updated_at` is not refreshed while its fetch is deferred: reconcile must not call it `stuck` while a fetch is queued.
+- A `waiting_youtube` item's `updated_at` is not refreshed while its fetch is deferred: reconcile must not call it `stuck` while a fetch is queued. (Since B4 a waiting fetch job is not even claimed, so nothing touches the item until the gate opens.)
 - An item whose handler could not commit its own status, or whose failed job could not fail it (a database error), stays active until reconcile; a `requeue` of it marks it `stuck` and runs it again.
 
 *Robustness*
@@ -815,7 +815,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - **The F4 block is per backend, not per profile.** Any 4xx blocks the whole backend, so a misspelled `OPENAI_MODEL_CLIPPINGS` also blocks the working `youtube` profile (same openai backend) for `LLM_BLOCK_S`. B5's blocking in Postgres should decide: per backend for limits and budget, per profile for a wrong model.
 - `os.killpg` is POSIX only: fall back to `terminate()`/`kill()` on Windows.
 - The ssh-config probe uses a plain `subprocess.run`, so a timeout or `OSError` there is not a `GitError`.
-- `worker --once` spins on a handler that defers to a time already due (only with a gate time in the past).
+- `worker --once` spins on a handler that defers to a time already due (only with a gate time in the past). *Mostly settled in B4:* a fetch job that carries the `youtube` resource is no longer claimed while the gate is closed; a `youtube.fetch` added by hand with `jobs add` has no resource and is still claimed and deferred.
 - **Decision 6's "once a worker exists, the CLI refuses to run against the live remote" is not built.** Stage A's `run pipeline` and a worker on the same checkout would race on `inbox/` and git; until it is built, do not run both on one checkout.
 - `refresh_llm=true` skips the saved reply by design, so a rerun after a crash pays the model again ("the model is paid once" holds without `refresh_llm`).
 - Git's stderr goes into `job.error` and the logs (up to 500 characters): with a token in the remote URL (Stage C) use a credential helper, or redact `//user:secret@`.
@@ -824,6 +824,42 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 - The heartbeat and lease tests with a 0.6 s lease can be flaky on a slow machine.
 - The byte compare of `llm/` and `facts/` in the end-to-end test does not assert that the folders are not empty.
+
+**Built (2026-10-04): B4, the YouTube gate in Postgres.** What exists:
+
+- **One set of rules, two gates.** `modules/youtube/gate_rules.py` holds the rules as pure functions (gap plus jitter, the breaker 6/12/24 hours, "a newer block wins", a time more than 24 hours ahead is damage). The file gate (`gate.py`, the Stage A CLI, `CATCHER_STATE_DIR`) and the new `PostgresGate` (`pg_gate.py`, the worker) both use them, and one contract test suite runs against both.
+- **The row `youtube` in `resources`.** Migration `0004` inserts it open. `PostgresGate` locks it (`SELECT ... FOR UPDATE`, in a short transaction) and reads its clock after the lock. A missing row is inserted closed, a damaged one rewritten closed, with an ERROR in the log.
+- **The worker uses it** (`build_context`); the Stage A commands keep the file gate. The two do not see each other.
+- **The claim skips jobs whose resource is closed**, in the same statement (`FOR UPDATE SKIP LOCKED` stays): a waiting `youtube.fetch` job stays `queued`, counts no attempt and writes no event, the worker idles, and `catcher jobs list` shows `waiting for youtube until <time>`. Both places that queue a fetch job set `resource="youtube"`.
+- **`catcher youtube gate`** shows the row; **`--import-file`** merges the old `youtube-gate.json` into it once. How to use them: [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate).
+
+**Changed from the plan** (B4):
+
+- **The handler reserves, the claim only skips.** The B4 row said the claim reserves the slot in its transaction. Instead the `youtube.fetch` handler reserves right before the fetch, in its own short transaction, and the row lock guarantees the gap; the claim only skips fetch jobs while the gate's time is in the future. Same safety, a simpler claim. A reserve that still gets a wait (a race, the jitter) defers the job to the slot, as in B3.
+- **The claim's 24-hour horizon.** A resource time more than 24 hours ahead counts as open in the claim, so a damaged value cannot hold every fetch job back forever: the job is claimed, and the gate repairs the row (cut to 24 hours).
+- **A database error never opens the gate.** When the gate cannot read or write its row, no fetch is made and the job waits 60 seconds. A 429 whose block cannot be recorded makes the worker hold back for the first breaker step (`YOUTUBE_BLOCK_HOURS`) in memory: a restart forgets it.
+- **The import is a merge.** `--import-file` keeps the larger of each value (the gap, the end of the block, `blocked_at`, the streak), so it never shortens a block or resets the streak. When the row already covers the file it changes nothing and exits 2.
+- **Decision 10 and the migration disagree.** Decision 10 says the gate restarts closed after a rebuild; migration `0004` seeds the row open. A database that is deleted and rebuilt therefore starts open: B5's reconcile must close it, or bring the block back with `--import-file` from a file that still has it.
+
+**Open items after B4** (deferred minors from the B4 reviews that matter later):
+
+*Robustness*
+
+- The claim's horizon is a fixed 24 hours, but a `YOUTUBE_BLOCK_HOURS` above 24 is allowed and cut to 24 hours by the gate with a false "damaged" ERROR: cap the setting at 24.
+- A far-future `blocked_at` is kept as it is (clamping limits only the end times): clamp `blocked_at` in the shared rules, for both gates.
+- The queue imports the 24-hour constant from the YouTube module: move it to a neutral constant in the queue when B5 adds a second resource.
+- The `YoutubeAccess` built in `build_context` uses the real time, not the context clock, so the 60 s and 6 h deferrals ignore a frozen clock in tests: pass the clock in.
+- `--import-file` exits 2 when the database already covers the file; a re-run should say "nothing to import" and exit 0.
+- A `youtube.fetch` added by hand (`jobs add`) and fetch jobs queued before B4 carry no resource, so they are claimed and deferred instead of waiting.
+
+*Tests*
+
+- The two "gate unavailable" tests do not assert why (lock timeout or connection error), nor the ERROR line.
+
+*For B5*
+
+- The LLM resources (`openai`, `freellmapi`) and the per-profile or per-backend blocking move into `resources` (today the worker's `BackendBlocks` is in memory).
+- Reconcile and the open `youtube` row of a rebuilt database (see above).
 
 **Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 

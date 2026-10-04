@@ -90,7 +90,8 @@ If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ER
   - `YOUTUBE_SKIP_MANIFESTS` (default off): skip yt-dlp's request for the video formats, which we never use. **Untested live:** try one `youtube facts` by hand before turning it on.
   - `YOUTUBE_WAIT_MAX_S` (default `1800`): with `--wait-youtube`, the longest sleep for the gap inside a run.
   - `YOUTUBE_NEGATIVE_TTL_H` (default `24`): a video without captions is asked about again only after this many hours.
-  - `CATCHER_STATE_DIR` (default `~/.catcher/state`): this machine's YouTube gate state. It is not in git, because a ban belongs to this IP.
+  - `CATCHER_STATE_DIR` (default `~/.catcher/state`): this machine's YouTube gate state for the Stage A commands (`run pipeline`, `youtube facts`), in `youtube-gate.json`. It is not in git, because a ban belongs to this IP. The worker (Stage B) keeps its gate in Postgres instead (the `resources` row `youtube`, see [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate)); it reads this folder only for `catcher youtube gate --import-file`.
+  - The gap and block settings above (`YOUTUBE_MIN_GAP_S`, `YOUTUBE_GAP_JITTER_S`, `YOUTUBE_BLOCK_HOURS`) apply to both gates.
 - `TRANSCRIPT_LANGUAGES` (default `en`): preferred YouTube transcript languages, comma-separated, for example `en, nl`.
 - `GIT_AUTHOR_NAME` (default `idea-catcher`): author name on the commits the pipeline makes.
 - `GIT_AUTHOR_EMAIL` (default `idea-catcher@users.noreply.github.com`): author email on those commits.

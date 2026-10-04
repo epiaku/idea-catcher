@@ -1,5 +1,7 @@
 # Stage B4: The YouTube Gate in Postgres Implementation Plan
 
+**Status:** built 2026-10-04 (Tasks 1-6), docs in Task 7.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The worker keeps the YouTube gap and breaker in the Postgres `resources` table instead of a file, so two workers (or a worker in a container) can never break the gap, and waiting fetch jobs do not spin through the queue.
@@ -79,13 +81,13 @@
 
 **Files:**
 - Create: `migrations/versions/0004_youtube_resource.py`
-- Test: `tests/integration/db/test_migrations.py` (extend the existing migration tests).
+- Test: `tests/integration/db/test_schema.py` (extend the existing migration tests).
 
 **Interfaces:**
 - Produces: after `upgrade` the table `resources` holds the row `name='youtube'` with `next_allowed_at`, `blocked_until`, `blocked_at` NULL, `streak 0`, `concurrency 1`, `updated_at` set by the migration to the migration's own timestamp (a fixed Python value in the migration file is fine; no SQL `now()`); `downgrade` deletes that row.
 
 - [ ] **Step 1: Write the failing test** `test_upgrade_seeds_the_open_youtube_row_and_downgrade_removes_it` (revision chain `0003 -> 0004`; `upgrade head` from empty gives the row; `downgrade -1` removes it; `downgrade base` still works).
-- [ ] **Step 2: Run** `uv run pytest tests/integration/db/test_migrations.py -q`. Expected: FAIL.
+- [ ] **Step 2: Run** `uv run pytest tests/integration/db/test_schema.py -q`. Expected: FAIL.
 - [ ] **Step 3: Write the migration** (revision id `0004`, down revision `0003`; insert with `ON CONFLICT DO NOTHING`).
 - [ ] **Step 4: Run** the same command. Expected: PASS.
 - [ ] **Step 5: Commit** `feat: migration 0004 seeds the youtube resource row`.
