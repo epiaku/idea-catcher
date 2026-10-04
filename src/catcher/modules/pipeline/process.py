@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -87,9 +88,12 @@ class ProcessedPage:
     facts: YoutubeFacts | None = None  # YouTube only: written next to the final page
 
 
-def default_services(settings: Settings, *, gate: Gate | None = None) -> Services:
-    """The real services; `gate` replaces the YouTube file gate (the worker passes its Postgres gate)."""
-    access = build_access(settings, gate)
+def default_services(
+    settings: Settings, *, gate: Gate | None = None, clock: Callable[[], float] = time.time
+) -> Services:
+    """The real services; `gate` replaces the YouTube file gate (the worker passes its Postgres gate) and
+    `clock` the YouTube access's own clock (the worker passes its context clock)."""
+    access = build_access(settings, gate, clock=clock)
     return Services(
         settings=settings,
         profiles=load_profiles(settings.profiles_file),

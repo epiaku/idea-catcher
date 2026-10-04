@@ -409,6 +409,70 @@ def test_a_block_the_gate_cannot_record_defers_for_a_whole_breaker_step(tmp_path
     assert fetch.calls == [VID, "BBBBBBBBBBB"]
 
 
+def test_a_block_the_gate_could_not_record_reaches_the_gate_when_it_answers_again(tmp_path, caplog):
+    """The in-memory hold is not enough: a restart forgets it. As soon as the gate answers again, the block is
+    recorded there first (with the start time of the fetch that got the 429), before any other gate call."""
+    clock = Clock()
+    fetch = Fetcher(error=HttpError("HTTP Error 429: Too Many Requests"))
+    gate = UnavailableGate(clock, "peek", "reserve", "record_block")
+    access = YoutubeAccess(fetch, gate, clock=clock, unrecorded_block_s=6 * 3600)
+    gate.failing = {"record_block"}  # the fetch passes the gate, gets the 429, and the database fails then
+    started = clock.now
+    with pytest.raises(FactsDeferred):
+        access.get(VID, facts_dir=None)
+    seen: list[float | None] = []
+    original = gate.record_block
+
+    def record_block(started_at: float | None = None) -> float:
+        seen.append(started_at)
+        return original(started_at)
+
+    gate.record_block = record_block  # type: ignore[method-assign]
+
+    gate.failing = {"peek", "reserve", "record_block"}  # still down: the block stays in memory only
+    clock.now += 60
+    with pytest.raises(FactsDeferred, match="blocked until"):
+        access.get("BBBBBBBBBBB", facts_dir=None)
+    assert access.wait_needed("BBBBBBBBBBB", facts_dir=None) is not None
+    assert gate.blocked_until == 0.0
+
+    gate.failing = set()  # the database is back: the next question records the block first
+    clock.now += 60
+    gate.events.clear()
+    wait = access.wait_needed("BBBBBBBBBBB", facts_dir=None)
+    assert wait is not None and wait.blocked
+    assert gate.events[0] == "block" and seen[-1] == started
+    assert gate.blocked_until == clock.now + 6 * 3600  # the gate itself now says blocked
+
+    gate.events.clear()
+    with pytest.raises(FactsDeferred, match="blocked until"):  # recorded once, not again
+        access.get("BBBBBBBBBBB", facts_dir=None)
+    assert "block" not in gate.events
+    assert fetch.calls == [VID]
+
+    restarted = YoutubeAccess(fetch, gate, clock=clock)  # a new process: no memory, the gate knows
+    later = restarted.wait_needed("CCCCCCCCCCC", facts_dir=None)
+    assert later is not None and later.blocked
+    with pytest.raises(FactsDeferred, match="blocked until"):
+        restarted.get("CCCCCCCCCCC", facts_dir=None)
+    assert fetch.calls == [VID]
+
+
+def test_a_pending_block_is_recorded_before_the_reserve(tmp_path):
+    clock = Clock()
+    fetch = Fetcher(error=HttpError("HTTP Error 429: Too Many Requests"))
+    gate = UnavailableGate(clock, "record_block")
+    access = YoutubeAccess(fetch, gate, clock=clock, unrecorded_block_s=6 * 3600)
+    with pytest.raises(FactsDeferred):
+        access.get(VID, facts_dir=None)
+    gate.failing = set()
+    gate.events.clear()
+    with pytest.raises(FactsDeferred, match="blocked until"):
+        access.get("BBBBBBBBBBB", facts_dir=None)
+    assert gate.events == ["block"]  # recorded first; the hold then answers, no reserve and no fetch
+    assert fetch.calls == [VID]
+
+
 def test_a_success_the_gate_cannot_record_still_returns_the_facts(tmp_path, caplog):
     clock = Clock()
     fetch = Fetcher()

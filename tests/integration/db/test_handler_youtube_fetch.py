@@ -266,6 +266,24 @@ def test_the_worker_context_gate_is_a_postgres_gate_sharing_the_frozen_clock(har
         ctx.engine.dispose()
 
 
+def test_the_worker_context_access_defers_by_the_frozen_clock(harness):
+    """The access's own deferrals (+60 s for an unavailable gate) use the context clock, as the gate does."""
+    clock = FrozenClock()
+    ctx = build_context(harness.ctx.settings, clock=clock)
+    access = ctx.services.youtube
+    assert access is not None and isinstance(access.gate, PostgresGate)
+    broken = create_engine(ctx.engine.url.set(host="127.0.0.1", port=1), connect_args={"connect_timeout": 2})
+    access.gate.engine = broken  # the database is down: the gate cannot answer
+    try:
+        assert access.clock() == clock.timestamp()
+        with pytest.raises(FactsDeferred, match="YouTube gate unavailable") as deferred:
+            access.get(OTHER_VID, facts_dir=None)
+        assert deferred.value.until == clock.timestamp() + 60  # not time.time() + 60
+    finally:
+        broken.dispose()
+        ctx.engine.dispose()
+
+
 @pytest.mark.parametrize(
     ("fetcher", "reason"),
     [

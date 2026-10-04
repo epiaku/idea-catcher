@@ -12,7 +12,10 @@ from typer.testing import CliRunner
 from catcher import cli
 from catcher.cli import app
 from catcher.core.db import make_engine
+from catcher.modules.youtube.access import YoutubeAccess
+from catcher.modules.youtube.facts import FactsDeferred, YoutubeFacts
 from catcher.modules.youtube.gate_rules import clock_text
+from catcher.modules.youtube.pg_gate import PostgresGate
 
 pytestmark = pytest.mark.db
 
@@ -108,6 +111,54 @@ def test_gate_shows_the_gap(runner: CliRunner, engine) -> None:
     result = runner.invoke(app, ["youtube", "gate"])
     assert result.exit_code == 0, result.output
     assert result.output.splitlines() == [f"youtube: next call allowed at {_clock(T + 300)}"]
+
+
+class TooManyRequests(Exception):
+    status = 429
+
+
+def test_a_block_the_gate_could_not_record_is_shown_once_the_database_answers_again(
+    runner: CliRunner, engine, fresh_database_url: str
+) -> None:
+    """A 429 while the database fails is held in memory; when the gate answers again the block is written
+    into the row, so `catcher youtube gate` shows it and a restarted worker (a new access) keeps to it."""
+    calls: list[str] = []
+
+    def fetch(video_id: str) -> YoutubeFacts:
+        calls.append(video_id)
+        raise TooManyRequests("HTTP Error 429: Too Many Requests")
+
+    gate = PostgresGate(engine, min_gap_s=0, jitter_s=0, block_hours=6, clock=lambda: T)
+    access = YoutubeAccess(fetch, gate, clock=lambda: T, unrecorded_block_s=6 * HOUR)
+    real_record_block = gate.record_block
+    broken = make_engine(engine.url.set(host="127.0.0.1", port=1))  # nothing listens: connection refused
+
+    def record_block_while_the_database_is_down(started_at: float | None = None) -> float:
+        gate.engine = broken
+        try:
+            return real_record_block(started_at)
+        finally:
+            gate.engine = engine
+
+    gate.record_block = record_block_while_the_database_is_down  # type: ignore[method-assign]
+    try:
+        with pytest.raises(FactsDeferred):
+            access.get("AAAAAAAAAAA", facts_dir=None)
+    finally:
+        broken.dispose()
+        gate.record_block = real_record_block  # type: ignore[method-assign]
+    assert runner.invoke(app, ["youtube", "gate"]).output.splitlines() == ["youtube: open"]  # memory only
+
+    with pytest.raises(FactsDeferred, match="blocked until"):  # the database answers again
+        access.get("BBBBBBBBBBB", facts_dir=None)
+    blocked = [f"youtube: blocked until {_clock(T + 6 * HOUR)} (block 1)"]
+    assert runner.invoke(app, ["youtube", "gate"]).output.splitlines() == blocked
+    assert _row(engine)[1:] == (T + 6 * HOUR, T, 1)
+
+    restarted = YoutubeAccess(fetch, PostgresGate(engine, min_gap_s=0, jitter_s=0, clock=lambda: T + 60))
+    with pytest.raises(FactsDeferred, match="blocked until"):
+        restarted.get("CCCCCCCCCCC", facts_dir=None)
+    assert calls == ["AAAAAAAAAAA"]  # one call, the one that got the 429
 
 
 # ---- catcher youtube gate --import-file ------------------------------------------------------------------

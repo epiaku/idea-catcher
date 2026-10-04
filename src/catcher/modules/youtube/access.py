@@ -63,6 +63,10 @@ class YoutubeAccess:
         # in memory because the gate does not know it. `build_access` sets the first breaker step.
         self.unrecorded_block_s = unrecorded_block_s
         self.unrecorded_until = 0.0
+        # The start time of the fetch that got that 429: the block is recorded in the gate as soon as the
+        # gate answers again (before any other gate call), so a restart, `catcher youtube gate` and the queue
+        # see it.
+        self.pending_block_started: float | None = None
 
     def cache(self, facts_dir: Path | None) -> FactsCache | None:
         return (
@@ -83,6 +87,7 @@ class YoutubeAccess:
             return None
         if self.offline:
             return None  # get() explains it
+        self._record_pending_block()
         if self.clock() < self.unrecorded_until:
             return Wait(self.unrecorded_until, blocked=True)
         try:
@@ -174,6 +179,7 @@ class YoutubeAccess:
         except GateUnavailable as e:
             now = self.clock()
             until = self.unrecorded_until = max(self.unrecorded_until, now + self.unrecorded_block_s)
+            self.pending_block_started = started
             log.error(
                 "YouTube is blocking us, and the gate could not record the block (%s): no call for %g hours",
                 _short(e),
@@ -182,7 +188,24 @@ class YoutubeAccess:
             return FactsDeferred(Wait(until, blocked=True).message(now), until)
         return FactsDeferred(Wait(until, blocked=True).message(self.clock()), until)
 
+    def _record_pending_block(self) -> None:
+        """A 429 the gate could not record: try again now, before anything else asks the gate. The in-memory
+        hold stays as it is (the recorded block is at least as long); only the pending record is cleared."""
+        if self.pending_block_started is None:
+            return
+        try:
+            until = self.gate.record_block(self.pending_block_started)
+        except GateUnavailable as e:
+            log.error("the YouTube gate is still unavailable, the block stays in memory only: %s", _short(e))
+            return
+        self.pending_block_started = None
+        log.warning(
+            "the YouTube gate has now recorded the block it could not record before: %s",
+            Wait(until, blocked=True).message(self.clock()),
+        )
+
     def _pass_the_gate(self, wait: bool) -> None:
+        self._record_pending_block()
         now = self.clock()
         if now < self.unrecorded_until:  # a block the gate does not know about: no call, not even a reserve
             raise FactsDeferred(Wait(self.unrecorded_until, blocked=True).message(now), self.unrecorded_until)
@@ -201,9 +224,12 @@ class YoutubeAccess:
             self.sleep(max(0.0, seconds) + 1.0)
 
 
-def build_access(settings: Settings, gate: Gate | None = None) -> YoutubeAccess:
+def build_access(
+    settings: Settings, gate: Gate | None = None, *, clock: Callable[[], float] = time.time
+) -> YoutubeAccess:
     """The real thing, from the settings (`YOUTUBE_*` in `.env`). A given `gate` (the worker's Postgres gate)
-    replaces the file gate in CATCHER_STATE_DIR, which the Stage A CLI keeps."""
+    replaces the file gate in CATCHER_STATE_DIR, which the Stage A CLI keeps. `clock` (seconds since the
+    epoch) is the access's own time, for its deferrals and a fetch's start (the worker passes its own)."""
     languages = settings.transcript_language_list
 
     def fetch(video_id: str) -> YoutubeFacts:
@@ -227,5 +253,6 @@ def build_access(settings: Settings, gate: Gate | None = None) -> YoutubeAccess:
         offline=settings.youtube_offline,
         negative_ttl_s=settings.youtube_negative_ttl_h * 3600,
         wait_max_s=settings.youtube_wait_max_s,
+        clock=clock,
         unrecorded_block_s=settings.youtube_block_hours * 3600,
     )
