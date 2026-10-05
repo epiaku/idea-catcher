@@ -11,15 +11,21 @@ from sqlalchemy import select, update
 from worker_harness import GEMINI_CHAT, NOTES, WEB_CLIPS, RaisingBackend
 
 from catcher.core.db import session_scope
-from catcher.core.frontmatter import load
+from catcher.core.frontmatter import Doc, dump, load
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import BackendUnavailable, BudgetExhausted, UsageLimitReached
+from catcher.modules.pipeline.mirror import MirrorState, read_mirror
 from catcher.modules.queue.items import set_item_status
-from catcher.modules.queue.models import Job, JobItem
+from catcher.modules.queue.models import Job, JobEvent, JobItem
 from catcher.modules.worker import handlers_pipeline
 from catcher.modules.worker.app import build_handlers
 from catcher.modules.worker.handlers import Done, Fail
-from catcher.modules.worker.handlers_pipeline import handle_llm_reason, handle_pipeline_run
+from catcher.modules.worker.handlers_pipeline import (
+    handle_llm_reason,
+    handle_pipeline_run,
+    handle_youtube_fetch,
+)
+from catcher.modules.youtube.facts import FactsUnavailable
 
 BAD_PAGE = json.dumps({**CANNED["note"], "body": "{{< nope >}}"})  # a valid reply, but an unknown shortcode
 
@@ -249,7 +255,7 @@ def test_a_youtube_clip_without_saved_facts_requeues_the_fetch_and_makes_no_call
         f"fetch:{item.calculated_name}",
     )
     out = load(harness.ideas / "output" / item.calculated_name).fm
-    assert out["stage"] == "analyzed"  # the working copy waits in output/ for the facts
+    assert out["stage"] == "waiting_youtube"  # the working copy waits in output/ for the facts (mirrored)
 
 
 def test_a_youtube_clip_with_saved_facts_publishes(harness, yt_facts):
@@ -636,3 +642,182 @@ def test_refresh_llm_while_the_backend_is_blocked_is_deferred_with_no_call(harne
     assert reason(harness, first) == Done({"item": "deferred"})
     assert len(harness.backends.note.prompts) == 1  # only the 429 of the second note: no call for the first
     assert "not called again" in (item_of(harness, "YouTube walks.md").error or "")
+
+
+# --- B5: every status change goes through the one writer, and is mirrored into the frontmatter ---
+
+LEVELS = {"deferred": "warning", "stuck": "warning", "failed": "error"}
+MIRROR_KEYS = ("stage_reason", "stage_since")
+
+
+def events_of(harness, name: str) -> list[JobEvent]:
+    with session_scope(harness.ctx.engine) as session:
+        item_id = session.scalars(select(JobItem.id).where(JobItem.calculated_name == name)).one()
+        return list(
+            session.scalars(select(JobEvent).where(JobEvent.item_id == item_id).order_by(JobEvent.id))
+        )
+
+
+def agrees(harness, original: str, folder: str = "output") -> JobItem:
+    """The item row, its last event and the frontmatter of its file in `folder` tell the same state."""
+    item = item_of(harness, original)
+    last = events_of(harness, item.calculated_name)[-1]
+    assert last.message.startswith(f"{item.calculated_name}: ") and f" -> {item.status}" in last.message
+    assert (last.level, last.ts, last.job_id is not None) == (
+        LEVELS.get(item.status, "info"),
+        item.stage_since,
+        True,
+    )
+    mirrored = read_mirror(harness.ideas / folder / item.calculated_name)
+    assert mirrored == MirrorState(item.status, item.stage_reason, item.stage_since)
+    return item
+
+
+def private_video(video_id: str):
+    raise FactsUnavailable("Private video")
+
+
+def test_every_status_change_of_the_handlers_goes_through_the_writer(harness):
+    harness.backends.chat = FakeBackend(["nope", "still nope"])  # the Gemini chat: invalid output, failed
+    harness.fetcher = private_video  # the clip: no facts to be had, deferred
+    stage(harness, only=["YouTube walks", "systeme", "yt"])
+    note = agrees(harness, "YouTube walks.md")
+    chat = agrees(harness, "systeme.md")
+    clip = agrees(harness, "yt.md")
+    assert (note.status, chat.status, clip.status) == ("waiting_llm", "waiting_llm", "waiting_youtube")
+    assert note.stage_reason is None and note.stage_since == harness.clock()
+
+    harness.clock.advance(60)
+    assert reason(harness, note.calculated_name) == Done({"item": "published"})
+    published = item_of(harness, "YouTube walks.md")
+    assert (published.status, published.stage_since) == ("published", harness.clock())
+    assert [e.message for e in events_of(harness, note.calculated_name)] == [
+        f"{note.calculated_name}: staging -> waiting_llm",
+        f"{note.calculated_name}: waiting_llm -> published",
+    ]
+    [page] = pages(harness.docs, NOTES)
+    final = harness.ideas / "output" / note.calculated_name
+    assert final.read_bytes() == page.read_bytes()  # the finished page is the docs page, untouched
+    assert not any(key in load(page).fm for key in MIRROR_KEYS)
+
+    assert reason(harness, chat.calculated_name) == Done({"item": "failed"})
+    failed = agrees(harness, "systeme.md", folder="failed")
+    assert failed.status == "failed" and "invalid output" in (failed.stage_reason or "")
+
+    [fetch] = jobs_of(harness, "youtube.fetch")
+    assert handle_youtube_fetch(harness.ctx, fetch) == Done({"item": "deferred"})
+    deferred = agrees(harness, "yt.md")
+    assert deferred.status == "deferred" and "Private video" in (deferred.stage_reason or "")
+    assert events_of(harness, clip.calculated_name)[-1].job_id == fetch.id
+    out = load(harness.ideas / "output" / clip.calculated_name).fm
+    assert out["deferred_reason"] == out["stage_reason"]  # the Stage A key stays, the new ones on top
+
+
+def test_the_finished_page_gets_no_mirror_keys(harness):
+    harness.backends.note = FakeBackend([BackendUnavailable("down")])
+    name = staged_note(harness)
+    assert reason(harness, name) == Done({"item": "deferred"})
+    assert {"stage_reason", "stage_since"} <= set(load(harness.ideas / "output" / name).fm)
+    with session_scope(harness.ctx.engine) as session:  # a crash before the deferred status was committed
+        set_item_status(session, name, "waiting_llm", now=harness.clock())
+    harness.clock.advance(harness.ctx.settings.llm_block_s + 1)
+
+    assert rerun(harness, name) == Done({"item": "published"})
+
+    [page] = pages(harness.docs, NOTES)
+    final = harness.ideas / "output" / name
+    assert final.read_bytes() == page.read_bytes()
+    assert not any(key in load(final).fm for key in (*MIRROR_KEYS, "deferred_reason", "deferred_at"))
+
+
+def _read_only_after_start_work(monkeypatch, folders: list[Path]) -> None:
+    """`start_work` runs, then the folder of the working copy becomes read-only: the mirror cannot write."""
+    real = handlers_pipeline.start_work
+
+    def start_then_lock(ideas: Path, note, now=None):
+        touched = real(ideas, note, now)
+        folder = note.output_path(ideas).parent
+        folder.chmod(0o555)
+        folders.append(folder)
+        return touched
+
+    monkeypatch.setattr(handlers_pipeline, "start_work", start_then_lock)
+
+
+def test_a_failing_mirror_does_not_fail_the_job(harness, monkeypatch, caplog):
+    folders: list[Path] = []
+    _read_only_after_start_work(monkeypatch, folders)
+    harness.add_job("pipeline.run", only=["YouTube walks"])
+    try:
+        with caplog.at_level("WARNING", logger="catcher.queue"):
+            assert harness.worker.run_once() == "succeeded"
+    finally:
+        for folder in folders:
+            folder.chmod(0o755)
+
+    [run_job] = jobs_of(harness, "pipeline.run")
+    assert run_job.status == "succeeded"
+    item = item_of(harness, "YouTube walks.md")
+    assert item.status == "waiting_llm"  # the transition is committed
+    assert [e.message for e in events_of(harness, item.calculated_name)] == [
+        f"{item.calculated_name}: staging -> waiting_llm"
+    ]
+    assert load(harness.ideas / "output" / item.calculated_name).fm["stage"] == "analyzed"  # not mirrored
+    assert any(
+        r.levelname == "WARNING" and "could not mirror the state of" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_a_missing_working_copy_only_logs_a_warning(harness, caplog):
+    name = staged_note(harness)
+    (harness.ideas / "output" / name).unlink()
+
+    with caplog.at_level("WARNING"):
+        assert reason(harness, name) == Done({"item": "failed"})
+
+    item = item_of(harness, "YouTube walks.md")
+    assert item.status == "failed" and events_of(harness, name)[-1].level == "error"
+    assert not (harness.ideas / "failed" / name).exists()
+    assert any("could not mirror" in r.getMessage() and name in r.getMessage() for r in caplog.records)
+
+
+def test_the_next_transition_repairs_the_mirror(harness, monkeypatch):
+    folders: list[Path] = []
+    _read_only_after_start_work(monkeypatch, folders)
+    try:
+        stage(harness, only=["YouTube walks"])
+    finally:
+        for folder in folders:
+            folder.chmod(0o755)
+    name = item_of(harness, "YouTube walks.md").calculated_name
+    assert read_mirror(harness.ideas / "output" / name).stage == "analyzed"  # the mirror write failed
+
+    harness.backends.note = FakeBackend([BackendUnavailable("the provider is down")])
+    harness.clock.advance(30)
+    assert reason(harness, name) == Done({"item": "deferred"})
+
+    item = agrees(harness, "YouTube walks.md")
+    assert item.stage_since == harness.clock() and "the provider is down" in (item.stage_reason or "")
+
+
+@pytest.mark.parametrize("stage_value", ["analyzed", "waiting_llm", "waiting_youtube", "deferred", "stuck"])
+def test_a_working_copy_with_any_working_stage_is_still_processed(harness, stage_value):
+    name = staged_note(harness)
+    out = harness.ideas / "output" / name
+    doc = load(out)
+    out.write_text(dump(Doc({**doc.fm, "stage": stage_value}, doc.body)), encoding="utf-8")
+
+    assert reason(harness, name) == Done({"item": "published"})
+
+    assert len(pages(harness.docs, NOTES)) == 1 and len(harness.backends.note.prompts) == 1
+
+
+def test_a_working_copy_that_says_published_is_taken_as_the_finished_page(harness):
+    name = staged_note(harness)
+    out = harness.ideas / "output" / name
+    doc = load(out)
+    out.write_text(dump(Doc({**doc.fm, "stage": "published"}, doc.body)), encoding="utf-8")
+
+    assert reason(harness, name) == Done({"item": "published"})
+
+    assert pages(harness.docs, NOTES) == [] and harness.backends.note.prompts == []  # nothing made again

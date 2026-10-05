@@ -42,8 +42,9 @@ from catcher.modules.llm.service import BackendReply, TransientBackendError
 from catcher.modules.pipeline.process import Services
 from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import enqueue
+from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker.app import build_handlers
-from catcher.modules.worker.handlers import Handler, HandlerContext
+from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter_mirror
 from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import YoutubeAccess
 from catcher.modules.youtube.facts import YoutubeFacts
@@ -148,6 +149,7 @@ class WorkerHarness:
             ideas=ideas,
             docs=docs,
             clock=self.clock,
+            item_states=ItemStates(mirror=frontmatter_mirror(ideas)),  # as build_context makes it
         )
         self.worker = Worker(
             self.ctx, dict(handlers if handlers is not None else build_handlers()), worker_id="harness"

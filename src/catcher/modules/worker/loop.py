@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -16,8 +16,9 @@ from sqlalchemy.orm import Session
 from catcher.core.db import session_scope
 from catcher.modules.pipeline.inbox import move_to_failed
 from catcher.modules.queue import queue
-from catcher.modules.queue.items import ACTIVE_STATUSES, get_item, set_item_status
-from catcher.modules.queue.models import Job
+from catcher.modules.queue.items import ACTIVE_STATUSES, get_item
+from catcher.modules.queue.models import Job, JobItem
+from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker.dispatch import Outcome, run_job
 from catcher.modules.worker.handlers import Handler, HandlerContext
 
@@ -29,12 +30,14 @@ MAX_CLAIM_BACKOFF_S = 60.0
 
 @dataclass(frozen=True)
 class FailedItem:
-    """An item the reaper failed, with what its working copy needs to be filed in `failed/`."""
+    """An item the reaper failed, with what its working copy needs to be filed in `failed/`, and its row
+    (for the mirror, written once the file is there)."""
 
     name: str
     reason: str
     doc_id: str
     doc_class: str
+    row: JobItem | None = field(default=None, compare=False, repr=False)
 
 
 def _other_active_job(session: Session, job: Job, name: str) -> bool:
@@ -43,14 +46,18 @@ def _other_active_job(session: Session, job: Job, name: str) -> bool:
     return queue.live_job_carries(session, name, besides=job.id)
 
 
-def fail_items_of(session: Session, jobs: Sequence[Job], *, now: datetime) -> list[FailedItem]:
+def fail_items_of(
+    session: Session, jobs: Sequence[Job], *, now: datetime, states: ItemStates | None = None
+) -> list[FailedItem]:
     """The item of each job the reaper failed (a poison job that kept killing its worker) is `failed` too,
     with the reason `<job type>: <job error>`, when nothing else will move it: it is still active and no
     other queued or running job carries it (after a hand-off the next job owns it). A job without a
     `calculated_name` param (`pipeline.run`) has no item; an item already in a final status (the job made
     its outcome, then died before it completed) is left alone. Each item is changed in its own savepoint:
-    an error is logged, that item is left as it was and the reap goes on. Returns the items it failed. Does
-    not commit: it belongs in the reaper's transaction."""
+    an error is logged, that item is left as it was and the reap goes on. The status changes through
+    `states` (the one writer: an error event per item). Returns the items it failed. Does not commit: it
+    belongs in the reaper's transaction."""
+    states = states if states is not None else ItemStates()
     failed: list[FailedItem] = []
     for job in jobs:
         name = (job.params or {}).get("calculated_name")
@@ -67,8 +74,10 @@ def fail_items_of(session: Session, jobs: Sequence[Job], *, now: datetime) -> li
                 item = get_item(session, name)
                 if item is None or item.status not in ACTIVE_STATUSES:
                     continue
-                set_item_status(session, name, "failed", now=now, reason=reason)
-                failed.append(FailedItem(name, reason, item.doc_id, item.doc_class))
+                row = states.transition(
+                    session, name, "failed", now=now, reason=reason, job_id=job.id, level="error"
+                )
+                failed.append(FailedItem(name, reason, item.doc_id, item.doc_class, row))
         except Exception:
             log.exception(
                 "item %s: could not be failed after its %s job %s; left as it was", name, job.type, job.id
@@ -78,11 +87,13 @@ def fail_items_of(session: Session, jobs: Sequence[Job], *, now: datetime) -> li
     return failed
 
 
-def file_failed_items(ideas: Path, items: Sequence[FailedItem], *, now: datetime) -> None:
+def file_failed_items(
+    ideas: Path, items: Sequence[FailedItem], *, now: datetime, states: ItemStates | None = None
+) -> None:
     """Best effort, after the reaper's commit: move each failed item's working copy from `output/` to
-    `failed/` with the reason, as Stage A does (`move_to_failed`). A missing working copy is skipped; a file
-    error is logged, never raised (the database already says `failed`, and a requeue starts from
-    `archive/` either way)."""
+    `failed/` with the reason, as Stage A does (`move_to_failed`), then mirror its state into that file
+    (`states.mirror_after_commit`). A missing working copy is skipped; a file error is logged, never raised
+    (the database already says `failed`, and a requeue starts from `archive/` either way)."""
     for item in items:
         out = ideas / "output" / item.name
         try:
@@ -90,6 +101,8 @@ def file_failed_items(ideas: Path, items: Sequence[FailedItem], *, now: datetime
                 move_to_failed(ideas, out, item.reason, doc_id=item.doc_id, doc_class=item.doc_class, now=now)
         except Exception as e:
             log.error("item %s: could not move output/%s to failed/: %s", item.name, item.name, e)
+        if states is not None and item.row is not None:
+            states.mirror_after_commit(item.row)
 
 
 class Worker:
@@ -187,11 +200,13 @@ class Worker:
             with session_scope(self.ctx.engine) as session:
                 now = self.ctx.clock()
                 job = session.get(Job, job_id)
-                failed = fail_items_of(session, [job] if job is not None else [], now=now)
+                failed = fail_items_of(
+                    session, [job] if job is not None else [], now=now, states=self.ctx.item_states
+                )
         except Exception:
             log.exception("job %s failed, and could not fail the item it carries", job_id)
             return
-        file_failed_items(self.ctx.ideas, failed, now=now)
+        file_failed_items(self.ctx.ideas, failed, now=now, states=self.ctx.item_states)
 
     def check_lock(self) -> None:
         """Run `lock_check` when given: WorkerLockLost when this is no longer the one worker."""
@@ -207,11 +222,12 @@ class Worker:
             with session_scope(self.ctx.engine) as session:
                 now = self.ctx.clock()
                 changed = queue.reap(session, now=now)
-                failed = fail_items_of(session, changed, now=now)
+                failed = fail_items_of(session, changed, now=now, states=self.ctx.item_states)
         except Exception:
             log.exception("the reaper failed; it tries again later")
             return 0
-        file_failed_items(self.ctx.ideas, failed, now=now)  # file IO after the commit, never in it
+        # file IO after the commit, never in it: the move to failed/, then the mirror into that file
+        file_failed_items(self.ctx.ideas, failed, now=now, states=self.ctx.item_states)
         if changed:
             log.info("the reaper recovered %d job(s)", len(changed))
         return len(changed)

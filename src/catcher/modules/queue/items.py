@@ -49,7 +49,8 @@ def stage_item(
 ) -> JobItem:
     """Create the item in status `staging`, or reset a row in a terminal status to `staging`.
 
-    A reset keeps `id` and `created_at` (first seen), clears `error`, sets `updated_at = now` and takes
+    A reset keeps `id` and `created_at` (first seen), clears `error` and `stage_reason`, sets `updated_at` and
+    `stage_since` to `now` (a requeued deferred row must not keep its old reason or its old time) and takes
     `doc_id`, `doc_class`, `inbox_path`, `original_filename`, `root_job_id` and `origin` from this call.
     A row in an active status raises `ItemExists`. The insert is guarded (`ON CONFLICT DO NOTHING`) and
     an existing row is locked (`FOR UPDATE`) while it is checked and reset, so two sessions staging the
@@ -64,6 +65,8 @@ def stage_item(
         "original_filename": original_filename,
         "root_job_id": root_job_id,
         "error": None,
+        "stage_reason": None,
+        "stage_since": now,
         "updated_at": now,
     }
     for _ in range(_STAGE_ATTEMPTS):

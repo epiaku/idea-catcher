@@ -1,5 +1,9 @@
 """The `pipeline.run`, `llm.reason`, `youtube.fetch` and `pipeline.publish` handlers.
 
+Every change of an item's status goes through `ctx.item_states` (the one writer: status, reason,
+`stage_since` and an event, in the handler's commit); after that commit the state is mirrored into the
+frontmatter of the working copy (`output/`) or of the file in `failed/`, best effort.
+
 `pipeline.run` stages the inbox documents, database row first, then the file move.
 
 Per note: (1) its calculated name and a `staging` item row, committed; (2) `start_work` (archive copy, working
@@ -28,10 +32,13 @@ alone. A failed rebase is aborted and fails the job; the commit stays local, and
 pushes it."""
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy.orm import Session
 
 from catcher import __version__
 from catcher.core.db import session_scope
@@ -45,6 +52,7 @@ from catcher.modules.pipeline.inbox import (
     ARTIFACTS_DIR,
     STAGE_ANALYZED,
     STAGE_DEFERRED,
+    STAGE_PUBLISHED,
     Note,
     assign_name,
     deferred_in_output,
@@ -78,10 +86,9 @@ from catcher.modules.queue.items import (
     ItemExists,
     get_item,
     items_in_status,
-    set_item_status,
     stage_item,
 )
-from catcher.modules.queue.models import Job
+from catcher.modules.queue.models import ITEM_STATUSES, Job, JobItem
 from catcher.modules.queue.queue import enqueue, live_job_carries
 from catcher.modules.worker.blocks import Block
 from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
@@ -94,6 +101,40 @@ log = logging.getLogger("catcher.worker.pipeline")
 
 NO_DOCUMENT = "staging row without a document"
 DEFER_FALLBACK_S = 600  # a FactsDeferred without a time (a gate that does not say): ask again in 10 minutes
+# the `stage` of a working copy still being worked on: the Stage A names and the item statuses the mirror
+# writes; any other (`published`) is the finished page
+WORKING_STAGES = frozenset({STAGE_ANALYZED, STAGE_DEFERRED, *ITEM_STATUSES} - {STAGE_PUBLISHED, "duplicate"})
+
+
+def _event_level(status: str) -> str:
+    """The level of the event of a move to `status`: error for failed, warning for deferred and stuck."""
+    if status == "failed":
+        return "error"
+    return "warning" if status in ("deferred", "stuck") else "info"
+
+
+def _transition(
+    ctx: HandlerContext,
+    session: Session,
+    name: str,
+    status: str,
+    *,
+    now: datetime,
+    job_id: uuid.UUID | None,
+    reason: str | None = None,
+) -> JobItem | None:
+    """The item's move to `status` through the one writer (`ItemStates`), in the caller's session. The
+    caller mirrors the returned item with `_mirror` after its commit."""
+    return ctx.item_states.transition(
+        session, name, status, now=now, reason=reason, job_id=job_id, level=_event_level(status)
+    )
+
+
+def _mirror(ctx: HandlerContext, *items: JobItem | None) -> None:
+    """After the commit: show each item's state in its file's frontmatter (best effort, never raises)."""
+    for item in items:
+        if item is not None:
+            ctx.item_states.mirror_after_commit(item)
 
 
 @dataclass(frozen=True)
@@ -148,7 +189,9 @@ def _facts_saved(ctx: HandlerContext, vid: str) -> bool:
     return cache is not None and cache.get(vid) is not None
 
 
-def _queue_next(ctx: HandlerContext, name: str, note: Note, params: RunParams) -> None:
+def _queue_next(
+    ctx: HandlerContext, name: str, note: Note, params: RunParams, job_id: uuid.UUID | None
+) -> None:
     """Step 3: the item waits for YouTube (a clip without saved facts) or for the LLM, and its next job is
     queued, in one commit. The dedupe key makes a second call a no-op while that job is active. Both jobs
     carry `profile` and `refresh_llm` when set: the fetch handler passes them on to its `llm.reason` job."""
@@ -166,7 +209,7 @@ def _queue_next(ctx: HandlerContext, name: str, note: Note, params: RunParams) -
     )
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
-        set_item_status(session, name, status, now=now)
+        item = _transition(ctx, session, name, status, now=now, job_id=job_id)
         enqueue(
             session,
             type=job_type,
@@ -175,6 +218,7 @@ def _queue_next(ctx: HandlerContext, name: str, note: Note, params: RunParams) -
             dedupe_key=key,
             resource=YOUTUBE_RESOURCE if fetch else None,
         )
+    _mirror(ctx, item)
 
 
 def _inbox_note(ideas: Path, inbox_path: str, now: datetime) -> Note | None:
@@ -200,7 +244,7 @@ def _same_document(ideas: Path, name: str, note: Note) -> bool:
     return archived == with_filename_fields(raw, note.original_name, Path(name).name).encode("utf-8")
 
 
-def _start(ctx: HandlerContext, name: str, note: Note) -> bool:
+def _start(ctx: HandlerContext, name: str, note: Note, job_id: uuid.UUID | None) -> bool:
     """Step 2, with Stage A's handling of a file error: the document goes back to `inbox/` (`return_to_inbox`,
     under its calculated name), the item is `failed` with the reason, and the run goes on. A later run stages
     it again under the same name (the failed row is reset). False when it failed."""
@@ -215,7 +259,8 @@ def _start(ctx: HandlerContext, name: str, note: Note) -> bool:
     except OSError as e:
         log.error("%s: could not put it back in inbox/ either: %s", note_label(note), e)
     with session_scope(ctx.engine) as session:
-        set_item_status(session, name, "failed", now=ctx.clock(), reason=message)
+        item = _transition(ctx, session, name, "failed", now=ctx.clock(), job_id=job_id, reason=message)
+    _mirror(ctx, item)
     return False
 
 
@@ -228,7 +273,9 @@ class Leftover:
     inbox_path: str | None
 
 
-def _adopt(ctx: HandlerContext, row: Leftover, params: RunParams) -> tuple[str, Path | None]:
+def _adopt(
+    ctx: HandlerContext, row: Leftover, params: RunParams, job_id: uuid.UUID | None
+) -> tuple[str, Path | None]:
     """Finish what a crash left of one `staging` row: "adopted", "failed" or "error", and the inbox path used.
 
     The inbox file is used when `output/<name>` is missing (the move did not finish or never began), or when
@@ -245,9 +292,9 @@ def _adopt(ctx: HandlerContext, row: Leftover, params: RunParams) -> tuple[str, 
             not out.is_file() or _same_document(ctx.ideas, name, note)
         ):
             note.doc_id = note.doc.fm["id"] = row.doc_id  # a class without a derivable id got a new one
-            if not _start(ctx, name, note):
+            if not _start(ctx, name, note, job_id):
                 return "error", note.inbox_rel
-            _queue_next(ctx, name, note, params)
+            _queue_next(ctx, name, note, params, job_id)
             log.info("adopted %s: started again from inbox/", name)
             return "adopted", note.inbox_rel
     if out.is_file():
@@ -256,16 +303,17 @@ def _adopt(ctx: HandlerContext, row: Leftover, params: RunParams) -> tuple[str, 
         except (FrontmatterError, UnicodeDecodeError, ValueError) as e:
             log.error("adopting %s: cannot read output/%s: %s", name, name, e)
         else:
-            _queue_next(ctx, name, staged, params)
+            _queue_next(ctx, name, staged, params, job_id)
             log.info("adopted %s: its working copy was already in output/", name)
             return "adopted", None
     with session_scope(ctx.engine) as session:
-        set_item_status(session, name, "failed", now=ctx.clock(), reason=NO_DOCUMENT)
+        item = _transition(ctx, session, name, "failed", now=ctx.clock(), job_id=job_id, reason=NO_DOCUMENT)
+    _mirror(ctx, item)
     log.error("item %s: %s; marked failed", name, NO_DOCUMENT)
     return "failed", None
 
 
-def _requeue(ctx: HandlerContext, queries: list[str]) -> None:
+def _requeue(ctx: HandlerContext, queries: list[str], job_id: uuid.UUID | None) -> None:
     """Move the named archived documents back into `inbox/` (Stage A's requeue), except those a queued or
     running job carries (`live_job_carries`): their files are in use and stay where they are. An item
     still `staging` belongs to this run's adoption and is left alone too. Any other active item is a
@@ -277,6 +325,7 @@ def _requeue(ctx: HandlerContext, queries: list[str]) -> None:
     for query in not_found:
         log.warning('no document named "%s" found in archive/: nothing to requeue', query)
     keep: list[str] = []
+    stuck: list[JobItem | None] = []
     with session_scope(ctx.engine) as session:
         for item in found:
             rel = item.rel.as_posix()
@@ -289,8 +338,9 @@ def _requeue(ctx: HandlerContext, queries: list[str]) -> None:
             else:
                 if row is not None and row.status in ACTIVE_STATUSES:
                     log.warning("%s was left %s with no job to move it: requeued", rel, row.status)
-                    set_item_status(session, rel, "stuck", now=ctx.clock())
+                    stuck.append(_transition(ctx, session, rel, "stuck", now=ctx.clock(), job_id=job_id))
                 keep.append(rel)
+    _mirror(ctx, *stuck)
     if keep:
         requeue_from_archive(ctx.ideas, keep)
 
@@ -314,7 +364,7 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
     tried: set[Path] = set()  # inbox files adoption already worked on: the scan leaves them alone this run
     for row in leftovers:
         try:
-            outcome, used = _adopt(ctx, row, params)
+            outcome, used = _adopt(ctx, row, params, job.id)
         except OSError as e:  # one document's file problem must not stop the run; the row stays staging
             log.error("adopting %s: %s; trying again next run", row.name, e)
             outcome, used = "error", None
@@ -326,7 +376,7 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
             counts["errors"] += 1
 
     explicit = params.requeue or []
-    _requeue(ctx, [*explicit, *(deferred_in_output(ideas) if params.retry_deferred else [])])
+    _requeue(ctx, [*explicit, *(deferred_in_output(ideas) if params.retry_deferred else [])], job.id)
 
     # `requeue` runs only the requeued documents, like `only` does for the ones it names (as in Stage A)
     only = None if params.only is None and not explicit else [*(params.only or []), *explicit]
@@ -357,10 +407,10 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         name = _stage(ctx, job, note)
         if name is None:
             continue
-        if not _start(ctx, name, note):
+        if not _start(ctx, name, note, job.id):
             counts["errors"] += 1
             continue
-        _queue_next(ctx, name, note, params)
+        _queue_next(ctx, name, note, params, job.id)
         counts["staged"] += 1
     if left_in_inbox:
         log.info("limit of %d reached: %d document(s) stay in inbox/", params.limit, left_in_inbox)
@@ -429,11 +479,14 @@ def parse_reason_params(params: dict[str, Any], job_type: str = "llm.reason") ->
     return ReasonParams(**params)
 
 
-def _item_outcome(ctx: HandlerContext, name: str, status: str, reason: str | None = None) -> HandlerResult:
-    """The item's new status (with the reason for `failed`/`deferred`), in one commit after the file effects.
+def _item_outcome(
+    ctx: HandlerContext, name: str, status: str, reason: str | None = None, *, job_id: uuid.UUID | None
+) -> HandlerResult:
+    """The item's new status (with its reason), in one commit after the file effects, then the mirror.
     The job succeeds: an LLM or facts problem is an item state (decision 3)."""
     with session_scope(ctx.engine) as session:
-        item = set_item_status(session, name, status, now=ctx.clock(), reason=reason)
+        item = _transition(ctx, session, name, status, now=ctx.clock(), job_id=job_id, reason=reason)
+    _mirror(ctx, item)
     if item is None:
         return Fail(f"no item {name!r}: it was removed while the job ran")
     return Done({"item": status})
@@ -449,13 +502,15 @@ def _next_params(name: str, params: ReasonParams) -> dict[str, Any]:
     return job_params
 
 
-def _wait_for_youtube(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+def _wait_for_youtube(
+    ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.UUID | None
+) -> HandlerResult:
     """No saved facts: the item waits for YouTube and its fetch job is queued again, in one commit. The
     dedupe key makes this a no-op while a fetch of this item is already queued or running."""
     job_params = _next_params(name, params)
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
-        item = set_item_status(session, name, "waiting_youtube", now=now)
+        item = _transition(ctx, session, name, "waiting_youtube", now=now, job_id=job_id)
         if item is None:
             return Fail(f"no item {name!r}: it was removed while the job ran")
         enqueue(
@@ -466,6 +521,7 @@ def _wait_for_youtube(ctx: HandlerContext, name: str, params: ReasonParams) -> H
             dedupe_key=f"fetch:{name}",
             resource=YOUTUBE_RESOURCE,
         )
+    _mirror(ctx, item)
     return Done({"item": "waiting_youtube"})
 
 
@@ -496,37 +552,38 @@ def handle_llm_reason(ctx: HandlerContext, job: Job) -> HandlerResult:
         log.info("%s: already %s, nothing to do", name, status)
         return Done({"item": status})
     try:
-        return _reason(ctx, name, params)
+        return _reason(ctx, name, params, job.id)
     except OSError as e:  # a file error must not leave the item active with no job to move it
         reason = f"file error: {e}"
         log.error("%s: %s; the item is failed (a requeue runs it again)", name, reason)
         with session_scope(ctx.engine) as session:
-            set_item_status(session, name, "failed", now=ctx.clock(), reason=reason)
+            item = _transition(ctx, session, name, "failed", now=ctx.clock(), job_id=job.id, reason=reason)
+        _mirror(ctx, item)
         return Fail(reason)
 
 
-def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+def _reason(ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.UUID | None) -> HandlerResult:
     """The work of `handle_llm_reason` once the item is known to be active. File errors propagate."""
     ideas, now = ctx.ideas, ctx.clock()
     out = ideas / "output" / name
     if not out.is_file():
         failed = ideas / "failed" / name
         if failed.is_file():  # a crash after the move to failed/, before the status was committed
-            return _item_outcome(ctx, name, "failed", _failed_reason(failed))
+            return _item_outcome(ctx, name, "failed", _failed_reason(failed), job_id=job_id)
         log.error("%s: no working copy in output/; marked failed", name)
-        return _item_outcome(ctx, name, "failed", f"no working copy in output/{name}")
+        return _item_outcome(ctx, name, "failed", f"no working copy in output/{name}", job_id=job_id)
     try:
         note = load_staged_note(ideas, out, now)
     except (FrontmatterError, UnicodeDecodeError, ValueError) as e:
         reason = f"cannot read output/{name}: {e}"
         log.error("%s: %s", name, reason)
         move_to_failed(ideas, out, reason, now=now)
-        return _item_outcome(ctx, name, "failed", reason)
+        return _item_outcome(ctx, name, "failed", reason, job_id=job_id)
     note.name = Path(name).name
-    if note.doc.fm.get("stage") not in (STAGE_ANALYZED, STAGE_DEFERRED):
+    if note.doc.fm.get("stage") not in WORKING_STAGES:
         # the final page is already in output/: a crash came after `finish`, before the status commit
         log.info("%s: the page was already made, marking it published", note_label(note))
-        return _item_outcome(ctx, name, "published")
+        return _item_outcome(ctx, name, "published", job_id=job_id)
 
     blocks = ctx.backend_blocks.entries(now)
     opts = ProcessOptions(
@@ -546,11 +603,11 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResu
         log_outcome(who, outcome, outcome.message, e)
         _remember_block(ctx, note, params, e)
         if outcome.kind in ("would_fetch", "waiting"):  # no saved facts: back to youtube.fetch
-            return _wait_for_youtube(ctx, name, params)
+            return _wait_for_youtube(ctx, name, params, job_id)
         state = RunState(blocked=set(), budget_blocked={}, attempted=1, seen_ids=set())
         report = ItemReport(note.doc_id, note.doctype.name, "skipped")
         apply_outcome(ideas, note, outcome, state, report, dry_run=False, now=now)
-        result = _item_outcome(ctx, name, outcome.kind, report.message)
+        result = _item_outcome(ctx, name, outcome.kind, report.message, job_id=job_id)
         if outcome.unexpected and isinstance(result, Done):  # a bug, not an item state: the job fails too
             return Fail(outcome.message)
         return result
@@ -559,11 +616,11 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResu
         reason = f"page is invalid: {'; '.join(processed.problems)}"
         log.error("%s: failed, %s", who, reason)
         reject_invalid_page(ideas, ideas / LLM_DIR, note, processed, ctx.services, reason, now)
-        return _item_outcome(ctx, name, "failed", reason)
+        return _item_outcome(ctx, name, "failed", reason, job_id=job_id)
     write_page(ctx.docs, note.destination, note.doc_id, processed.filename, processed.page)
     finish(ideas, note, processed)
     log.info("%s: published %s", who, processed.filename)
-    return _item_outcome(ctx, name, "published")
+    return _item_outcome(ctx, name, "published", job_id=job_id)
 
 
 def _blocked_reason(block: Block) -> str:
@@ -592,12 +649,14 @@ def _remember_block(ctx: HandlerContext, note: Note, params: ReasonParams, error
     )
 
 
-def _wait_for_llm(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+def _wait_for_llm(
+    ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.UUID | None
+) -> HandlerResult:
     """The facts are saved: the item waits for the LLM and its `llm.reason` job is queued, in one commit. The
     dedupe key makes this a no-op while a reason job of this item is already queued or running."""
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
-        item = set_item_status(session, name, "waiting_llm", now=now)
+        item = _transition(ctx, session, name, "waiting_llm", now=now, job_id=job_id)
         if item is None:
             return Fail(f"no item {name!r}: it was removed while the job ran")
         enqueue(
@@ -607,6 +666,7 @@ def _wait_for_llm(ctx: HandlerContext, name: str, params: ReasonParams) -> Handl
             params=_next_params(name, params),
             dedupe_key=f"reason:{name}",
         )
+    _mirror(ctx, item)
     return Done({"item": "waiting_llm"})
 
 
@@ -626,16 +686,17 @@ def handle_youtube_fetch(ctx: HandlerContext, job: Job) -> HandlerResult:
         log.info("%s: already %s, nothing to fetch", name, status)
         return Done({"item": status})
     try:
-        return _fetch(ctx, name, params)
+        return _fetch(ctx, name, params, job.id)
     except OSError as e:  # a file error must not leave the item active with no job to move it
         reason = f"file error: {e}"
         log.error("%s: %s; the item is failed (a requeue runs it again)", name, reason)
         with session_scope(ctx.engine) as session:
-            set_item_status(session, name, "failed", now=ctx.clock(), reason=reason)
+            item = _transition(ctx, session, name, "failed", now=ctx.clock(), job_id=job.id, reason=reason)
+        _mirror(ctx, item)
         return Fail(reason)
 
 
-def _fetch(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResult:
+def _fetch(ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.UUID | None) -> HandlerResult:
     """The work of `handle_youtube_fetch` once the item is known to wait for YouTube. File errors
     propagate."""
     ideas, now = ctx.ideas, ctx.clock()
@@ -643,16 +704,16 @@ def _fetch(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResul
     if not out.is_file():
         failed = ideas / "failed" / name
         if failed.is_file():  # a crash after the move to failed/, before the status was committed
-            return _item_outcome(ctx, name, "failed", _failed_reason(failed))
+            return _item_outcome(ctx, name, "failed", _failed_reason(failed), job_id=job_id)
         log.error("%s: no working copy in output/; marked failed", name)
-        return _item_outcome(ctx, name, "failed", f"no working copy in output/{name}")
+        return _item_outcome(ctx, name, "failed", f"no working copy in output/{name}", job_id=job_id)
     try:
         note = load_staged_note(ideas, out, now)
     except (FrontmatterError, UnicodeDecodeError, ValueError) as e:
         reason = f"cannot read output/{name}: {e}"
         log.error("%s: %s", name, reason)
         move_to_failed(ideas, out, reason, now=now)
-        return _item_outcome(ctx, name, "failed", reason)
+        return _item_outcome(ctx, name, "failed", reason, job_id=job_id)
     note.name = Path(name).name
 
     # saved facts first (no call), then the gate, then YouTube; never a sleep: a closed gate defers the job
@@ -676,12 +737,12 @@ def _fetch(ctx: HandlerContext, name: str, params: ReasonParams) -> HandlerResul
         state = RunState(blocked=set(), budget_blocked={}, attempted=1, seen_ids=set())
         report = ItemReport(note.doc_id, note.doctype.name, "skipped")
         apply_outcome(ideas, note, outcome, state, report, dry_run=False, now=now)
-        result = _item_outcome(ctx, name, outcome.kind, report.message)
+        result = _item_outcome(ctx, name, outcome.kind, report.message, job_id=job_id)
         if outcome.unexpected and isinstance(result, Done):  # a bug, not an item state: the job fails too
             return Fail(outcome.message)
         return result
     log.info("%s: facts saved, on to the LLM", who)
-    return _wait_for_llm(ctx, name, params)
+    return _wait_for_llm(ctx, name, params, job_id)
 
 
 IDEAS_MANAGED = ("inbox", "archive", "output", "failed", "duplicates", FACTS_DIR, LLM_DIR)

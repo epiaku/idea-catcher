@@ -22,8 +22,9 @@ from worker_harness import NOTES, WEB_CLIPS, WorkerHarness
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import load
 from catcher.modules.pipeline import inbox
+from catcher.modules.pipeline.mirror import MirrorState, read_mirror
 from catcher.modules.queue import queue
-from catcher.modules.queue.models import Job, JobItem
+from catcher.modules.queue.models import Job, JobEvent, JobItem
 from catcher.modules.worker import handlers_pipeline
 from catcher.modules.worker.app import build_handlers
 from catcher.modules.worker.handlers import HandlerContext, HandlerResult
@@ -372,3 +373,26 @@ def test_staging_leftovers_are_adopted_after_a_worker_restart(harness, monkeypat
     ]
     assert [(j.type, j.status, j.attempts) for j in mine] == [("llm.reason", "succeeded", 1)]
     assert [len(pages(harness.docs, folder)) for folder in (NOTES, WEB_CLIPS, YOUTUBE)] == [1, 1, 1]
+
+
+def test_reaper_failed_items_get_the_mirror_in_failed(harness):
+    def always_killed(ctx: HandlerContext, job: Job) -> HandlerResult:
+        raise killed()
+
+    harness.worker.handlers = {**harness.worker.handlers, "llm.reason": always_killed}
+    harness.add_job("pipeline.run", only=["YouTube walks"])
+
+    labels = run_with_kills(harness)
+
+    assert labels.count("killed") == 3
+    item = items(harness)["YouTube walks.md"]
+    reason = "llm.reason: lease expired too often (3 attempts)"
+    assert (item.status, item.stage_reason, item.stage_since) == ("failed", reason, harness.clock())
+    with session_scope(harness.ctx.engine) as session:
+        last = session.scalars(
+            select(JobEvent).where(JobEvent.item_id == item.id).order_by(JobEvent.id.desc()).limit(1)
+        ).one()
+    assert (last.level, last.message) == ("error", f"{item.calculated_name}: waiting_llm -> failed: {reason}")
+    assert not (harness.ideas / "output" / item.calculated_name).exists()
+    filed = harness.ideas / "failed" / item.calculated_name
+    assert read_mirror(filed) == MirrorState("failed", reason, item.stage_since)

@@ -10,6 +10,7 @@ from catcher.core.db import session_scope
 from catcher.modules.queue.items import ItemExists, get_item, items_in_status, set_item_status, stage_item
 from catcher.modules.queue.models import JobItem
 from catcher.modules.queue.queue import enqueue
+from catcher.modules.queue.states import ItemStates
 
 NAME = "notes/an-idea.md"
 
@@ -100,6 +101,21 @@ def test_a_terminal_item_is_reset_by_a_requeue_not_duplicated(session: Session, 
     assert again.root_job_id == job.id
     assert again.origin == "backfill"
     assert _count(session) == 1
+
+
+@pytest.mark.parametrize("status", ["deferred", "stuck", "failed"])
+def test_restaging_clears_the_old_reason_and_resets_stage_since(session: Session, clock, status: str) -> None:
+    first = _stage(session, clock.now)
+    assert (first.stage_since, first.stage_reason) == (clock.now, None)
+    deferred_at = clock.now + timedelta(minutes=5)
+    ItemStates().transition(session, NAME, status, now=deferred_at, reason="the model is blocked")
+    later = clock.now + timedelta(days=4)
+
+    again = _stage(session, later)
+
+    assert (again.id, again.status) == (first.id, "staging")
+    assert again.stage_reason is None
+    assert again.stage_since == later
 
 
 def test_set_item_status_updates_status_and_reason(session: Session, clock) -> None:

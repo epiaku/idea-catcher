@@ -8,8 +8,9 @@ from typing import Any
 from catcher.core.config import Settings
 from catcher.core.db import make_worker_engine, utc_now
 from catcher.modules.pipeline.process import default_services
+from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker.blocks import BackendBlocks
-from catcher.modules.worker.handlers import Handler, HandlerContext
+from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter_mirror
 from catcher.modules.worker.handlers_pipeline import (
     handle_llm_reason,
     handle_pipeline_publish,
@@ -86,12 +87,14 @@ def build_context(
         block_hours=settings.youtube_block_hours,
         clock=epoch,
     )
+    ideas = ideas or settings.ideas_repo
     return HandlerContext(
         settings=settings,
         services=default_services(settings, gate=gate, clock=epoch),
         engine=engine,
-        ideas=ideas or settings.ideas_repo,
+        ideas=ideas,
         docs=docs or settings.docs_repo,
         clock=clock,
         backend_blocks=BackendBlocks(),  # this worker's memory of blocked LLM backends (in memory only)
+        item_states=ItemStates(mirror=frontmatter_mirror(ideas)),  # Postgres, then the frontmatter mirror
     )

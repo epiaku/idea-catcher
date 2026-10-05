@@ -12,7 +12,7 @@ from sqlalchemy.exc import OperationalError
 from worker_harness import NOTES, YOUTUBE_GAP_S
 
 from catcher.core.db import make_worker_engine, session_scope
-from catcher.modules.queue import queue
+from catcher.modules.queue import queue, states
 from catcher.modules.queue.items import get_item, set_item_status, stage_item
 from catcher.modules.queue.models import Job, JobEvent, JobItem
 from catcher.modules.queue.queue import claim, enqueue
@@ -291,14 +291,14 @@ def test_the_reaper_fails_a_pipeline_run_and_touches_no_item(pg_engine: Engine, 
 def test_an_item_error_does_not_stop_the_reaper(
     pg_engine: Engine, clock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    real_set_item_status = loop.set_item_status
+    real_set_item_status = states.set_item_status  # the writer the reaper's item change goes through
 
     def broken_for_one(session, name, status, **kwargs):
         if name == "notes/broken.md":
             session.execute(text("select 1/0"))  # a database error, inside the savepoint
         return real_set_item_status(session, name, status, **kwargs)
 
-    monkeypatch.setattr(loop, "set_item_status", broken_for_one)
+    monkeypatch.setattr(states, "set_item_status", broken_for_one)
     _item(pg_engine, clock, "notes/broken.md", "waiting_llm")
     _item(pg_engine, clock, "notes/poison.md", "waiting_llm")
     broken = _abandoned(pg_engine, clock, "notes/broken.md", max_attempts=1)

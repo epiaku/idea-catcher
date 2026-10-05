@@ -7,9 +7,10 @@ from sqlalchemy import select, update
 
 from catcher import __version__
 from catcher.core.db import session_scope
-from catcher.core.frontmatter import load
+from catcher.core.frontmatter import load, parse
 from catcher.modules.pipeline import inbox
 from catcher.modules.pipeline.inbox import load_staged_note, mark_deferred
+from catcher.modules.pipeline.mirror import MirrorState, read_mirror
 from catcher.modules.queue.items import set_item_status, stage_item
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.queue.queue import claim
@@ -86,7 +87,7 @@ def test_run_stages_a_note_and_enqueues_llm_reason(harness, sh):
     [archived] = in_folder(harness.ideas, "archive", "YouTube walks.md")
     assert out.relative_to(harness.ideas / "output").as_posix() == item.calculated_name
     assert archived.relative_to(harness.ideas / "archive").as_posix() == item.calculated_name
-    assert load(out).fm["stage"] == "analyzed"
+    assert load(out).fm["stage"] == "waiting_llm"  # B5: the mirror shows the item's state
     [job] = next_jobs(harness)
     assert (job.type, job.status, job.params, job.dedupe_key) == (
         "llm.reason",
@@ -117,7 +118,7 @@ def test_a_youtube_clip_is_staged_waiting_youtube_with_a_fetch_job(harness):
     item = item_named(harness, "clippings", "yt.md")
     assert (item.status, item.doc_class, item.doc_id) == ("waiting_youtube", "youtube", VIDEO)
     [out] = in_folder(harness.ideas, "output", "yt.md")
-    assert load(out).fm["stage"] == "analyzed"
+    assert load(out).fm["stage"] == "waiting_youtube"  # B5: the mirror shows the item's state
     [job] = next_jobs(harness)
     assert (job.type, job.params, job.dedupe_key) == (
         "youtube.fetch",
@@ -227,7 +228,7 @@ def test_a_crash_after_the_staging_row_is_adopted_with_the_same_name(harness, mo
     assert len(items(harness)) == 3
     assert [p.name for p in in_folder(harness.ideas, "archive", "systeme.md")] == [crashed[0]]
     [out] = in_folder(harness.ideas, "output", "systeme.md")
-    assert out.name == crashed[0] and load(out).fm["stage"] == "analyzed"
+    assert out.name == crashed[0] and load(out).fm["stage"] == "waiting_llm"  # mirrored
     assert not (harness.ideas / "inbox/clippings/systeme.md").exists()
     mine = [j for j in next_jobs(harness) if j.params["calculated_name"] == item.calculated_name]
     assert [j.type for j in mine] == ["llm.reason"]
@@ -306,7 +307,7 @@ def test_requeue_resets_the_existing_item(harness):
     [archived] = in_folder(harness.ideas, "archive", "YouTube walks.md")
     assert archived.relative_to(harness.ideas / "archive").as_posix() == first.calculated_name
     [out] = in_folder(harness.ideas, "output", "YouTube walks.md")
-    assert load(out).fm["stage"] == "analyzed"
+    assert load(out).fm["stage"] == "waiting_llm"  # a fresh working copy, mirrored
     queued = [j for j in next_jobs(harness) if j.status == "queued"]
     assert [(j.type, j.params["calculated_name"]) for j in queued] == [("llm.reason", first.calculated_name)]
 
@@ -372,7 +373,7 @@ def test_retry_deferred_requeues_stalled_items(harness):
     assert result == Done(counts(staged=1))
     again = item_named(harness, "clippings", "systeme.md")
     assert (again.id, again.status, again.error) == (stalled.id, "waiting_llm", None)
-    assert load(out).fm["stage"] == "analyzed"
+    assert load(out).fm["stage"] == "waiting_llm"  # no longer deferred, mirrored
     assert len(in_folder(harness.ideas, "archive", "systeme.md")) == 1
     assert (harness.ideas / "inbox/notes/YouTube walks.md").exists()  # not selected
     queued = [j for j in next_jobs(harness) if j.status == "queued"]
@@ -440,6 +441,16 @@ def test_a_name_that_could_leave_the_ideas_folder_fails_the_job_and_touches_noth
     assert (harness.ideas / "inbox/notes/YouTube walks.md").exists()
 
 
+MIRROR_KEYS = ("stage", "stage_reason", "stage_since")
+
+
+def without_mirror(text: str) -> tuple[list[tuple[str, object]], str]:
+    """The keys (in their order) and the body, without the three keys the B5 mirror writes: what the mirror
+    must leave untouched."""
+    doc = parse(text)
+    return [(k, v) for k, v in doc.fm.items() if k not in MIRROR_KEYS], doc.body
+
+
 def _crash_before_the_unlink(monkeypatch, replacement: bytes | None = None) -> list[str]:
     """`start_work` runs for real once, then the inbox file is back (the unlink never happened, or a new
     capture landed at the same path when `replacement` is given) and the worker dies before step 3."""
@@ -492,7 +503,11 @@ def test_a_new_capture_at_the_same_inbox_path_does_not_overwrite_the_adopted_doc
     assert run(harness, only=["YouTube walks"]) == Done(counts(adopted=1, staged=1))
 
     assert (harness.ideas / "archive" / crashed[0]).read_bytes() == archived  # the first document is kept
-    assert (harness.ideas / "output" / crashed[0]).read_bytes() == output
+    # the adopted working copy is kept: its body and every key but the three the mirror writes
+    adopted = harness.ideas / "output" / crashed[0]
+    assert without_mirror(adopted.read_text(encoding="utf-8")) == without_mirror(output.decode("utf-8"))
+    row = items(harness)[crashed[0]]
+    assert read_mirror(adopted) == MirrorState(row.status, row.stage_reason, row.stage_since)
     assert items(harness)[crashed[0]].status == "waiting_llm"
     names = sorted(
         p.relative_to(harness.ideas / "archive").as_posix()
