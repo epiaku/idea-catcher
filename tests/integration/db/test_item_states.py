@@ -2,13 +2,13 @@ import logging
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from catcher.modules.queue.items import stage_item
 from catcher.modules.queue.models import JobEvent, JobItem
 from catcher.modules.queue.queue import enqueue
-from catcher.modules.queue.states import ItemStates
+from catcher.modules.queue.states import ItemStates, LlmMetrics, record_metrics
 
 NAME = "notes/an-idea.md"
 
@@ -192,3 +192,36 @@ def test_a_failing_mirror_is_logged_and_never_raises(session: Session, clock, ca
     assert record.levelno == logging.WARNING
     assert NAME in record.getMessage()
     assert "read-only folder" in record.getMessage()
+
+
+def test_a_published_item_without_warnings_has_sql_null_warnings(session: Session, clock) -> None:
+    """`warnings = None` is SQL NULL, not JSON `null`: `WHERE warnings IS NULL` finds the item and
+    `jsonb_array_length(warnings)` does not raise on it (also after a run that had warnings)."""
+    _stage(session, clock.now)
+    ItemStates().transition(session, NAME, "published", now=clock.now)
+    metrics = LlmMetrics(
+        profile="notes",
+        backend="fake",
+        model="fake",
+        prompt_version="v1",
+        tokens_in=10,
+        tokens_out=5,
+        duration_ms=7,
+        attempts=1,
+        saved=False,
+    )
+    assert metrics.warning_lines() is None
+    first = LlmMetrics(**{**metrics.__dict__, "dropped_tags": ("x",)})  # an earlier run dropped a tag
+    record_metrics(session, NAME, first, now=clock.now)
+    session.commit()
+    record_metrics(session, NAME, metrics, now=clock.now)  # this run has no warnings
+    session.commit()
+
+    row = session.execute(
+        text(
+            "select warnings is null, coalesce(jsonb_array_length(warnings), 0)"
+            " from job_items where calculated_name = :name"
+        ),
+        {"name": NAME},
+    ).one()
+    assert tuple(row) == (True, 0)

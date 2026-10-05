@@ -15,7 +15,7 @@ from typing import Annotated, Any
 import typer
 from alembic import command as alembic_command
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -45,7 +45,7 @@ from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import NOT_STARTED, RunLockLost, RunOptions, RunReport, run_pipeline
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
-from catcher.modules.queue.models import JOB_STATUSES, Job
+from catcher.modules.queue.models import ITEM_STATUSES, JOB_STATUSES, Job, JobItem
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
@@ -794,6 +794,54 @@ def jobs_list(
         typer.echo(
             f"{job.id}  {job.type:<16} {job.status:<9} {job.priority:>4}  {run_after}  {reason}".rstrip()
         )
+
+
+items_app = typer.Typer(no_args_is_help=True, help="The documents the worker handles: their state.")
+app.add_typer(items_app, name="items")
+ITEM_REASON_CHARS = 80
+
+
+@items_app.callback()
+def items_group() -> None:
+    """The documents the worker handles (one row per document in the database): their state."""
+
+
+def _one_line(text: str, width: int = ITEM_REASON_CHARS) -> str:
+    """`text` on one line (whitespace runs become one space), cut to `width` characters with `...`."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= width else flat[: width - 3].rstrip() + "..."
+
+
+@items_app.command("list")
+def items_list(
+    status: Annotated[
+        str | None,
+        typer.Option("--status", help=f"only items with this status: {', '.join(ITEM_STATUSES)}"),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, help="show at most N items (newest first)")] = 50,
+) -> None:
+    """List the items, newest first (by when they entered their status): name, class, status, since
+    (local time) and the reason (or the error), shortened to one line. Read-only. A stuck item shows here."""
+    if status is not None and status not in ITEM_STATUSES:
+        raise typer.BadParameter(f"must be one of {', '.join(ITEM_STATUSES)}", param_hint="--status")
+    since = func.coalesce(JobItem.stage_since, JobItem.updated_at)
+    statement = select(JobItem).order_by(since.desc(), JobItem.calculated_name).limit(limit)
+    if status is not None:
+        statement = statement.where(JobItem.status == status)
+    with _queue_session() as session:
+        rows = [
+            (
+                item.calculated_name,
+                item.doc_class,
+                item.status,
+                item.stage_since or item.updated_at,
+                item.stage_reason or item.error or "",
+            )
+            for item in session.scalars(statement)
+        ]
+    for name, doc_class, item_status, at, why in rows:
+        when = at.astimezone().strftime("%Y-%m-%d %H:%M")
+        typer.echo(f"{name}  {doc_class:<8} {item_status:<15} {when}  {_one_line(why)}".rstrip())
 
 
 testdata_app = typer.Typer(no_args_is_help=True, help="Test data for trying the Idea Catcher on copies.")

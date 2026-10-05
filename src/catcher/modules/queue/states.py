@@ -6,6 +6,9 @@ that changes neither the status nor the reason changes nothing and writes no eve
 twice leaves no trace. The database is the truth; the optional mirror (the frontmatter of the working copy)
 is best effort and is written only after the caller's commit, by `mirror_after_commit`.
 
+`mark_stuck` moves items that have been `deferred` for too long to `stuck` (B5 decision 4); `ItemStates.defer`
+keeps a stuck item `stuck`, with its clock, when its retry is deferred again.
+
 `record_metrics` and `record_llm_tried` put the LLM metrics of `llm.reason` on the item in the same session
 as its transition (B5 decision 7). They take plain values (`LlmMetrics`), so the queue never imports the
 pipeline."""
@@ -14,17 +17,21 @@ import logging
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from catcher.core.db import require_aware
-from catcher.modules.queue.items import set_item_status
+from catcher.modules.queue.items import TERMINAL_STATUSES, set_item_status
 from catcher.modules.queue.models import EVENT_LEVELS, ITEM_STATUSES, JobEvent, JobItem
 
 log = logging.getLogger("catcher.queue")
+
+# the key in the data of a `stuck` event (`mark_stuck`, and a stuck item deferred again) that holds when the
+# item became stuck: what `stuck_since` reads back after a retry
+STUCK_SINCE = "stuck_since"
 
 
 class ItemStates:
@@ -72,6 +79,39 @@ class ItemStates:
         message = f"{calculated_name}: {old} -> {status}" + (f": {reason}" if reason else "")
         session.add(JobEvent(job_id=job_id, item_id=item.id, ts=now, level=level, message=message, data=data))
         session.flush()
+        return item
+
+    def defer(
+        self,
+        session: Session,
+        calculated_name: str,
+        *,
+        now: datetime,
+        reason: str | None = None,
+        job_id: uuid.UUID | None = None,
+    ) -> JobItem | None:
+        """A `deferred` outcome (a warning event). An item that `mark_stuck` made `stuck` and that was retried
+        since (`stuck_since` finds it) stays `stuck`: the status is `stuck` with the new reason and its
+        `stage_since` stays the time it became stuck, so the clock is not reset and it is never marked stuck
+        twice. None when there is no such row. Does not commit."""
+        since = stuck_since(session, calculated_name)
+        if since is None:
+            return self.transition(
+                session, calculated_name, "deferred", now=now, reason=reason, job_id=job_id, level="warning"
+            )
+        item = self.transition(
+            session,
+            calculated_name,
+            "stuck",
+            now=now,
+            reason=reason,
+            job_id=job_id,
+            level="warning",
+            data={STUCK_SINCE: since.isoformat()},
+        )
+        if item is not None and item.stage_since != since:
+            item.stage_since = since
+            session.flush()
         return item
 
     def mirror_after_commit(self, item: JobItem) -> None:
@@ -177,3 +217,76 @@ def record_llm_tried(session: Session, calculated_name: str, *, profile: str, ba
     item.llm_backend = backend
     session.flush()
     return item
+
+
+def _transition_target(calculated_name: str, message: str) -> str | None:
+    """The new status of a transition event's message (`<name>: <old> -> <new>[: <reason>]`), or None when
+    the event is not a transition (a dropped-tags warning)."""
+    prefix = f"{calculated_name}: "
+    if not message.startswith(prefix):
+        return None
+    old, arrow, rest = message.removeprefix(prefix).partition(" -> ")
+    new = rest.split(":", 1)[0]
+    return new if arrow and old in ITEM_STATUSES and new in ITEM_STATUSES else None
+
+
+def stuck_since(session: Session, calculated_name: str) -> datetime | None:
+    """When the item became `stuck`, if its last outcome was `stuck` by `mark_stuck` (a retry may be running
+    since); None otherwise. The last outcome is the item's newest event that moved it to a final status; a
+    `stuck` without the `STUCK_SINCE` mark (an active leftover `_requeue` found) is not an outcome and is
+    passed over."""
+    item_id = session.scalar(select(JobItem.id).where(JobItem.calculated_name == calculated_name))
+    if item_id is None:
+        return None
+    events = session.scalars(select(JobEvent).where(JobEvent.item_id == item_id).order_by(JobEvent.id.desc()))
+    for event in events:
+        target = _transition_target(calculated_name, event.message)
+        if target not in TERMINAL_STATUSES:
+            continue
+        mark = (event.data or {}).get(STUCK_SINCE) if target == "stuck" else None
+        if target == "stuck" and not isinstance(mark, str):
+            continue
+        return datetime.fromisoformat(mark) if isinstance(mark, str) else None
+    return None
+
+
+def _days_text(delta: timedelta) -> str:
+    """`3` for three days, `3.5` for three and a half (one decimal)."""
+    return f"{delta.total_seconds() / 86400:.1f}".removesuffix(".0")
+
+
+def mark_stuck(
+    session: Session, *, now: datetime, after_days: float, states: ItemStates | None = None
+) -> list[JobItem]:
+    """Move every item that has been `deferred` for `after_days` days or more to `stuck` (B5 decision 4) and
+    return those items, so the caller can mirror them after its commit. The time is `stage_since` (or
+    `updated_at` for a row written before B5). Each goes through `ItemStates.transition` with the reason
+    `deferred for <n> days: <old reason>` and a warning event that carries `STUCK_SINCE`. The rows are locked
+    (`FOR UPDATE SKIP LOCKED`: a row another session holds is left for the next call). A stuck item is
+    never marked again; it stays retried by `retry_deferred`. Does not commit."""
+    require_aware(now)
+    if not 0 < after_days < float("inf"):
+        raise ValueError(f"after_days must be more than 0, not {after_days!r}")
+    writer = states if states is not None else ItemStates()
+    since = func.coalesce(JobItem.stage_since, JobItem.updated_at)
+    rows = list(
+        session.scalars(
+            select(JobItem)
+            .where(JobItem.status == "deferred", since <= now - timedelta(days=after_days))
+            .order_by(since, JobItem.calculated_name)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    stuck: list[JobItem] = []
+    for row in rows:
+        began = row.stage_since or row.updated_at
+        old = row.stage_reason or row.error
+        reason = f"deferred for {_days_text(now - began)} days" + (f": {old}" if old else "")
+        data = {STUCK_SINCE: now.isoformat(), "deferred_since": began.isoformat()}
+        item = writer.transition(
+            session, row.calculated_name, "stuck", now=now, reason=reason, level="warning", data=data
+        )
+        if item is not None:
+            log.warning("%s: stuck, %s", item.calculated_name, reason)
+            stuck.append(item)
+    return stuck

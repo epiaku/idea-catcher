@@ -13,12 +13,13 @@ from typing import Literal
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from catcher.core.config import Settings
 from catcher.core.db import session_scope
 from catcher.modules.pipeline.inbox import move_to_failed
 from catcher.modules.queue import queue
 from catcher.modules.queue.items import ACTIVE_STATUSES, get_item
 from catcher.modules.queue.models import Job, JobItem
-from catcher.modules.queue.states import ItemStates
+from catcher.modules.queue.states import ItemStates, mark_stuck
 from catcher.modules.worker.dispatch import Outcome, run_job
 from catcher.modules.worker.handlers import Handler, HandlerContext
 
@@ -113,7 +114,10 @@ class Worker:
     raises ("error"), its heartbeat has stopped and the job stays `running` until its lease expires
     (`lease_s`, 120 s by default); then a reap requeues it.
 
-    `sleep` is the idle wait; by default it is `stop.wait`, so an idle worker stops at once."""
+    `sleep` is the idle wait; by default it is `stop.wait`, so an idle worker stops at once.
+
+    Each reap also marks the items deferred for `stuck_after_days` days `stuck` (`mark_stuck`); by default
+    the days come from `ctx.settings` (STUCK_AFTER_DAYS), and with no such setting nothing is marked."""
 
     def __init__(
         self,
@@ -127,6 +131,7 @@ class Worker:
         reap_every_s: float = 60.0,
         sleep: Callable[[float], object] | None = None,
         lock_check: Callable[[], None] | None = None,
+        stuck_after_days: float | None = None,
     ) -> None:
         self.ctx = ctx
         self.handlers = handlers
@@ -138,6 +143,9 @@ class Worker:
         self._sleep = sleep
         self._lock_check = lock_check  # `WorkerLock.check`: raises WorkerLockLost when the lock is gone
         self._claim_failures = 0  # claims in a row that raised a database error
+        if stuck_after_days is None and isinstance(ctx.settings, Settings):
+            stuck_after_days = ctx.settings.stuck_after_days
+        self.stuck_after_days = stuck_after_days
 
     def idle_wait_s(self) -> float:
         """How long to wait before the next claim: `poll_s`, doubled for each claim in a row that hit a
@@ -216,7 +224,8 @@ class Worker:
     def reap_safely(self) -> int:
         """Requeue (or fail) every job whose lease expired, and fail the item of a job it failed
         (`fail_items_of`), in one commit; then move those items' working copies to `failed/`
-        (`file_failed_items`). Returns how many jobs changed; an error is logged and gives 0, so
+        (`file_failed_items`). After a reap that worked, in a commit of its own, mark the long-deferred
+        items `stuck` (`mark_stuck_safely`). Returns how many jobs changed; an error is logged and gives 0, so
         the reaper never stops the worker."""
         try:
             with session_scope(self.ctx.engine) as session:
@@ -230,7 +239,29 @@ class Worker:
         file_failed_items(self.ctx.ideas, failed, now=now, states=self.ctx.item_states)
         if changed:
             log.info("the reaper recovered %d job(s)", len(changed))
+        self.mark_stuck_safely()
         return len(changed)
+
+    def mark_stuck_safely(self) -> int:
+        """Mark the items deferred for `stuck_after_days` days `stuck` (`mark_stuck`), in one commit, then
+        mirror them into their working copies. Returns how many; nothing when `stuck_after_days` is None.
+        An error is logged and gives 0: it never stops the reaper or the worker."""
+        if self.stuck_after_days is None:
+            return 0
+        try:
+            with session_scope(self.ctx.engine) as session:
+                stuck = mark_stuck(
+                    session,
+                    now=self.ctx.clock(),
+                    after_days=self.stuck_after_days,
+                    states=self.ctx.item_states,
+                )
+        except Exception:
+            log.exception("marking the long-deferred items stuck failed; it tries again at the next reap")
+            return 0
+        for item in stuck:
+            self.ctx.item_states.mirror_after_commit(item)
+        return len(stuck)
 
     def run_forever(self, stop: threading.Event) -> None:
         """Reap, then run jobs until `stop` is set; wait `idle_wait_s()` when nothing was run and reap

@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     llm_cache: bool = True  # read a saved good reply in `llm/` before calling the model
     # worker: a backend that hit a usage limit, its budget or was down is not called for this many seconds
     llm_block_s: int = Field(default=600, gt=0)
+    # worker: an item `deferred` for this many days becomes `stuck` (still retried by retry_deferred)
+    stuck_after_days: float = Field(default=3, gt=0, allow_inf_nan=False)
     transcript_languages: str = "en"
     # How we talk to YouTube. A ban is per IP and about request rate, so we go slowly and stop when told no.
     youtube_request_delay_s: float = 10.0  # seconds between the requests inside one fetch

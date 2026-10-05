@@ -64,7 +64,6 @@ from catcher.modules.pipeline.inbox import (
     STAGE_PUBLISHED,
     Note,
     assign_name,
-    deferred_in_output,
     load_staged_note,
     move_to_duplicates,
     move_to_failed,
@@ -335,7 +334,8 @@ def _requeue(ctx: HandlerContext, queries: list[str], job_id: uuid.UUID | None) 
     running job carries (`live_job_carries`): their files are in use and stay where they are. An item
     still `staging` belongs to this run's adoption and is left alone too. Any other active item is a
     leftover that nothing will move on (its job ended without moving it): it is marked `stuck`, so the
-    scan stages it again under its name."""
+    scan stages it again under its name. An item in a final status, `stuck` included (like `deferred`),
+    is requeued, never refused. This is the one place that moves files for a requeue or a retry."""
     if not queries:
         return
     found, not_found = requeue_from_archive(ctx.ideas, queries, dry_run=True)
@@ -360,6 +360,15 @@ def _requeue(ctx: HandlerContext, queries: list[str], job_id: uuid.UUID | None) 
     _mirror(ctx, *stuck)
     if keep:
         requeue_from_archive(ctx.ideas, keep)
+
+
+def _to_retry(ctx: HandlerContext) -> list[str]:
+    """`retry_deferred`: the calculated names of the items whose status is `deferred` or `stuck` (the
+    database is the truth, not the frontmatter in `output/`) and that have their original in `archive/`
+    to start again from."""
+    with session_scope(ctx.engine) as session:
+        names = [i.calculated_name for i in items_in_status(session, "deferred", "stuck")]
+    return [name for name in names if (ctx.ideas / "archive" / name).is_file()]
 
 
 def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
@@ -393,7 +402,7 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
             counts["errors"] += 1
 
     explicit = params.requeue or []
-    _requeue(ctx, [*explicit, *(deferred_in_output(ideas) if params.retry_deferred else [])], job.id)
+    _requeue(ctx, [*explicit, *(_to_retry(ctx) if params.retry_deferred else [])], job.id)
 
     # `requeue` runs only the requeued documents, like `only` does for the ones it names (as in Stage A)
     only = None if params.only is None and not explicit else [*(params.only or []), *explicit]
@@ -507,16 +516,21 @@ def _item_outcome(
 ) -> HandlerResult:
     """The item's new status (with its reason), in one commit after the file effects, then the mirror.
     `record(session, now)` adds to that commit (the LLM metrics), after the transition. The job succeeds:
-    an LLM or facts problem is an item state (decision 3)."""
+    an LLM or facts problem is an item state (decision 3). A `deferred` outcome of an item that was `stuck`
+    before this retry keeps it `stuck`, with its clock (`ItemStates.defer`); the result names the status the
+    item really has."""
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
-        item = _transition(ctx, session, name, status, now=now, job_id=job_id, reason=reason)
+        if status == "deferred":
+            item = ctx.item_states.defer(session, name, now=now, reason=reason, job_id=job_id)
+        else:
+            item = _transition(ctx, session, name, status, now=now, job_id=job_id, reason=reason)
         if item is not None and record is not None:
             record(session, now)
     _mirror(ctx, item)
     if item is None:
         return Fail(f"no item {name!r}: it was removed while the job ran")
-    return Done({"item": status})
+    return Done({"item": item.status})
 
 
 def _next_params(name: str, params: ReasonParams) -> dict[str, Any]:
