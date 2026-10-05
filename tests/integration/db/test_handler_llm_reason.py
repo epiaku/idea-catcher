@@ -821,3 +821,205 @@ def test_a_working_copy_that_says_published_is_taken_as_the_finished_page(harnes
     assert reason(harness, name) == Done({"item": "published"})
 
     assert pages(harness.docs, NOTES) == [] and harness.backends.note.prompts == []  # nothing made again
+
+
+# --- B5: llm.reason records the model, the tokens, the warnings and the page on the item ---
+
+METRIC_COLUMNS = (
+    "llm_profile",
+    "llm_backend",
+    "llm_model",
+    "prompt_version",
+    "tokens_in",
+    "tokens_out",
+    "llm_duration_ms",
+    "llm_result",
+    "warnings",
+    "docs_page",
+)
+ODD_TAG = "not-a-known-tag"
+ODD_TAGS_REPLY = json.dumps({**CANNED["note"], "tags": [*CANNED["note"]["tags"], ODD_TAG]})
+
+
+def metrics_of(item: JobItem) -> dict:
+    return {column: getattr(item, column) for column in METRIC_COLUMNS}
+
+
+def trace_of(harness, name: str) -> dict:
+    return json.loads((harness.ideas / "llm" / name).with_suffix(".json").read_text())
+
+
+def forget_metrics(harness, name: str) -> None:
+    """The crash came before the commit of the outcome: the row holds no metrics."""
+    with session_scope(harness.ctx.engine) as session:
+        session.execute(
+            update(JobItem).where(JobItem.calculated_name == name).values(**dict.fromkeys(METRIC_COLUMNS))
+        )
+
+
+def test_a_published_item_has_its_llm_metrics(harness):
+    name = staged_note(harness)
+
+    assert reason(harness, name) == Done({"item": "published"})
+
+    [page] = pages(harness.docs, NOTES)
+    trace = trace_of(harness, name)
+    [attempt] = trace["attempts"]
+    assert metrics_of(item_of(harness, "YouTube walks.md")) == {
+        "llm_profile": "notes",
+        "llm_backend": "fake",
+        "llm_model": "fake",
+        "prompt_version": trace["prompt_version"],
+        "tokens_in": attempt["tokens_in"],
+        "tokens_out": attempt["tokens_out"],
+        "llm_duration_ms": None,  # the fake backend does not time its reply
+        "llm_result": {"attempts": 1, "saved": False},
+        "warnings": None,
+        "docs_page": f"{NOTES}/{page.name}",
+    }
+    assert attempt["tokens_in"] > 0 and attempt["tokens_out"] > 0
+
+
+def test_a_second_attempt_is_counted_with_the_tokens_of_both(harness):
+    harness.backends.note = FakeBackend(["nope"])  # the first reply is rejected, the second is the canned one
+    name = staged_note(harness)
+
+    assert reason(harness, name) == Done({"item": "published"})
+
+    item = item_of(harness, "YouTube walks.md")
+    first, second = trace_of(harness, name)["attempts"]
+    assert item.llm_result == {"attempts": 2, "saved": False}
+    assert (item.tokens_in, item.tokens_out) == (
+        first["tokens_in"] + second["tokens_in"],
+        first["tokens_out"] + second["tokens_out"],
+    )
+
+
+def test_a_saved_reply_is_flagged_and_keeps_the_recorded_tokens(harness):
+    name = staged_note(harness)
+    working_copy = (harness.ideas / "output" / name).read_bytes()
+    assert reason(harness, name) == Done({"item": "published"})
+    live = metrics_of(item_of(harness, "YouTube walks.md"))
+
+    # a crash between write_page and the commit: the working copy is back, the row has no outcome
+    (harness.ideas / "output" / name).write_bytes(working_copy)
+    with session_scope(harness.ctx.engine) as session:
+        set_item_status(session, name, "waiting_llm", now=harness.clock())
+    forget_metrics(harness, name)
+    calls: list[str] = []
+    harness.backends.note = RaisingBackend(calls)
+
+    assert rerun(harness, name) == Done({"item": "published"})
+
+    assert calls == []
+    saved = metrics_of(item_of(harness, "YouTube walks.md"))
+    assert saved == {**live, "llm_result": {"attempts": 1, "saved": True}}
+    assert (saved["tokens_in"], saved["tokens_out"]) == (live["tokens_in"], live["tokens_out"])
+
+
+def test_dropped_tags_are_recorded_as_warnings_and_an_event(harness):
+    harness.backends.note = FakeBackend([ODD_TAGS_REPLY])
+    name = staged_note(harness)
+
+    assert reason(harness, name) == Done({"item": "published"})
+
+    item = item_of(harness, "YouTube walks.md")
+    assert item.status == "published" and item.warnings == [f"dropped tags: {ODD_TAG}"]
+    warnings = [e for e in events_of(harness, name) if e.level == "warning"]
+    assert [(e.message, e.data) for e in warnings] == [
+        (f"{name}: dropped tags: {ODD_TAG}", {"dropped_tags": [ODD_TAG]})
+    ]
+    [event] = warnings
+    assert event.job_id is not None and event.ts == item.stage_since
+    assert [e.message for e in events_of(harness, name) if e.level == "info"][-1] == (
+        f"{name}: waiting_llm -> published"
+    )
+
+
+def test_a_deferred_item_records_the_backend_that_was_tried(harness):
+    stage(harness, only=["systeme"])  # the Gemini chat: clippings profile, openai
+    chat = item_of(harness, "systeme.md").calculated_name
+    harness.backends.chat = FakeBackend([BackendUnavailable("openai unreachable")])
+
+    assert reason(harness, chat) == Done({"item": "deferred"})
+
+    item = item_of(harness, "systeme.md")
+    assert item.status == "deferred" and "openai unreachable" in (item.error or "")
+    assert (item.llm_profile, item.llm_backend) == ("clippings", "openai")
+    assert {c: getattr(item, c) for c in METRIC_COLUMNS[2:]} == dict.fromkeys(METRIC_COLUMNS[2:])
+
+
+def test_a_failed_item_records_the_backend_that_was_tried(harness):
+    harness.backends.note = FakeBackend(["nope", "still nope"])
+    name = staged_note(harness, profile="fake")
+
+    assert reason(harness, name) == Done({"item": "failed"})
+
+    item = item_of(harness, "YouTube walks.md")
+    assert item.status == "failed" and (item.llm_profile, item.llm_backend) == ("fake", "fake")
+    assert (item.tokens_in, item.tokens_out, item.llm_result, item.docs_page) == (None, None, None, None)
+
+
+def test_an_item_deferred_for_its_facts_records_no_backend(harness, yt_facts):
+    harness.ctx.services.youtube.cache(harness.ideas / "facts").put(
+        yt_facts.model_copy(update={"transcript": None})  # saved facts without a transcript: deferred
+    )
+    stage(harness, only=["yt"])
+    assert reason(harness, item_of(harness, "yt.md").calculated_name) == Done({"item": "deferred"})
+
+    assert metrics_of(item_of(harness, "yt.md")) == dict.fromkeys(METRIC_COLUMNS)
+
+
+def test_the_metrics_survive_a_rerun_without_duplicating_events(harness):
+    harness.backends.note = FakeBackend([ODD_TAGS_REPLY])
+    name = staged_note(harness)
+    working_copy = (harness.ideas / "output" / name).read_bytes()
+    assert reason(harness, name) == Done({"item": "published"})
+    metrics = metrics_of(item_of(harness, "YouTube walks.md"))
+    events = [(e.message, e.level, e.data) for e in events_of(harness, name)]
+
+    assert rerun(harness, name) == Done({"item": "published"})  # the outcome is committed: nothing redone
+    assert metrics_of(item_of(harness, "YouTube walks.md")) == metrics
+    assert [(e.message, e.level, e.data) for e in events_of(harness, name)] == events
+
+    # a crash before the commit of the outcome: the rerun makes the page again from the saved reply
+    (harness.ideas / "output" / name).write_bytes(working_copy)
+    with session_scope(harness.ctx.engine) as session:
+        set_item_status(session, name, "waiting_llm", now=harness.clock())
+    assert rerun(harness, name) == Done({"item": "published"})
+
+    item = item_of(harness, "YouTube walks.md")
+    assert item.warnings == [f"dropped tags: {ODD_TAG}"]
+    warnings = [e for e in events_of(harness, name) if e.level == "warning"]
+    assert len(warnings) == 1  # the warnings did not change: no second event
+
+
+def test_a_youtube_clip_and_a_note_each_record_their_own_profile(harness, yt_facts):
+    harness.ctx.services.youtube.cache(harness.ideas / "facts").put(yt_facts)
+    stage(harness, only=["yt", "YouTube walks"])
+    clip, note = item_of(harness, "yt.md"), item_of(harness, "YouTube walks.md")
+
+    assert reason(harness, clip.calculated_name) == Done({"item": "published"})
+    assert reason(harness, note.calculated_name) == Done({"item": "published"})
+
+    clip, note = item_of(harness, "yt.md"), item_of(harness, "YouTube walks.md")
+    # the backend is the one that served the reply: the harness serves the openai profiles with a fake
+    assert (clip.llm_profile, clip.llm_backend) == ("youtube", "fake")
+    assert (note.llm_profile, note.llm_backend) == ("notes", "fake")
+    assert clip.prompt_version == trace_of(harness, clip.calculated_name)["prompt_version"]
+    assert note.prompt_version == trace_of(harness, note.calculated_name)["prompt_version"]
+    assert clip.prompt_version != note.prompt_version
+    youtube = Path(WEB_CLIPS).parent / "youtube"
+    assert clip.docs_page is not None and clip.docs_page.startswith(f"{youtube.as_posix()}/")
+    checks = load(harness.docs / clip.docs_page).fm.get("warnings") or []  # the YouTube summary checks
+    assert clip.warnings == ([f"{w['kind']} ({w['severity']}): {w['excerpt']}" for w in checks] or None)
+
+
+def test_the_docs_page_is_relative_and_points_at_the_page_in_the_docs_repo(harness):
+    name = staged_note(harness)
+    assert reason(harness, name) == Done({"item": "published"})
+
+    docs_page = item_of(harness, "YouTube walks.md").docs_page
+    [page] = pages(harness.docs, NOTES)
+    assert docs_page is not None and not Path(docs_page).is_absolute() and ".." not in Path(docs_page).parts
+    assert (harness.docs / docs_page).is_file() and (harness.docs / docs_page) == page

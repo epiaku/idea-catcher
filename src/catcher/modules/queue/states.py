@@ -4,11 +4,16 @@ A transition sets the status, `stage_reason`, `stage_since` (only when the statu
 `updated_at`, and writes one `job_events` row, all in the caller's session; it does not commit. A transition
 that changes neither the status nor the reason changes nothing and writes no event, so a handler that runs
 twice leaves no trace. The database is the truth; the optional mirror (the frontmatter of the working copy)
-is best effort and is written only after the caller's commit, by `mirror_after_commit`."""
+is best effort and is written only after the caller's commit, by `mirror_after_commit`.
+
+`record_metrics` and `record_llm_tried` put the LLM metrics of `llm.reason` on the item in the same session
+as its transition (B5 decision 7). They take plain values (`LlmMetrics`), so the queue never imports the
+pipeline."""
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -80,3 +85,95 @@ class ItemStates:
             self._mirror(item)
         except Exception as error:
             log.warning("could not mirror the state of %s: %s", item.calculated_name, error)
+
+
+@dataclass(frozen=True)
+class LlmMetrics:
+    """What one `llm.reason` learned about its model call, in plain values.
+
+    `saved` is true when the reply came from a saved reply: no model was called and the tokens are the
+    recorded ones (kept, so cost queries can exclude them by the flag). `warnings` are the other warnings
+    (e.g. the YouTube summary checks), one string each; the dropped tags come first as `dropped tags: a, b`.
+    `docs_page` is the page's path relative to the docs repo."""
+
+    profile: str
+    backend: str
+    model: str | None
+    prompt_version: str
+    tokens_in: int | None
+    tokens_out: int | None
+    duration_ms: int | None
+    attempts: int
+    saved: bool
+    docs_page: str | None = None
+    dropped_tags: Sequence[str] = ()
+    warnings: Sequence[str] = field(default_factory=tuple)
+
+    def warning_lines(self) -> list[str] | None:
+        """The item's `warnings`: the dropped tags, then the others; None when there are none."""
+        lines = [f"dropped tags: {', '.join(self.dropped_tags)}"] if self.dropped_tags else []
+        lines += list(self.warnings)
+        return lines or None
+
+
+def _locked_item(session: Session, calculated_name: str) -> JobItem | None:
+    return session.scalars(
+        select(JobItem).where(JobItem.calculated_name == calculated_name).with_for_update()
+    ).one_or_none()
+
+
+def record_metrics(
+    session: Session,
+    calculated_name: str,
+    metrics: LlmMetrics,
+    *,
+    now: datetime,
+    job_id: uuid.UUID | None = None,
+) -> JobItem | None:
+    """Put the metrics of a finished model call on the item; None when there is no such row. Does not commit.
+
+    Call it in the session of the item's transition (after it). When tags were dropped and the item's
+    `warnings` change, one warning event (with `data={"dropped_tags": [...]}`) is written; the same warnings
+    again (a rerun) write none."""
+    require_aware(now)
+    item = _locked_item(session, calculated_name)
+    if item is None:
+        return None
+    lines = metrics.warning_lines()
+    changed = item.warnings != lines
+    item.llm_profile = metrics.profile
+    item.llm_backend = metrics.backend
+    item.llm_model = metrics.model
+    item.prompt_version = metrics.prompt_version
+    item.tokens_in = metrics.tokens_in
+    item.tokens_out = metrics.tokens_out
+    item.llm_duration_ms = metrics.duration_ms
+    item.llm_result = {"attempts": metrics.attempts, "saved": metrics.saved}
+    item.warnings = lines
+    item.docs_page = metrics.docs_page
+    if changed and metrics.dropped_tags:
+        dropped = list(metrics.dropped_tags)
+        session.add(
+            JobEvent(
+                job_id=job_id,
+                item_id=item.id,
+                ts=now,
+                level="warning",
+                message=f"{calculated_name}: dropped tags: {', '.join(dropped)}",
+                data={"dropped_tags": dropped},
+            )
+        )
+    session.flush()
+    return item
+
+
+def record_llm_tried(session: Session, calculated_name: str, *, profile: str, backend: str) -> JobItem | None:
+    """A deferred or failed model call: the item gets the profile and backend that were tried; its tokens and
+    the other metrics are left as they are. None when there is no such row. Does not commit."""
+    item = _locked_item(session, calculated_name)
+    if item is None:
+        return None
+    item.llm_profile = profile
+    item.llm_backend = backend
+    session.flush()
+    return item

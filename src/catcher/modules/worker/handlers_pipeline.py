@@ -16,6 +16,9 @@ YouTube), the saved LLM reply before the model, then the file effects of Stage A
 a new fetch job) in one commit. The model call runs outside any transaction. It is safe to run twice: a
 committed outcome is not redone, and a final page already in `output/` (a crash before the commit) is only
 recorded as published; a crash before `finish` reruns from the saved reply, so the model is paid once.
+The published outcome commits the LLM metrics with it (profile, backend, model, prompt version, tokens, the
+warnings, the page's path in the docs repo, and whether the reply was a saved one); a deferred or failed
+model call records the profile and backend it tried.
 A backend that hit a usage limit or its budget, or was down, is blocked for LLM_BLOCK_S in this worker's
 memory (`blocks.py`): the next documents that need it are deferred without a call; a saved reply is still
 used.
@@ -33,6 +36,7 @@ pushes it."""
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,8 +48,13 @@ from catcher import __version__
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import FrontmatterError
 from catcher.core.git import GIT_LOCK, GitError, ahead_of_upstream, commit_managed, has_remote, pull, push
-from catcher.modules.llm.profiles import resolve_profile
-from catcher.modules.llm.service import BackendBlocked, BackendUnavailable, UsageLimitReached
+from catcher.modules.llm.profiles import UnknownProfile, resolve_profile
+from catcher.modules.llm.service import (
+    BackendBlocked,
+    BackendUnavailable,
+    LlmError,
+    UsageLimitReached,
+)
 from catcher.modules.llm.trace import LLM_DIR
 from catcher.modules.pipeline.doctypes import DESTINATIONS, destination_dir
 from catcher.modules.pipeline.inbox import (
@@ -67,7 +76,13 @@ from catcher.modules.pipeline.inbox import (
     with_filename_fields,
 )
 from catcher.modules.pipeline.outcome import classify
-from catcher.modules.pipeline.process import ProcessOptions, get_facts, process_note, reject_invalid_page
+from catcher.modules.pipeline.process import (
+    ProcessedPage,
+    ProcessOptions,
+    get_facts,
+    process_note,
+    reject_invalid_page,
+)
 from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import (
     ItemReport,
@@ -90,9 +105,11 @@ from catcher.modules.queue.items import (
 )
 from catcher.modules.queue.models import ITEM_STATUSES, Job, JobItem
 from catcher.modules.queue.queue import enqueue, live_job_carries
+from catcher.modules.queue.states import LlmMetrics, record_llm_tried, record_metrics
 from catcher.modules.worker.blocks import Block
 from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
+from catcher.modules.youtube.checks import SummaryWarning
 from catcher.modules.youtube.facts import FactsDeferred
 from catcher.modules.youtube.pg_gate import YOUTUBE_RESOURCE
 from catcher.modules.youtube.urls import video_id
@@ -480,12 +497,22 @@ def parse_reason_params(params: dict[str, Any], job_type: str = "llm.reason") ->
 
 
 def _item_outcome(
-    ctx: HandlerContext, name: str, status: str, reason: str | None = None, *, job_id: uuid.UUID | None
+    ctx: HandlerContext,
+    name: str,
+    status: str,
+    reason: str | None = None,
+    *,
+    job_id: uuid.UUID | None,
+    record: Callable[[Session, datetime], None] | None = None,
 ) -> HandlerResult:
     """The item's new status (with its reason), in one commit after the file effects, then the mirror.
-    The job succeeds: an LLM or facts problem is an item state (decision 3)."""
+    `record(session, now)` adds to that commit (the LLM metrics), after the transition. The job succeeds:
+    an LLM or facts problem is an item state (decision 3)."""
+    now = ctx.clock()
     with session_scope(ctx.engine) as session:
-        item = _transition(ctx, session, name, status, now=ctx.clock(), job_id=job_id, reason=reason)
+        item = _transition(ctx, session, name, status, now=now, job_id=job_id, reason=reason)
+        if item is not None and record is not None:
+            record(session, now)
     _mirror(ctx, item)
     if item is None:
         return Fail(f"no item {name!r}: it was removed while the job ran")
@@ -607,7 +634,9 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.U
         state = RunState(blocked=set(), budget_blocked={}, attempted=1, seen_ids=set())
         report = ItemReport(note.doc_id, note.doctype.name, "skipped")
         apply_outcome(ideas, note, outcome, state, report, dry_run=False, now=now)
-        result = _item_outcome(ctx, name, outcome.kind, report.message, job_id=job_id)
+        result = _item_outcome(
+            ctx, name, outcome.kind, report.message, job_id=job_id, record=_tried(ctx, note, params, name, e)
+        )
         if outcome.unexpected and isinstance(result, Done):  # a bug, not an item state: the job fails too
             return Fail(outcome.message)
         return result
@@ -616,11 +645,65 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.U
         reason = f"page is invalid: {'; '.join(processed.problems)}"
         log.error("%s: failed, %s", who, reason)
         reject_invalid_page(ideas, ideas / LLM_DIR, note, processed, ctx.services, reason, now)
-        return _item_outcome(ctx, name, "failed", reason, job_id=job_id)
-    write_page(ctx.docs, note.destination, note.doc_id, processed.filename, processed.page)
+        tried = _record_tried(name, processed.llm.profile, processed.llm.backend)
+        return _item_outcome(ctx, name, "failed", reason, job_id=job_id, record=tried)
+    [page, *_] = write_page(ctx.docs, note.destination, note.doc_id, processed.filename, processed.page)
     finish(ideas, note, processed)
     log.info("%s: published %s", who, processed.filename)
-    return _item_outcome(ctx, name, "published", job_id=job_id)
+    metrics = _metrics(processed, page.relative_to(ctx.docs).as_posix())
+
+    def record(session: Session, at: datetime) -> None:
+        record_metrics(session, name, metrics, now=at, job_id=job_id)
+
+    return _item_outcome(ctx, name, "published", job_id=job_id, record=record)
+
+
+def _metrics(processed: ProcessedPage, docs_page: str) -> LlmMetrics:
+    """The LLM metrics of a published page, in plain values for the item row (a saved reply is flagged)."""
+    result = processed.llm
+    return LlmMetrics(
+        profile=result.profile,
+        backend=result.backend,
+        model=result.model,
+        prompt_version=result.prompt_version,
+        tokens_in=result.usage.tokens_in,
+        tokens_out=result.usage.tokens_out,
+        duration_ms=result.usage.duration_ms,
+        attempts=result.attempts,
+        saved=result.from_saved,
+        docs_page=docs_page,
+        dropped_tags=tuple(processed.dropped_tags),
+        warnings=tuple(_warning_line(w) for w in processed.warnings),
+    )
+
+
+def _warning_line(warning: SummaryWarning) -> str:
+    """One warning of the YouTube summary checks as a line for the item's `warnings`."""
+    return f"{warning.kind} ({warning.severity}): {warning.excerpt[:200]}"
+
+
+def _record_tried(name: str, profile: str, backend: str) -> Callable[[Session, datetime], None]:
+    def record(session: Session, at: datetime) -> None:
+        record_llm_tried(session, name, profile=profile, backend=backend)
+
+    return record
+
+
+def _tried(
+    ctx: HandlerContext, note: Note, params: ReasonParams, name: str, error: Exception
+) -> Callable[[Session, datetime], None] | None:
+    """For a model call that failed or was not made because its backend is blocked (an `LlmError`): record
+    the profile and the backend of the document. Anything else (no facts, a bug before the call) records
+    nothing: no model was tried."""
+    if not isinstance(error, LlmError):
+        return None
+    try:
+        profile_name, profile = resolve_profile(
+            ctx.services.profiles, requested=params.profile, class_default=note.doctype.llm_profile
+        )
+    except UnknownProfile:
+        return None
+    return _record_tried(name, profile_name, profile.backend)
 
 
 def _blocked_reason(block: Block) -> str:
