@@ -52,7 +52,7 @@ from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import build_access
 from catcher.modules.youtube.cache import FACTS_DIR
 from catcher.modules.youtube.facts import FactsUnavailable
-from catcher.modules.youtube.gate import GateUnavailable, YoutubeGate
+from catcher.modules.youtube.gate import GateUnavailable
 from catcher.modules.youtube.gate_rules import GateState, clock_text, wait_for
 from catcher.modules.youtube.pg_gate import PostgresGate
 from catcher.modules.youtube.urls import video_id
@@ -450,81 +450,18 @@ def _gate_text(state: GateState, now: float) -> str:
     )
 
 
-def _same_file(path: Path, before: os.stat_result) -> bool:
-    try:
-        return os.path.samestat(path.stat(), before)
-    except OSError:
-        return False
-
-
-def _import_state_file(gate: PostgresGate, file_gate: YoutubeGate, before: os.stat_result) -> None:
-    """Merge the state file into the row, through the file gate's own reader (a damaged file reads closed and
-    is kept as `.corrupt`, as on every read). The merge only makes the gate more careful; when the row
-    already covers the file, nothing changes and that is said (exit 0: a re-run is not a failure)."""
-    gate.snapshot()  # the database is reached before the file is read: a damaged file stays as it is
-    try:
-        state = file_gate.snapshot()
-    except OSError as e:  # e.g. a damaged file in a folder that cannot be written: it cannot be repaired
-        log.error("the YouTube gate file %s could not be read or repaired: %s", file_gate.state_file, e)
-        typer.echo(
-            f"the state file {file_gate.state_file} could not be read or repaired "
-            f"({e.strerror or type(e).__name__}): nothing imported",
-            err=True,
-        )
-        raise typer.Exit(2) from None
-    kept = file_gate.state_file.with_suffix(".corrupt")
-    if _same_file(kept, before):  # the reader moved the file aside: it was damaged
-        typer.echo(
-            f"the state file {file_gate.state_file} was damaged: kept as {kept.name}, imported as closed"
-        )
-    changed = gate.import_state(state)
-    now = _gate_clock()
-    held = _gate_text(gate.snapshot(), now)
-    if not changed:
-        typer.echo(
-            f"nothing to import: the database already holds this state or a stricter one (youtube: {held}; "
-            f"the file: {_gate_text(state, now)})"
-        )
-        return
-    typer.echo(f"imported: {'open (nothing to carry over)' if held == 'open' else held}")
-
-
 @youtube_app.command("gate")
-def youtube_gate(
-    import_file: Annotated[
-        bool,
-        typer.Option(
-            "--import-file",
-            help="merge youtube-gate.json from CATCHER_STATE_DIR (the Stage A gate) into the database once; "
-            "the merge only makes the gate more careful (a block, a gap or a streak is never lowered)",
-        ),
-    ] = False,
-) -> None:
-    """Show the YouTube gate the worker uses (the row `youtube` in DATABASE_URL): open, the gap, or a block.
+def youtube_gate() -> None:
+    """Show the YouTube gate (the row `youtube` in DATABASE_URL): open, the gap, or a block.
 
-    Exit codes: 0 done (also when the database already holds the file's state or a stricter one); 2 no state
-    file, the state file cannot be read or repaired, DATABASE_URL is malformed or the database cannot be
-    reached."""
+    Exit codes: 0 done; 2 DATABASE_URL is malformed or the database cannot be reached."""
     settings = Settings()
     _check_database_url(settings.database_url)
-    file_gate = YoutubeGate(
-        settings.catcher_state_dir, block_hours=settings.youtube_block_hours, clock=_gate_clock
-    )
-    before: os.stat_result | None = None
-    if import_file:
-        try:
-            before = file_gate.state_file.stat()
-        except FileNotFoundError:
-            typer.echo(f"no state file at {file_gate.state_file}: nothing to import", err=True)
-            raise typer.Exit(2) from None
     engine = make_worker_engine(settings.database_url)
     gate = PostgresGate(engine, block_hours=settings.youtube_block_hours, clock=_gate_clock)
     try:
-        if before is not None:
-            _import_state_file(gate, file_gate, before)
-        else:
-            state = gate.snapshot()
-            typer.echo(f"youtube: {_gate_text(state, _gate_clock())}")
+        state = gate.snapshot()
+        typer.echo(f"youtube: {_gate_text(state, _gate_clock())}")
     except GateUnavailable as e:
         _log_gate_unavailable(e)
         raise typer.Exit(2) from None

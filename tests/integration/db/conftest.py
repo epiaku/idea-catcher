@@ -120,13 +120,12 @@ def worker_engine(pg_engine: Engine) -> Iterator[Engine]:
 
 
 @pytest.fixture
-def harness(make_repo, worker_engine, make_services, yt_facts, tmp_path) -> WorkerHarness:
+def harness(make_repo, worker_engine, make_services, yt_facts) -> WorkerHarness:
     """A worker on the test_run seed (a note, a Gemini chat, a YouTube clip); see worker_harness.py."""
     return seeded_harness(
         make_repo=make_repo,
         engine=worker_engine,
         services=make_services(),
-        state_dir=tmp_path / "state",
         yt_facts=yt_facts,
     )
 
@@ -134,6 +133,4 @@ def harness(make_repo, worker_engine, make_services, yt_facts, tmp_path) -> Work
 @pytest.fixture
 def frozen_harness(worker_engine, make_services, tmp_path) -> FrozenHarness:
     """A worker on a copy of the committed tests/data; the model and YouTube record the attempt and raise."""
-    return build_frozen_harness(
-        target=tmp_path / "ic", engine=worker_engine, services=make_services(), state_dir=tmp_path / "state"
-    )
+    return build_frozen_harness(target=tmp_path / "ic", engine=worker_engine, services=make_services())

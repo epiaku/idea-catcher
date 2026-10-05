@@ -10,7 +10,7 @@ The fixtures `harness` and `frozen_harness` in `tests/integration/db/conftest.py
 - `frozen_harness()`: the same machinery on `reset_test_repos` of the committed `tests/data` (the real inbox,
   saved facts and saved replies), with a model and a YouTube that record the attempt and raise.
 
-Nothing here touches the network, the real CATCHER_STATE_DIR or `tests/data` (reset copies it).
+Nothing here touches the network, the developer's database or `tests/data` (reset copies it).
 
 Two things to know when writing tests on these:
 
@@ -118,13 +118,12 @@ class WorkerHarness:
         docs: Path,
         engine: Engine,
         services: Services,
-        state_dir: Path,
         fetcher: Callable[[str], YoutubeFacts],
         backends: SimpleNamespace,
         handlers: Mapping[str, Handler] | None = None,
         clock: FrozenClock | None = None,
     ) -> None:
-        self.ideas, self.docs, self.state_dir = ideas, docs, state_dir
+        self.ideas, self.docs = ideas, docs
         self.clock = clock or FrozenClock()
         self.fetch_calls: list[str] = []
         self.fetcher = fetcher
@@ -135,7 +134,6 @@ class WorkerHarness:
         services.settings = Settings(
             ideas_repo=ideas,
             docs_repo=docs,
-            catcher_state_dir=state_dir,
             database_url=engine.url.render_as_string(hide_password=False),
             youtube_offline=False,
         )
@@ -192,7 +190,6 @@ def seeded_harness(
     make_repo: Callable[[str, dict[str, str]], tuple[Path, Path]],
     engine: Engine,
     services: Services,
-    state_dir: Path,
     yt_facts: YoutubeFacts,
     handlers: Mapping[str, Handler] | None = None,
 ) -> WorkerHarness:
@@ -210,7 +207,6 @@ def seeded_harness(
         docs=docs,
         engine=engine,
         services=services,
-        state_dir=state_dir,
         fetcher=facts_for,
         backends=SimpleNamespace(note=FakeBackend(), chat=FakeBackend()),
         handlers=handlers,
@@ -228,7 +224,6 @@ def frozen_harness(
     target: Path,
     engine: Engine,
     services: Services,
-    state_dir: Path,
     handlers: Mapping[str, Handler] | None = None,
 ) -> FrozenHarness:
     """`reset_test_repos(target)` of `tests/data` (a copy; `target` must not exist yet), with a model and a
@@ -245,7 +240,6 @@ def frozen_harness(
         docs=repos["epiaku-docs"],
         engine=engine,
         services=services,
-        state_dir=state_dir,
         fetcher=no_youtube,
         backends=SimpleNamespace(note=raising, chat=raising),
         handlers=handlers,

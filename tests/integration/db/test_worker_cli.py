@@ -28,9 +28,8 @@ from catcher.modules.worker.handlers import Done, HandlerContext
 
 
 @pytest.fixture
-def runner(fresh_database_url: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> CliRunner:
+def runner(fresh_database_url: str, monkeypatch: pytest.MonkeyPatch) -> CliRunner:
     monkeypatch.setenv("DATABASE_URL", fresh_database_url)
-    monkeypatch.setenv("CATCHER_STATE_DIR", str(tmp_path / "state"))  # never the real YouTube gate
     cli = CliRunner()
     result = cli.invoke(app, ["db", "upgrade"])
     assert result.exit_code == 0, result.output
@@ -375,7 +374,6 @@ def test_an_idle_worker_process_stops_at_once_on_sigterm(
     env = {
         **os.environ,
         "DATABASE_URL": fresh_database_url,
-        "CATCHER_STATE_DIR": str(tmp_path / "state"),
         "LOG_FILE": str(tmp_path / "worker.log"),
         "LOG_LEVEL": "INFO",
     }
@@ -403,7 +401,6 @@ def test_a_worker_that_loses_its_lock_stops_with_exit_1(
     env = {
         **os.environ,
         "DATABASE_URL": fresh_database_url,
-        "CATCHER_STATE_DIR": str(tmp_path / "state"),
         "LOG_FILE": str(tmp_path / "worker.log"),
         "LOG_LEVEL": "INFO",
     }

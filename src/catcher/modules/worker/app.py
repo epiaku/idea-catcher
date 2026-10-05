@@ -72,7 +72,7 @@ def build_context(
     """The context every handler gets: the real services (`default_services`), a worker engine for
     DATABASE_URL (sessions with a lock timeout), and the two checkouts. The caller disposes the engine.
 
-    The YouTube gate is the row `youtube` in Postgres on that same engine (not the file gate of Stage A), and
+    The YouTube gate is the row `youtube` in Postgres on that same engine (the one gate), and
     it and the YouTube access read the same `clock`, so a frozen clock freezes both."""
     engine = make_worker_engine(settings.database_url)
 

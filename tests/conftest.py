@@ -21,17 +21,13 @@ from catcher.modules.youtube.facts import FactsFetcher, FactsUnavailable, Youtub
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+pytest_plugins = ["blocknet"]  # the network guard: on for every run, off only with CATCHER_ALLOW_NETWORK=1
+
+
 @pytest.fixture(autouse=True)
 def _ignore_the_real_dotenv(monkeypatch):
     """Tests must never read the developer's real .env (it holds API keys and machine paths)."""
     monkeypatch.setattr("catcher.cli.load_dotenv", lambda *args, **kwargs: False)
-
-
-@pytest.fixture(autouse=True)
-def _private_state_dir(monkeypatch, tmp_path_factory):
-    """The Stage A file gate (`youtube gate --import-file`) reads the state folder: never the developer's
-    real one."""
-    monkeypatch.setenv("CATCHER_STATE_DIR", str(tmp_path_factory.mktemp("state")))
 
 
 @pytest.fixture(autouse=True)

@@ -1,7 +1,7 @@
 """The rules of the YouTube gate, as pure functions: no file, no database, no clock of their own.
 
-The file gate (`gate.py`, Stage A) and the database gate (the worker) both read their state, apply these
-rules and write the result back, so the two cannot drift apart:
+The Postgres gate (`pg_gate.py`) and the in-memory test gate both read their state, apply these rules and
+write the result back, so the two cannot drift apart:
 
 - **the gap:** at least `min_gap_s` (plus a random `jitter_s`) between the *start* of two fetches;
 - **the breaker:** after a block, no call for `block_hours`, then twice as long, up to 24 hours, until a fetch

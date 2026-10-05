@@ -124,3 +124,10 @@ def test_closed_state_blocks_for_at_least_one_hour():
     short = closed_state(NOW, 0)
     assert short.blocked_until == NOW + HOUR
     assert wait_for(short, NOW) == Wait(NOW + HOUR, blocked=True)
+
+
+def test_the_wait_message_says_what_and_when():
+    gap = Wait(NOW + 600, blocked=False).message(NOW)
+    block = Wait(NOW + HOUR, blocked=True).message(NOW)
+    assert gap.startswith("YouTube: next call allowed at ")
+    assert block.startswith("YouTube blocked until ")

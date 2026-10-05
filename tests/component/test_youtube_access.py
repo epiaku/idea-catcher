@@ -487,8 +487,8 @@ def test_a_success_the_gate_cannot_record_still_returns_the_facts(tmp_path, capl
     assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 
-def test_build_access_uses_a_given_gate(tmp_path):
-    settings = Settings(catcher_state_dir=tmp_path / "state")
+def test_build_access_uses_a_given_gate():
+    settings = Settings()
     gate = FakeGate(Clock())
 
     assert build_access(settings, gate).gate is gate

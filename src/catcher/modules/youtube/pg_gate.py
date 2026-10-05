@@ -1,10 +1,10 @@
-"""The YouTube gate kept in Postgres: the row `youtube` in `resources`, for the worker.
+"""The YouTube gate kept in Postgres: the row `youtube` in `resources`, the one gate of every command.
 
-The same rules as the file gate (`gate_rules.py`), on a row that every worker shares. Each call is one short
+The shared rules (`gate_rules.py`), on a row that every worker and command shares. Each call is one short
 transaction of its own: take the row with `SELECT ... FOR UPDATE`, apply a rule, write, commit. The row lock
 is what lets exactly one of two workers asking at the same moment go ahead.
 
-It fails **closed**, like the file gate:
+It fails **closed**:
 
 - a **missing** row is inserted closed (blocked for `block_hours`) and an error is logged;
 - **damaged** values (negative, before 1970, 'infinity', past the year 9999, a negative streak) rewrite the
@@ -13,9 +13,9 @@ It fails **closed**, like the file gate:
 - a **database error** (down, a lock timeout) raises `GateUnavailable` and changes nothing: the caller must
   not fetch.
 
-The clock is read once the row lock is held, as the file gate reads it inside its file lock: a call that
-waited for the lock uses the time it got it. Times are seconds since the epoch in Python and `timestamptz` in
-the row, converted only here, at the edge (read with `extract(epoch ...)`, so any stored value can be read).
+The clock is read once the row lock is held: a call that waited for the lock uses the time it got it. Times
+are seconds since the epoch in Python and `timestamptz` in the row, converted only here, at the edge (read
+with `extract(epoch ...)`, so any stored value can be read).
 A row keeps whole microseconds, so every time is stored rounded *up*: a gap or a block can last a
 microsecond longer than the rules say but never ends a moment too early, and a block recorded in the same
 microsecond as the start of a fetch counts as newer (it stays). After reading, times are compared as floats.
@@ -178,7 +178,7 @@ class PostgresGate:
             found = self._select(session)  # ours, or the one another worker inserted at the same moment
             if found is None:
                 raise GateUnavailable(f"the YouTube gate row {self.name!r} could not be inserted")
-        now = self.clock()  # under the row lock, like the file gate reads its clock inside its file lock
+        now = self.clock()  # under the row lock: a call that waited for it uses the time it got it
         try:
             raw = GateState(
                 **{key: _epoch(key, value) for key, value in zip(_TIMES, found[:3], strict=True)},
@@ -282,29 +282,5 @@ class PostgresGate:
 
         def work(session: Session) -> GateState:
             return self._read(session)[0]
-
-        return self._transaction(work)
-
-    def import_state(self, state: GateState) -> bool:
-        """Merge `state` (from the Stage A state file) into the row; True when the row changed.
-
-        The merge can only make the gate more careful: every field keeps the larger of the row's value and
-        the file's (the later gap, the later block, the newer `blocked_at`, the higher streak). So a block is
-        never shortened, a streak is never reset, and a newer `blocked_at` is never replaced by an older one.
-        When the row already covers the file, nothing is written and the answer is False."""
-
-        def work(session: Session) -> bool:
-            current, now = self._read(session)
-            file = clamp(state, now)  # damage in `state` raises ValueError, as it does for a row
-            merged = GateState(
-                next_allowed_at=max(current.next_allowed_at, file.next_allowed_at),
-                blocked_until=max(current.blocked_until, file.blocked_until),
-                blocked_at=max(current.blocked_at, file.blocked_at),
-                streak=max(current.streak, file.streak),
-            )
-            if merged == current:
-                return False
-            self._write(session, merged, now)
-            return True
 
         return self._transaction(work)

@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from catcher.cli import _facts_dir_of
 from catcher.core.config import Settings
 from catcher.modules.youtube import access as access_mod
@@ -31,8 +29,7 @@ def test_every_setting_can_be_changed_with_an_environment_variable(monkeypatch):
     assert settings.youtube_offline and settings.youtube_skip_manifests
 
 
-def test_build_access_passes_the_settings_on(monkeypatch, tmp_path):
-    monkeypatch.setenv("CATCHER_STATE_DIR", str(tmp_path / "state"))
+def test_build_access_passes_the_settings_on(monkeypatch):
     monkeypatch.setenv("YOUTUBE_REQUEST_DELAY_S", "7")
     monkeypatch.setenv("YOUTUBE_MIN_GAP_S", "123")
     monkeypatch.setenv("YOUTUBE_SKIP_MANIFESTS", "1")
@@ -55,10 +52,6 @@ def test_render_saves_facts_only_in_the_idea_bucket_the_document_is_in(tmp_path)
     stray.parent.mkdir()
     stray.write_text("x")
     assert _facts_dir_of(stray) is None  # a stray path never writes into some repo
-
-
-def test_the_state_folder_is_expanded_from_the_home_directory():
-    assert isinstance(Settings().catcher_state_dir, Path)
 
 
 def test_the_run_command_has_the_youtube_flags(monkeypatch, no_run_lock):
