@@ -16,6 +16,7 @@ from catcher.modules.queue import queue
 from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import claim, enqueue, reap
 from catcher.modules.worker import dispatch, heartbeat
+from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.dispatch import run_job
 from catcher.modules.worker.handlers import Done, HandlerContext, HandlerResult
 from catcher.modules.worker.heartbeat import Heartbeat
@@ -183,6 +184,7 @@ def _ctx(engine: Engine) -> HandlerContext:
         ideas=Path("ideas"),
         docs=Path("docs"),
         clock=utc_now,
+        backend_blocks=BackendBlocks(engine, clock=utc_now),
     )
 
 

@@ -69,6 +69,18 @@ class BackendBlocked(UsageLimitReached):
     call, never by a backend, so it does not start a new block."""
 
 
+class ModelRejected(BackendUnavailable):
+    """The backend does not know the model it was asked for (a misspelled model name: an HTTP 404 or 400 that
+    names the model). Only the profiles with that model fail, so the worker blocks the profile
+    (`<backend>:<profile>`), not the backend. `reason` fills in `profile` (a backend does not know it)."""
+
+    def __init__(self, message: str, *, backend: str, model: str | None = None, profile: str | None = None):
+        super().__init__(message)
+        self.backend = backend
+        self.model = model
+        self.profile = profile
+
+
 class InvalidOutput(LlmError):
     pass
 
@@ -208,6 +220,8 @@ def reason(
                 reply = backend.complete(full, model=profile.model, task=req.task)
             except Exception as e:
                 outcome, trace_error = "backend_error", str(e)
+                if isinstance(e, ModelRejected) and e.profile is None:
+                    e.profile = req.profile  # the backend does not know which profile asked
                 raise
             tokens_in += reply.usage.tokens_in or 0
             tokens_out += reply.usage.tokens_out or 0

@@ -55,7 +55,7 @@ class HandlerContext:
     ideas: Path
     docs: Path
     clock: Callable[[], datetime]
-    backend_blocks: BackendBlocks = field(default_factory=BackendBlocks)  # per worker process, not persisted
+    backend_blocks: BackendBlocks  # the LLM blocks in Postgres (`resources`), shared by every worker
     item_states: ItemStates = field(default_factory=ItemStates)  # no mirror unless given (build_context does)
 
 

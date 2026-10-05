@@ -25,8 +25,11 @@ class Settings(BaseSettings):
     llm_trace: bool = True  # every LLM call of a run leaves a trace in `llm/` of the idea-bucket
     llm_trace_prompt: bool = False  # also save the full prompt in the trace (large; it holds the document)
     llm_cache: bool = True  # read a saved good reply in `llm/` before calling the model
-    # worker: a backend that hit a usage limit, its budget or was down is not called for this many seconds
+    # worker: a backend that hit a usage limit or was down (or a profile whose model the backend does not
+    # know) is not called for this many seconds
     llm_block_s: int = Field(default=600, gt=0)
+    # worker: a backend whose budget is used up is not called for this many seconds (6 hours)
+    llm_budget_block_s: int = Field(default=21600, gt=0)
     # worker: an item `deferred` for this many days becomes `stuck` (still retried by retry_deferred)
     stuck_after_days: float = Field(default=3, gt=0, allow_inf_nan=False)
     transcript_languages: str = "en"

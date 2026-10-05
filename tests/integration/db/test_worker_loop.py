@@ -17,6 +17,7 @@ from catcher.modules.queue.items import get_item, set_item_status, stage_item
 from catcher.modules.queue.models import Job, JobEvent, JobItem
 from catcher.modules.queue.queue import claim, enqueue
 from catcher.modules.worker import handlers_pipeline, loop
+from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.guard import WorkerLockLost
 from catcher.modules.worker.handlers import Defer, Done, Handler, HandlerContext, HandlerResult
 from catcher.modules.worker.handlers_pipeline import handle_llm_reason, handle_youtube_fetch
@@ -47,6 +48,7 @@ def _ctx(engine: Engine, clock) -> HandlerContext:
         ideas=Path("ideas"),
         docs=Path("docs"),
         clock=clock,
+        backend_blocks=BackendBlocks(engine, clock=clock),
     )
 
 

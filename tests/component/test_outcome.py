@@ -78,3 +78,11 @@ def test_a_blocked_backend_is_deferred_naming_the_backend_not_as_a_new_usage_lim
     outcome = classify(BackendBlocked("not called again until 12:10", "openai"))
     assert (outcome.kind, outcome.backend, outcome.budget) == ("deferred", "openai", False)
     assert outcome.message == "openai: not called again until 12:10"
+
+
+def test_a_rejected_model_is_deferred_naming_the_model_and_blocks_no_backend_in_stage_a():
+    from catcher.modules.llm.service import ModelRejected
+
+    outcome = classify(ModelRejected("openai: model 'gpt-tset' rejected (HTTP 404)", backend="openai"))
+    assert (outcome.kind, outcome.backend, outcome.budget) == ("deferred", None, False)
+    assert "gpt-tset" in outcome.message

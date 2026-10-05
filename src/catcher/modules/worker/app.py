@@ -88,13 +88,19 @@ def build_context(
         clock=epoch,
     )
     ideas = ideas or settings.ideas_repo
+    services = default_services(settings, gate=gate, clock=epoch)
+
+    def known_backends() -> set[str]:
+        return {profile.backend for profile in services.profiles.profiles.values()}
+
     return HandlerContext(
         settings=settings,
-        services=default_services(settings, gate=gate, clock=epoch),
+        services=services,
         engine=engine,
         ideas=ideas,
         docs=docs or settings.docs_repo,
         clock=clock,
-        backend_blocks=BackendBlocks(),  # this worker's memory of blocked LLM backends (in memory only)
+        # the LLM blocks: `resources` rows on the same engine, the same clock (kept over a restart)
+        backend_blocks=BackendBlocks(engine, clock=clock, known_backends=known_backends),
         item_states=ItemStates(mirror=frontmatter_mirror(ideas)),  # Postgres, then the frontmatter mirror
     )

@@ -505,6 +505,8 @@ def test_a_usage_limit_blocks_the_backend_and_the_next_document_makes_no_call(ha
 
 
 def test_a_used_up_budget_blocks_the_backend_through_the_worker(harness):
+    # this test is about the budget blocking the backend; its length (LLM_BUDGET_BLOCK_S) is tested elsewhere
+    harness.ctx.settings = harness.ctx.settings.model_copy(update={"llm_budget_block_s": 600})
     (harness.ideas / "inbox/notes/second.md").write_text("A second idea to write up\n", encoding="utf-8")
     harness.backends.note = FakeBackend([BudgetExhausted("freellmapi budget reached", backend="fake")])
     harness.add_job("pipeline.run", only=["YouTube walks", "second"])

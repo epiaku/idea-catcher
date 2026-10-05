@@ -19,9 +19,10 @@ recorded as published; a crash before `finish` reruns from the saved reply, so t
 The published outcome commits the LLM metrics with it (profile, backend, model, prompt version, tokens, the
 warnings, the page's path in the docs repo, and whether the reply was a saved one); a deferred or failed
 model call records the profile and backend it tried.
-A backend that hit a usage limit or its budget, or was down, is blocked for LLM_BLOCK_S in this worker's
-memory (`blocks.py`): the next documents that need it are deferred without a call; a saved reply is still
-used.
+A backend that hit a usage limit or was down is blocked for LLM_BLOCK_S, one whose budget is used up for
+LLM_BUDGET_BLOCK_S, and a profile whose model the backend does not know (only that profile) for LLM_BLOCK_S,
+in the `resources` table (`blocks.py`, shared by every worker, kept over a restart): the next documents that
+need it are deferred without a call; a saved reply is still used.
 
 `youtube.fetch` gets the facts of one staged clip and queues its `llm.reason`. The YouTube call runs with
 no session open and never sleeps: a closed gate (the gap, or the breaker after a 429) defers the job to the
@@ -48,11 +49,13 @@ from catcher import __version__
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import FrontmatterError
 from catcher.core.git import GIT_LOCK, GitError, ahead_of_upstream, commit_managed, has_remote, pull, push
-from catcher.modules.llm.profiles import UnknownProfile, resolve_profile
+from catcher.modules.llm.profiles import Profile, UnknownProfile, resolve_profile
 from catcher.modules.llm.service import (
     BackendBlocked,
     BackendUnavailable,
+    BudgetExhausted,
     LlmError,
+    ModelRejected,
     UsageLimitReached,
 )
 from catcher.modules.llm.trace import LLM_DIR
@@ -105,7 +108,7 @@ from catcher.modules.queue.items import (
 from catcher.modules.queue.models import ITEM_STATUSES, Job, JobItem
 from catcher.modules.queue.queue import enqueue, live_job_carries
 from catcher.modules.queue.states import LlmMetrics, record_llm_tried, record_metrics
-from catcher.modules.worker.blocks import Block
+from catcher.modules.worker.blocks import Block, profile_key
 from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
 from catcher.modules.youtube.checks import SummaryWarning
@@ -634,7 +637,7 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.U
         facts_dir=ideas / FACTS_DIR,
         llm_dir=ideas / LLM_DIR,
         blocked_backends=frozenset(blocks),  # not called; a saved reply is still served
-        blocked_reasons={backend: _blocked_reason(block) for backend, block in blocks.items()},
+        blocked_reasons={key: _blocked_reason(block) for key, block in blocks.items()},
     )
     who = note_label(note)
     try:
@@ -726,23 +729,35 @@ def _blocked_reason(block: Block) -> str:
 
 
 def _remember_block(ctx: HandlerContext, note: Note, params: ReasonParams, error: Exception) -> None:
-    """A model call that failed because its backend is unavailable (a usage limit, its budget, or down: a
-    BackendUnavailable) blocks that backend for LLM_BLOCK_S, so the next documents make no call. Anything else
-    blocks nothing: bad output, a rejected document, missing facts, or the deferral of a block already running
-    (that would make the block last for ever). The block is in this worker's memory only (see `blocks.py`)."""
+    """A model call that failed because its backend is unavailable (a BackendUnavailable) blocks, in Postgres
+    (`blocks.py`), so the next documents make no call: a usage limit or down blocks the backend for
+    LLM_BLOCK_S, a used-up budget for LLM_BUDGET_BLOCK_S, and a model the backend does not know only this
+    profile (`<backend>:<profile>`) for LLM_BLOCK_S, so the other profiles of that backend still run. Anything
+    else blocks nothing: bad output, a rejected document, missing facts, or the deferral of a block already
+    running (that would make the block last for ever)."""
     if not isinstance(error, BackendUnavailable) or isinstance(error, BackendBlocked):
         return
-    if isinstance(error, UsageLimitReached):  # a usage limit or the budget: the backend says which it is
-        backend = error.backend
+    seconds = ctx.settings.llm_block_s
+    cause = str(error)
+    if isinstance(error, ModelRejected):  # only this profile: its model is wrong, the backend is fine
+        profile_name = error.profile or _profile_of(ctx, note, params)[0]
+        key = profile_key(error.backend, profile_name)
+        cause = f"profile {profile_name}: {error}"
+    elif isinstance(error, UsageLimitReached):  # a usage limit or the budget: the backend says which it is
+        key = error.backend
+        if isinstance(error, BudgetExhausted):
+            seconds = ctx.settings.llm_budget_block_s
     else:  # down: the backend of the profile this document used
-        _, profile = resolve_profile(
-            ctx.services.profiles, requested=params.profile, class_default=note.doctype.llm_profile
-        )
-        backend = profile.backend
-    until = ctx.clock() + timedelta(seconds=ctx.settings.llm_block_s)  # from the failure: a call can hang
-    ctx.backend_blocks.block(backend, until, str(error))
-    log.warning(
-        "LLM backend %s is not called again until %s: %s", backend, until.isoformat(timespec="seconds"), error
+        key = _profile_of(ctx, note, params)[1].backend
+    until = ctx.clock() + timedelta(seconds=seconds)  # from the failure: a call can hang
+    ctx.backend_blocks.block(key, until, cause)
+    log.warning("LLM %s is not called again until %s: %s", key, until.isoformat(timespec="seconds"), error)
+
+
+def _profile_of(ctx: HandlerContext, note: Note, params: ReasonParams) -> tuple[str, Profile]:
+    """The profile this document used: the job's, else its class's, else the default."""
+    return resolve_profile(
+        ctx.services.profiles, requested=params.profile, class_default=note.doctype.llm_profile
     )
 
 

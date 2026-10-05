@@ -177,3 +177,13 @@ def test_the_note_prompt_keeps_headings_rare(prompt_tags):
     prompt, _ = render_prompt("note", note_request(prompt_tags).input)
     assert "only for a note of more than about 150 words" in prompt and "at most 3 headings" in prompt
     assert "A shorter note gets paragraphs or bullets and no headings" in prompt
+
+
+def test_a_rejected_model_says_which_profile_asked_for_it(fake_profiles, prompt_tags):
+    from catcher.modules.llm.service import ModelRejected
+
+    rejected = ModelRejected("fake: model 'x' rejected (HTTP 404)", backend="fake", model="x")
+    fake = FakeBackend([rejected])
+    with pytest.raises(ModelRejected) as info:
+        reason(note_request(prompt_tags), profiles=fake_profiles, backends=lambda p: fake)
+    assert (info.value.backend, info.value.model, info.value.profile) == ("fake", "x", "fake")

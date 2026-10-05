@@ -44,6 +44,7 @@ from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import enqueue
 from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker.app import build_handlers
+from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter_mirror
 from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.access import YoutubeAccess
@@ -149,6 +150,9 @@ class WorkerHarness:
             ideas=ideas,
             docs=docs,
             clock=self.clock,
+            backend_blocks=BackendBlocks(
+                engine, clock=self.clock
+            ),  # the LLM blocks in Postgres, as the worker
             item_states=ItemStates(mirror=frontmatter_mirror(ideas)),  # as build_context makes it
         )
         self.worker = Worker(

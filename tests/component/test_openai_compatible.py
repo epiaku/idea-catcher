@@ -229,3 +229,59 @@ def test_a_word_like_spend_in_an_unrelated_error_is_not_a_budget_problem():
     with pytest.raises(BackendUnavailable) as info:
         openai_backend().complete("p", model="m", task="ai-chat")
     assert not isinstance(info.value, UsageLimitReached)
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "status, message, code",
+    [
+        (404, "The model `gpt-tset` does not exist or you do not have access to it.", "model_not_found"),
+        (404, "The model `gpt-tset` does not exist", None),
+        (400, "invalid model ID", "invalid_model"),
+        (400, "Unknown model: gpt-tset", None),
+        (404, "model 'gpt-tset' not found", None),
+    ],
+)
+def test_a_model_the_backend_does_not_know_is_rejected_for_the_profile(status, message, code):
+    from catcher.modules.llm.service import ModelRejected
+
+    route = respx.post(URL).mock(return_value=error(status, message, code))
+    waits: list[float] = []
+    backend = OpenAiCompatibleBackend("openai", BASE, "k", json_mode=True, max_attempts=5, sleep=waits.append)
+    with pytest.raises(ModelRejected) as info:
+        backend.complete("p", model="gpt-tset", task="ai-chat")
+    assert (info.value.backend, info.value.model, info.value.profile) == ("openai", "gpt-tset", None)
+    assert "gpt-tset" in str(info.value)
+    assert not isinstance(info.value, UsageLimitReached)  # not a backend-wide block
+    assert route.call_count == 1 and waits == []
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "status, message, code, kind",
+    [
+        (401, "bad key", None, UsageLimitReached),
+        (403, "forbidden", None, UsageLimitReached),
+        (429, "slow down", "rate_limit_exceeded", UsageLimitReached),
+        (429, "You exceeded your current quota", "insufficient_quota", BudgetExhausted),
+        (400, "bad request: messages must be a list", None, BackendUnavailable),
+        (404, "Not Found", None, BackendUnavailable),
+    ],
+)
+def test_other_http_errors_keep_their_backend_level_mapping(status, message, code, kind):
+    from catcher.modules.llm.service import ModelRejected
+
+    respx.post(URL).mock(return_value=error(status, message, code))
+    with pytest.raises(kind) as info:
+        openai_backend().complete("p", model="m", task="ai-chat")
+    assert not isinstance(info.value, ModelRejected)
+
+
+@respx.mock
+def test_too_long_for_the_model_is_not_a_rejected_model():
+    from catcher.modules.llm.service import InputRejected
+
+    message = "This model's maximum context length is 128000 tokens. The model does not exist in that size."
+    respx.post(URL).mock(return_value=error(400, message, "context_length_exceeded"))
+    with pytest.raises(InputRejected):
+        openai_backend().complete("p", model="m", task="ai-chat")

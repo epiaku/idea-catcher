@@ -8,6 +8,7 @@ from sqlalchemy import Engine, select
 from catcher.core.db import session_scope
 from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import claim, enqueue, reap
+from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.dispatch import run_job
 from catcher.modules.worker.handlers import Defer, Done, Fail, Handler, HandlerContext, HandlerResult
 
@@ -21,6 +22,7 @@ def _ctx(engine: Engine, clock) -> HandlerContext:
         ideas=Path("ideas"),
         docs=Path("docs"),
         clock=clock,
+        backend_blocks=BackendBlocks(engine, clock=clock),
     )
 
 

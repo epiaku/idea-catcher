@@ -11,6 +11,7 @@ from catcher.modules.llm.service import (
     BackendUnavailable,
     BudgetExhausted,
     InputRejected,
+    ModelRejected,
     TransientBackendError,
     Usage,
     UsageLimitReached,
@@ -28,6 +29,22 @@ _TOO_LONG = re.compile(
     r"context[_ ]length|maximum context|too many tokens|reduce the length|prompt is too long", re.IGNORECASE
 )
 _KEY_VARIABLES = {"openai": "OPENAI_API_KEY", "freellmapi": "FREELLMAPI_API_KEY"}
+# A model the API does not know (a misspelled model name): OpenAI says 404 `model_not_found`, "The model `x`
+# does not exist or you do not have access to it"; other OpenAI-compatible APIs say 400 `invalid_model` or
+# "unknown model". Only the model is named: a bare 404 (a wrong base URL) stays a backend problem.
+_UNKNOWN_MODEL_CODES = {"model_not_found", "invalid_model", "unknown_model"}
+_UNKNOWN_MODEL = re.compile(
+    r"\bmodel\b[^.;\n]{0,80}?\b(?:does not exist|not found|is not supported|is not available)|"
+    r"\b(?:unknown|invalid|unsupported) model\b|\bno such model\b",
+    re.IGNORECASE,
+)
+
+
+def _is_unknown_model(error: openai.APIStatusError) -> bool:
+    if error.status_code not in (400, 404):
+        return False
+    code = str(getattr(error, "code", "") or "")
+    return code in _UNKNOWN_MODEL_CODES or bool(_UNKNOWN_MODEL.search(error.message))
 
 
 def _is_budget_problem(error: openai.APIStatusError) -> bool:
@@ -105,6 +122,10 @@ class OpenAiCompatibleBackend:
                 message = f"{self.name} budget reached: {e.message[:200]}"
                 log.warning(message)
                 raise BudgetExhausted(message, backend=self.name) from e
+            if _is_unknown_model(e):
+                message = f"{self.name}: model {model!r} rejected (HTTP {e.status_code}): {e.message[:200]}"
+                log.error(message)
+                raise ModelRejected(message, backend=self.name, model=model) from e
             message = f"{self.name} HTTP {e.status_code}: {e.message[:300]}"
             log.warning(message)
             raise (TransientBackendError if e.status_code >= 500 else BackendUnavailable)(message) from e

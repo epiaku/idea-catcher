@@ -69,8 +69,10 @@ class Services:
 class ProcessOptions:
     profile: str | None = None
     dry_run: bool = False
-    blocked_backends: frozenset[str] = frozenset()  # not called; a saved reply is still used
-    blocked_reasons: dict[str, str] = field(default_factory=dict)  # backend -> why and until when (worker)
+    # not called; a saved reply is still used. A backend name blocks every profile of it, and
+    # `<backend>:<profile>` (the worker, for a model the backend does not know) only that profile
+    blocked_backends: frozenset[str] = frozenset()
+    blocked_reasons: dict[str, str] = field(default_factory=dict)  # key -> why and until when (worker)
     facts_dir: Path | None = (
         None  # where the saved YouTube facts live (`facts/` in idea-bucket); None: no saving
     )
@@ -114,11 +116,20 @@ def default_services(
 BLOCKED_IN_THIS_RUN = "a usage limit was reached earlier: not called again in this run"
 
 
-def check_not_blocked(profile: Profile, opts: ProcessOptions) -> None:
-    """Raise BackendBlocked when the profile's backend must not be called (`opts.blocked_backends`). The
-    message is the one in `opts.blocked_reasons` (the worker says until when), else Stage A's."""
-    if profile.backend in opts.blocked_backends:
-        message = opts.blocked_reasons.get(profile.backend, BLOCKED_IN_THIS_RUN)
+def blocked_key(profile_name: str | None, profile: Profile, opts: ProcessOptions) -> str | None:
+    """The key in `opts.blocked_backends` that holds this profile back: its backend, else
+    `<backend>:<profile name>` (only this profile), else None."""
+    keys = [profile.backend] + ([f"{profile.backend}:{profile_name}"] if profile_name else [])
+    return next((key for key in keys if key in opts.blocked_backends), None)
+
+
+def check_not_blocked(profile: Profile, opts: ProcessOptions, profile_name: str | None = None) -> None:
+    """Raise BackendBlocked when the profile's backend, or this profile (`profile_name`) of it, must not be
+    called (`opts.blocked_backends`). The message is the one in `opts.blocked_reasons` (the worker says until
+    when), else Stage A's."""
+    key = blocked_key(profile_name, profile, opts)
+    if key is not None:
+        message = opts.blocked_reasons.get(key, BLOCKED_IN_THIS_RUN)
         raise BackendBlocked(message, backend=profile.backend)
 
 
@@ -324,13 +335,13 @@ def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPa
     profile_name, profile = resolve_profile(
         svc.profiles, requested=opts.profile, class_default=note.doctype.llm_profile
     )
-    if profile.backend in opts.blocked_backends:
+    if blocked_key(profile_name, profile, opts) is not None:
         # Only the model call is blocked: saved facts and a saved reply still make the page. YouTube is never
         # asked for a document whose model cannot be called now.
         try:
             facts = get_facts(note, svc, replace(opts, allow_fetch=False))
         except FetchSkipped:
-            check_not_blocked(profile, opts)
+            check_not_blocked(profile, opts, profile_name)
             raise
     else:
         facts = get_facts(note, svc, opts)
@@ -342,7 +353,9 @@ def process_note(note: Note, svc: Services, opts: ProcessOptions) -> ProcessedPa
         llm_dir=opts.llm_dir,
         dry_run=opts.dry_run,
         refresh_llm=opts.refresh_llm,
-        before_call=lambda p: check_not_blocked(p, opts),  # after the saved-reply lookup, before the call
+        before_call=lambda p: check_not_blocked(
+            p, opts, profile_name
+        ),  # after the saved reply, before a call
     )
     return build_page(note, svc, result, facts)
 
