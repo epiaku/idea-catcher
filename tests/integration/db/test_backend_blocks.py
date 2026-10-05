@@ -177,6 +177,23 @@ def test_unblock_opens_the_key(worker_engine):
     assert blocks.active(NOW) == frozenset() and row(worker_engine, "openai") is None
 
 
+def test_the_youtube_gate_row_cannot_be_blocked_or_unblocked_as_an_llm_backend(worker_engine):
+    with session_scope(worker_engine) as session:  # the YouTube gate, closed
+        session.execute(
+            update(Resource)
+            .where(Resource.name == YOUTUBE_RESOURCE)
+            .values(blocked_until=NOW + timedelta(hours=6), streak=2)
+        )
+    blocks = BackendBlocks(worker_engine, clock=Clock())
+    with pytest.raises(ValueError, match="reserved"):
+        blocks.block(YOUTUBE_RESOURCE, NOW + timedelta(seconds=60), "x")
+    with pytest.raises(ValueError, match="reserved"):
+        blocks.unblock(YOUTUBE_RESOURCE)
+    gate = row(worker_engine, YOUTUBE_RESOURCE)
+    assert gate is not None
+    assert (gate.blocked_until, gate.streak, gate.reason) == (NOW + timedelta(hours=6), 2, None)
+
+
 @pytest.mark.parametrize("call", ["block", "active", "entries"])
 def test_a_naive_time_is_refused(worker_engine, call):
     blocks = BackendBlocks(worker_engine, clock=Clock())

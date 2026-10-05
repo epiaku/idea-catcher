@@ -43,9 +43,11 @@ from catcher.modules.pipeline.inputs import prompt_input
 from catcher.modules.pipeline.process import ProcessOptions, Services, default_services, process_note
 from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import NOT_STARTED, RunLockLost, RunOptions, RunReport, run_pipeline
+from catcher.modules.pipeline.scan_state import scan_item_files
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
 from catcher.modules.queue.models import ITEM_STATUSES, JOB_STATUSES, Job, JobItem
+from catcher.modules.queue.reconcile import reconcile
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
@@ -424,6 +426,80 @@ def _run_lock(settings: Settings) -> Iterator[Callable[[], None]]:
             yield lock.check
     finally:
         engine.dispose()
+
+
+RECONCILE_DB_ERROR = "a database error stopped reconcile (see the log): no row was written"
+
+
+@app.command("reconcile")
+def reconcile_cmd(
+    ideas: IdeasOpt = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="only say what would change: write nothing, keep the gate")
+    ] = False,
+    keep_gate: Annotated[
+        bool, typer.Option("--keep-gate", help="do not close the YouTube gate (it is closed by default)")
+    ] = False,
+) -> None:
+    """Rebuild the item rows from the idea-bucket folders (after a lost or new database).
+
+    A document in output/, failed/ or duplicates/ without a row gets one, with the status its folder and
+    frontmatter give; a row whose file moved gets that status. A row without a file is only reported, never
+    deleted, and no file is ever changed. Unless --keep-gate or --dry-run, the YouTube gate is closed for
+    YOUTUBE_BLOCK_HOURS (a rebuilt database may have lost a block). It needs the database and takes the run
+    lock, like `run pipeline`.
+
+    Exit codes: 0 done; 1 a database error stopped it, or it lost the run lock (no row was written); 2 a
+    wrong path, DATABASE_URL is malformed, the database cannot be reached, or a worker or a run is running
+    (nothing was done)."""
+    settings = Settings()
+    _check_database_url(settings.database_url)
+    ideas_repo = ideas or settings.ideas_repo
+    _check_ideas_inbox(ideas_repo)
+    with ExitStack() as stack:
+        check = _hold_the_run_lock(stack, settings)
+        engine = make_worker_engine(settings.database_url)
+        stack.callback(engine.dispose)
+        gate_line = None
+        if not dry_run and not keep_gate:  # first: a rebuild must never leave the gate open by mistake
+            gate = PostgresGate(engine, block_hours=settings.youtube_block_hours, clock=_gate_clock)
+            try:
+                state = gate.close()
+            except GateUnavailable as e:
+                _log_gate_unavailable(e)
+                typer.echo("could not close the YouTube gate (the database): nothing was done", err=True)
+                raise typer.Exit(1) from None
+            until = clock_text(state.blocked_until, _gate_clock())
+            gate_line = f"YouTube gate closed until {until} (reconcile; use --keep-gate to skip)"
+        try:
+            with session_scope(engine) as session:
+                report = reconcile(
+                    session, ideas_repo, now=utc_now(), apply=not dry_run, scan=scan_item_files
+                )
+                check()  # still ours: commit only while no worker can run beside us
+        except WorkerLockLost as e:
+            log.error("%s", e)
+            typer.echo(f"{e}: no row was written", err=True)
+            raise typer.Exit(1) from e
+        except SQLAlchemyError as e:
+            log.error("a database error stopped reconcile: %s", getattr(e, "orig", None) or type(e).__name__)
+            typer.echo(RECONCILE_DB_ERROR, err=True)
+            raise typer.Exit(1) from e
+    for name in report.created:
+        typer.echo(f"{'created':<9} {name}")
+    for name, old, new in report.status_fixed:
+        typer.echo(f"{'fixed':<9} {name}  {old} -> {new}")
+    for name in report.missing_files:
+        typer.echo(f"{'missing':<9} {name}  no file found; the row is kept")
+    for name, why in report.skipped.items():
+        typer.echo(f"{'skipped':<9} {name}  {_one_line(why)}")
+    typer.echo(
+        f"summary: created={len(report.created)} fixed={len(report.status_fixed)} "
+        f"missing={len(report.missing_files)} skipped={len(report.skipped)}"
+        + (" (dry run: nothing was written)" if dry_run else "")
+    )
+    if gate_line:
+        typer.echo(gate_line)
 
 
 youtube_app = typer.Typer(no_args_is_help=True, help="YouTube helpers.")

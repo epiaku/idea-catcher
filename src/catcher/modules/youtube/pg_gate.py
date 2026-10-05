@@ -274,6 +274,37 @@ class PostgresGate:
 
         return self._transaction(work)
 
+    def close(self, hours: float | None = None) -> GateState:
+        """Close the gate for `hours` (default `block_hours`, at least one hour) from now, without a fetch
+        that YouTube refused: `catcher reconcile` does this because a rebuilt database may have lost a block
+        (decision 10). Like a first block (`closed_state`), but it never shortens: a block that ends later
+        is kept, and the streak is never lowered (at least 1). The gap is kept. Returns the state as the row
+        now holds it; a database error raises `GateUnavailable`."""
+        wanted = self.block_hours if hours is None else hours
+        if not (math.isfinite(wanted) and wanted > 0):
+            raise ValueError(f"hours must be a number above 0, not {wanted!r}")
+
+        def work(session: Session) -> GateState:
+            state, now = self._read(session)
+            closed = closed_state(now, wanted)
+            new = clamp(
+                GateState(
+                    next_allowed_at=state.next_allowed_at,
+                    blocked_until=max(state.blocked_until, closed.blocked_until),
+                    blocked_at=max(state.blocked_at, closed.blocked_at),
+                    streak=max(state.streak, 1),
+                ),
+                now,
+            )
+            stored = self._write(session, new, now) if new != state else state
+            log.warning(
+                "the YouTube gate is closed until %s (reconcile)",
+                datetime.fromtimestamp(stored.blocked_until).strftime("%Y-%m-%d %H:%M"),
+            )
+            return stored
+
+        return self._transaction(work)
+
     # ---- for a person: `catcher youtube gate` ----------------------------------------------------
 
     def snapshot(self) -> GateState:

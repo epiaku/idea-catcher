@@ -28,10 +28,14 @@ from sqlalchemy.dialects.postgresql import insert
 from catcher.core.db import require_aware, session_scope
 from catcher.modules.llm.profiles import BackendName
 from catcher.modules.queue.models import Resource
+from catcher.modules.youtube.pg_gate import YOUTUBE_RESOURCE
 
 log = logging.getLogger("catcher.worker.blocks")
 
 UNAVAILABLE_S = 30  # how long a backend counts as blocked when the blocks cannot be read
+# rows of `resources` that are not LLM blocks: `block` and `unblock` refuse them, so an LLM block can never
+# close, reopen or delete the YouTube gate
+RESERVED_NAMES = frozenset({YOUTUBE_RESOURCE})
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,11 @@ class Block:
 def every_backend() -> list[str]:
     """Every backend the profiles can name."""
     return list(get_args(BackendName))
+
+
+def _not_reserved(key: str) -> None:
+    if key in RESERVED_NAMES:
+        raise ValueError(f"{key!r} is a reserved resource name, not an LLM backend or profile")
 
 
 def profile_key(backend: str, profile: str) -> str:
@@ -71,7 +80,9 @@ class BackendBlocks:
 
     def block(self, key: str, until: datetime, cause: str) -> None:
         """Do not call `key` (a backend, or `<backend>:<profile>`) before `until`. A running block that ends
-        later is kept (with its cause). A Postgres error is logged, never raised."""
+        later is kept (with its cause). A Postgres error is logged, never raised; a reserved name
+        (`youtube`) raises ValueError."""
+        _not_reserved(key)
         require_aware(until)
         now = require_aware(self._clock())
         values = {
@@ -134,7 +145,9 @@ class BackendBlocks:
         return frozenset(self.entries(now))
 
     def unblock(self, key: str) -> None:
-        """Open `key` again (tests, or by hand): its row is removed, and a missing row is open."""
+        """Open `key` again (tests, or by hand): its row is removed, and a missing row is open. A reserved
+        name (`youtube`) raises ValueError."""
+        _not_reserved(key)
         with session_scope(self._engine) as session:
             session.execute(delete(Resource).where(Resource.name == key))
 
