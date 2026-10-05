@@ -616,7 +616,7 @@ async def test_two_workers_never_claim_the_same_job(queue):
 | On push to GitHub (recommended) | The default suite (layers 1–5) on GitHub Actions, with a Postgres service container. No secrets, no LLM, no e2e, no deploy. | `.github/workflows/test.yml` | A red badge; nothing is deployed from CI |
 | **Before a deploy** | The default suite (layers 1–5) and `docker compose build`. You **run the end-to-end tests (layer 6) by hand** first when the change touches the flow. | `make test` inside `deploy.sh`; `uv run pytest -m e2e` by hand | **The deploy.** `deploy.sh` stops if the default suite fails. |
 | **After a deploy** | **Smoke test** on the LXC: `/health` is `200`, the worker heartbeat is recent, migrations are at head, and `catcher selftest` passes (below). Then a `POST /pipeline/runs {"dry_run": true}` with a smoke key is polled to success. | The end of `deploy.sh` | Prints a clear failure. Roll back by redeploying the previous commit. |
-| Manually: weekly, or before a bigger change | The live tests (layer 7), which call the real LLM APIs | `uv run pytest -m live` | – |
+| Manually: weekly, or before a bigger change | The live tests (layer 7), which call the real LLM APIs | `CATCHER_ALLOW_NETWORK=1 uv run pytest -m live` | – |
 | When prompts, profiles or models change | Model evals (layer 8) | `catcher eval --profiles notes,clippings,youtube` | The prompt/profile change |
 
 **`catcher selftest`** runs inside the worker container and checks the real outside world **without spending LLM usage**:

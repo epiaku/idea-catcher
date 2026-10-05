@@ -1,11 +1,14 @@
 """pytest plugin: block and record every outgoing connection except localhost and unix sockets.
 
-Not loaded by default (so `-m live` runs by hand still work). Use it with:
+Loaded for every run of this project's tests (tests/conftest.py) and ON by default, so a plain
+`uv run pytest` can never reach YouTube, an LLM or any other outside host. The only way off is the explicit
+switch for the manual live tests:
 
-    PYTHONPATH=tests/support CATCHER_BLOCK_NETWORK=1 uv run pytest -p blocknet
+    CATCHER_ALLOW_NETWORK=1 uv run pytest -m live
 
-Without CATCHER_BLOCK_NETWORK=1 the plugin does nothing. A blocked attempt raises
-RuntimeError("NETWORK BLOCKED: ...") before any packet is sent, DNS lookups of non-local hosts included.
+(`CATCHER_BLOCK_NETWORK=1` still works and changes nothing: it is the old explicit switch.)
+A blocked attempt raises RuntimeError("NETWORK BLOCKED: ...") before any packet is sent, DNS lookups
+of non-local hosts included.
 Every attempt is recorded, and the session FAILS if there was one, so a test that swallowed the error
 cannot hide it.
 """
@@ -16,7 +19,8 @@ import socket
 
 import pytest
 
-ENV = "CATCHER_BLOCK_NETWORK"
+ENV = "CATCHER_BLOCK_NETWORK"  # the old explicit switch: kept, it is on anyway
+ALLOW_ENV = "CATCHER_ALLOW_NETWORK"  # the only way off: for the manual live tests
 LOCAL_NAMES = {"localhost", "localhost.localdomain"}
 
 ATTEMPTS: list[str] = []
@@ -95,7 +99,7 @@ def uninstall() -> None:
 
 
 def _enabled() -> bool:
-    return os.environ.get(ENV) == "1"
+    return os.environ.get(ALLOW_ENV) != "1"
 
 
 def pytest_configure(config: pytest.Config) -> None:
