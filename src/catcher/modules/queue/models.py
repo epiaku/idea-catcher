@@ -110,6 +110,7 @@ class JobItem(Base):
     origin: Mapped[str] = mapped_column(Text, default="inbox", server_default=text("'inbox'"))
     status: Mapped[str] = mapped_column(Text)
     stage_reason: Mapped[str | None] = mapped_column(Text)
+    stage_since: Mapped[datetime | None] = mapped_column(_timestamp())  # when it entered `status`
     inbox_path: Mapped[str | None] = mapped_column(Text)
     archive_path: Mapped[str | None] = mapped_column(Text)
     output_path: Mapped[str | None] = mapped_column(Text)
@@ -157,6 +158,7 @@ class Resource(Base):
     blocked_at: Mapped[datetime | None] = mapped_column(_timestamp())
     streak: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     concurrency: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    reason: Mapped[str | None] = mapped_column(Text)  # why it is blocked
     updated_at: Mapped[datetime] = mapped_column(_timestamp())
 
 

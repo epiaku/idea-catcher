@@ -293,7 +293,7 @@ def test_upgrade_seeds_the_open_youtube_row_and_downgrade_removes_it(fresh_datab
     config = alembic_config(fresh_database_url)
     command.upgrade(config, "0003")
     assert _youtube_rows(fresh_database_url) == []
-    command.upgrade(config, "head")
+    command.upgrade(config, "0004")
     assert _youtube_rows(fresh_database_url) == [
         ("youtube", None, None, None, 0, 1, datetime(2026, 10, 4, tzinfo=UTC))
     ]
@@ -315,3 +315,40 @@ def test_every_db_test_starts_with_the_open_youtube_row(pg_engine):
             )
         ).all()
     assert [tuple(row) for row in rows] == [(None, None, None, 0, 1)]
+
+
+def _columns(url: str, table: str) -> set[str]:
+    engine = make_engine(url)
+    try:
+        return {column["name"] for column in inspect(engine).get_columns(table)}
+    finally:
+        engine.dispose()
+
+
+def test_upgrade_adds_stage_since_and_reason_and_downgrade_removes_them(fresh_database_url):
+    config = alembic_config(fresh_database_url)
+    command.upgrade(config, "0004")
+    assert "stage_since" not in _columns(fresh_database_url, "job_items")
+    assert "reason" not in _columns(fresh_database_url, "resources")
+    updated = datetime(2026, 10, 3, 8, 30, tzinfo=UTC)
+    engine = make_engine(fresh_database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "insert into job_items (id, calculated_name, doc_id, doc_class, status, created_at,"
+                    " updated_at) values (:id, 'ideas/old.md', 'd', 'note', 'deferred', :created, :updated)"
+                ),
+                {"id": uuid.uuid4(), "created": NOW, "updated": updated},
+            )
+
+        command.upgrade(config, "0005")
+
+        with engine.connect() as connection:
+            assert connection.execute(text("select stage_since from job_items")).scalar_one() == updated
+            assert connection.execute(text("select reason from resources")).scalar_one() is None
+    finally:
+        engine.dispose()
+    command.downgrade(config, "0004")
+    assert "stage_since" not in _columns(fresh_database_url, "job_items")
+    assert "reason" not in _columns(fresh_database_url, "resources")
