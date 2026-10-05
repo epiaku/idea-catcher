@@ -74,7 +74,7 @@ def test_write_output_keeps_the_subfolder_and_name(tmp_path, make_note):
     assert touched == [out]
 
 
-def test_render_command_writes_the_page(tmp_path, make_note, monkeypatch):
+def test_render_command_writes_the_page(tmp_path, make_note, monkeypatch, no_run_lock):
     monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
     note = make_note("note", root=tmp_path / "ideas")
     docs = tmp_path / "docs"
@@ -85,7 +85,9 @@ def test_render_command_writes_the_page(tmp_path, make_note, monkeypatch):
     assert note.path.exists()
 
 
-def test_render_command_publishes_into_the_destination_the_capture_asks_for(tmp_path, make_note, monkeypatch):
+def test_render_command_publishes_into_the_destination_the_capture_asks_for(
+    tmp_path, make_note, monkeypatch, no_run_lock
+):
     monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
     note = make_note("note", root=tmp_path / "ideas", destination="web-clips")
     docs = tmp_path / "docs"
@@ -95,7 +97,26 @@ def test_render_command_publishes_into_the_destination_the_capture_asks_for(tmp_
     assert not (docs / destination_dir("notes")).exists()
 
 
-def test_render_command_reports_unavailable_youtube_facts_cleanly(tmp_path, make_note, monkeypatch):
+def test_render_command_disposes_the_gate_engine_it_built(tmp_path, make_note, monkeypatch, no_run_lock):
+    disposed: list[str] = []
+
+    class RecordingEngine:  # the gate's engine: `default_services` builds the Postgres gate on it
+        def dispose(self) -> None:
+            disposed.append("gate engine")
+
+    monkeypatch.setattr("catcher.core.db.make_worker_engine", lambda url: RecordingEngine())
+    monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
+    note = make_note("note", root=tmp_path / "ideas")
+    result = CliRunner().invoke(
+        app, ["render", str(note.path), "--docs", str(tmp_path / "docs"), "--profile", "fake"]
+    )
+    assert result.exit_code == 0, result.output
+    assert disposed == ["gate engine"]
+
+
+def test_render_command_reports_unavailable_youtube_facts_cleanly(
+    tmp_path, make_note, monkeypatch, no_run_lock
+):
     monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
     note = make_note("youtube", root=tmp_path / "ideas", doc_id="MBPHU7aaklM", source="not a real link")
     result = CliRunner().invoke(app, ["render", str(note.path), "--profile", "fake"])

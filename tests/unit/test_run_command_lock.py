@@ -95,3 +95,27 @@ def test_a_database_error_during_the_run_does_not_say_nothing_was_done(monkeypat
     assert "documents may already have been moved" in result.output
     assert "nothing was done" not in result.output
     assert "Traceback" not in result.output
+
+
+class _RecordingEngine:
+    """The gate's engine: `default_services` builds the Postgres gate on it; nothing connects."""
+
+    def __init__(self) -> None:
+        self.disposed = 0
+
+    def dispose(self) -> None:
+        self.disposed += 1
+
+
+def test_the_run_disposes_the_gate_engine_it_built(monkeypatch, no_run_lock):
+    engines: list[_RecordingEngine] = []
+
+    def make_engine(url):
+        engines.append(_RecordingEngine())
+        return engines[-1]
+
+    monkeypatch.setattr("catcher.core.db.make_worker_engine", make_engine)  # the one `build_access` uses
+    monkeypatch.setattr(cli, "run_pipeline", lambda ideas, docs, opts, svc: RunReport())
+    result = CliRunner().invoke(cli.app, ["run", "pipeline"])
+    assert result.exit_code == 0, result.output
+    assert [engine.disposed for engine in engines] == [1]

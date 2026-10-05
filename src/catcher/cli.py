@@ -40,7 +40,7 @@ from catcher.modules.pipeline.inbox import (
     scan_inbox,
 )
 from catcher.modules.pipeline.inputs import prompt_input
-from catcher.modules.pipeline.process import ProcessOptions, default_services, process_note
+from catcher.modules.pipeline.process import ProcessOptions, Services, default_services, process_note
 from catcher.modules.pipeline.publish import write_page
 from catcher.modules.pipeline.run import NOT_STARTED, RunLockLost, RunOptions, RunReport, run_pipeline
 from catcher.modules.pipeline.tags import load_tags
@@ -207,26 +207,33 @@ def render(
     docs: DocsOpt = None,
     profile: ProfileOpt = None,
 ) -> None:
-    """Summarize one document and write its page into the docs checkout (no inbox change, no git)."""
+    """Summarize one document and write its page into the docs checkout (no inbox change, no git).
+
+    It needs the database: it takes the run lock in DATABASE_URL first, like `run pipeline`, so no worker
+    commits (and pushes) the page while it is written. Exit codes: 0 written; 1 the page is invalid; 2 a
+    wrong path, the LLM step failed, YouTube facts are unavailable, DATABASE_URL is malformed, the database
+    cannot be reached, or a worker or a run is running (nothing was done)."""
     settings = Settings()
-    _check_database_url(settings.database_url)  # a YouTube clip's facts go through the gate in the database
+    _check_database_url(settings.database_url)  # the run lock and a YouTube clip's gate are in the database
     docs_repo = docs or settings.docs_repo
     note = _read_document(document)
     note.name = f"{calculated_stem(str(note.doc.fm['captured']), secrets.token_hex(3), name_title(note))}.md"
     opts = ProcessOptions(profile=profile, facts_dir=_facts_dir_of(document))
-    try:
-        processed = process_note(note, default_services(settings), opts)
-    except (LlmError, UnknownProfile) as e:
-        typer.echo(f"LLM step failed: {e}", err=True)
-        raise typer.Exit(2) from e
-    except FactsUnavailable as e:
-        typer.echo(f"YouTube facts unavailable: {e}", err=True)
-        raise typer.Exit(2) from e
-    for problem in processed.problems:
-        typer.echo(f"problem: {problem}", err=True)
-    if processed.problems:
-        raise typer.Exit(1)
-    touched = write_page(docs_repo, note.destination, note.doc_id, processed.filename, processed.page)
+    with ExitStack() as stack:
+        _hold_the_run_lock(stack, settings)  # before facts are saved or a page is written
+        try:
+            processed = process_note(note, _services(stack, settings), opts)
+        except (LlmError, UnknownProfile) as e:
+            typer.echo(f"LLM step failed: {e}", err=True)
+            raise typer.Exit(2) from e
+        except FactsUnavailable as e:
+            typer.echo(f"YouTube facts unavailable: {e}", err=True)
+            raise typer.Exit(2) from e
+        for problem in processed.problems:
+            typer.echo(f"problem: {problem}", err=True)
+        if processed.problems:
+            raise typer.Exit(1)
+        touched = write_page(docs_repo, note.destination, note.doc_id, processed.filename, processed.page)
     typer.echo(f"wrote   {touched[0]}")
     for old in touched[1:]:
         typer.echo(f"removed {old}")
@@ -303,19 +310,10 @@ def run_pipeline_cmd(
     )
     _check_database_url(settings.database_url)
     with ExitStack() as stack:
-        try:  # before any file is touched; released when the command ends, however it ends
-            opts.lock_check = stack.enter_context(_run_lock(settings))
-        except WorkerAlreadyRunning as e:
-            log.error("%s", RUN_BUSY)
-            typer.echo(RUN_BUSY, err=True)
-            raise typer.Exit(2) from e
-        except OperationalError as e:
-            log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
-            typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
-            raise typer.Exit(2) from e
+        opts.lock_check = _hold_the_run_lock(stack, settings)  # before any file is touched
         try:
             report = run_pipeline(
-                ideas or settings.ideas_repo, docs or settings.docs_repo, opts, default_services(settings)
+                ideas or settings.ideas_repo, docs or settings.docs_repo, opts, _services(stack, settings)
             )
         except RunLockLost as e:
             _print_items(e.report)
@@ -384,6 +382,34 @@ def _print_items(report: RunReport) -> None:
         typer.echo(f'{"not-found":<14} no document named "{query}" in inbox/')
     for query in report.not_in_archive:
         typer.echo(f'{"not-found":<14} no document named "{query}" in archive/')
+
+
+def _hold_the_run_lock(stack: ExitStack, settings: Settings) -> Callable[[], None]:
+    """Take the run lock (`_run_lock`) for as long as `stack` is open and return its check; when a worker or
+    another run holds it, or the database cannot be reached, end the command with exit code 2."""
+    try:  # released when the stack closes, however the command ends
+        return stack.enter_context(_run_lock(settings))
+    except WorkerAlreadyRunning as e:
+        log.error("%s", RUN_BUSY)
+        typer.echo(RUN_BUSY, err=True)
+        raise typer.Exit(2) from e
+    except OperationalError as e:
+        log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
+        typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
+        raise typer.Exit(2) from e
+
+
+def _services(stack: ExitStack, settings: Settings) -> Services:
+    """The real services; the engine of the Postgres gate they built is disposed when `stack` closes."""
+    svc = default_services(settings)
+    stack.callback(_dispose_the_gate_engine, svc)
+    return svc
+
+
+def _dispose_the_gate_engine(svc: Services | None) -> None:
+    gate = getattr(getattr(svc, "youtube", None), "gate", None)
+    if isinstance(gate, PostgresGate):
+        gate.engine.dispose()
 
 
 @contextmanager
