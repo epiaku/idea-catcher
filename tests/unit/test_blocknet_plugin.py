@@ -91,8 +91,20 @@ def test_localhost_is_not_blocked(tmp_path):
 def test_the_guard_does_nothing_only_with_the_explicit_allow_switch(tmp_path):
     """The old default (nothing without the env var) is gone: only CATCHER_ALLOW_NETWORK=1 turns it off."""
     done = run(tmp_path, LOCAL, block=False, allow=True)
-    assert "BLOCKNET" not in done.stdout + done.stderr
+    assert "blocked outgoing attempt" not in done.stdout + done.stderr  # nothing is recorded
     assert done.returncode == 0
+
+
+def test_a_run_with_the_guard_off_says_so_before_the_first_test(tmp_path):
+    """A shell that kept CATCHER_ALLOW_NETWORK=1 after a live run must not run the suite silently unguarded.
+    Only a localhost connection runs here, so nothing leaves the machine with the guard off."""
+    done = run(tmp_path, LOCAL, block=False, allow=True)
+    out = done.stdout + done.stderr
+    assert "BLOCKNET: guard OFF (CATCHER_ALLOW_NETWORK=1)" in out
+    assert out.index("BLOCKNET: guard OFF") < out.index("1 passed")  # at the start, not only in the summary
+    assert done.returncode == 0
+    on = run(tmp_path, LOCAL, block=False)
+    assert "guard OFF" not in on.stdout + on.stderr
 
 
 INSTALLED = """

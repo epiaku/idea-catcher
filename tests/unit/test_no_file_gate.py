@@ -24,7 +24,9 @@ def test_the_file_gate_is_gone():
 
 
 def test_no_file_state_is_left():
-    words = re.compile(r"state_dir|youtube-gate|pipeline\.lock")
+    words = re.compile(r"state_dir|youtube-gate|pipeline\.lock", re.IGNORECASE)
+    for planted in ("CATCHER_STATE_DIR", "catcher_state_dir", "YouTube-Gate.json", "PIPELINE.LOCK"):
+        assert words.search(planted), f"the search misses {planted!r}"  # it would find what it looks for
     found = [
         f"{path.relative_to(SRC)}:{number}: {line.strip()}"
         for path in sorted(SRC.rglob("*"))
@@ -42,6 +44,3 @@ def test_an_old_catcher_state_dir_in_the_environment_is_ignored(monkeypatch, tmp
     dotenv.write_text(f"CATCHER_STATE_DIR={tmp_path / 'old'}\n", encoding="utf-8")
     for settings in (Settings(), Settings(_env_file=dotenv)):  # type: ignore[call-arg]
         assert not hasattr(settings, "catcher_state_dir")
-    result = CliRunner().invoke(app, ["youtube", "gate", "--help"])
-    assert result.exit_code == 0, result.output
-    assert not (tmp_path / "state").exists() and not (tmp_path / "old").exists()

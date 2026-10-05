@@ -792,7 +792,7 @@ def test_a_dry_run_saves_no_facts(repos, make_services, yt_facts, tmp_path):
     assert calls == []  # a dry run never asks YouTube, so it cannot cost a request
     assert not (repos.ideas / "facts").exists()  # a dry run changes no files in the repos
     # and it does not use up the gap either: the gate was never touched, no state recorded
-    assert services.youtube.gate.state == OPEN
+    assert services.youtube.gate.state is OPEN
 
 
 def test_a_429_opens_the_breaker_and_every_other_clip_waits_without_a_call(

@@ -6,6 +6,11 @@ switch for the manual live tests:
 
     CATCHER_ALLOW_NETWORK=1 uv run pytest -m live
 
+With the switch the run says so, at the start and at the end: `BLOCKNET: guard OFF (CATCHER_ALLOW_NETWORK=1)`.
+Postgres connections (psycopg uses libpq, C code) do not go through Python sockets: the guard never sees
+them; the autouse `DATABASE_URL` on a closed local port in tests/conftest.py is what keeps tests off a real
+database. Subprocesses (`catcher worker` in tests/integration/db/test_worker_cli.py) run without the guard.
+
 (`CATCHER_BLOCK_NETWORK=1` still works and changes nothing: it is the old explicit switch.)
 A blocked attempt raises RuntimeError("NETWORK BLOCKED: ...") before any packet is sent, DNS lookups
 of non-local hosts included.
@@ -107,6 +112,22 @@ def pytest_configure(config: pytest.Config) -> None:
         install()
 
 
+OFF_LINE = f"BLOCKNET: guard OFF ({ALLOW_ENV}=1)"
+
+
+def _say(config: pytest.Config, line: str) -> None:
+    reporter = config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(line)
+    else:
+        print(line)
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    if not _enabled():  # a shell that kept the switch after a live run must not run unguarded in silence
+        _say(session.config, OFF_LINE)
+
+
 def pytest_unconfigure(config: pytest.Config) -> None:
     uninstall()
 
@@ -114,14 +135,11 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if not _enabled():
+        _say(session.config, OFF_LINE)  # once more next to the summary, where it is read
         return
-    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     line = f"BLOCKNET: {len(ATTEMPTS)} blocked outgoing attempt(s)"
     if ATTEMPTS:
         line += ": " + "; ".join(ATTEMPTS[:10])
-    if reporter is not None:
-        reporter.write_line(line)
-    else:
-        print(line)
+    _say(session.config, line)
     if ATTEMPTS:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED

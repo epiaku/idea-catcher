@@ -368,16 +368,37 @@ def test_a_signal_sets_stop_and_the_previous_handlers_come_back(runner: CliRunne
     assert {signum: signal.getsignal(signum) for signum in before} == before
 
 
-def test_an_idle_worker_process_stops_at_once_on_sigterm(
-    runner: CliRunner, fresh_database_url: str, tmp_path: Path
-) -> None:
-    env = {
-        **os.environ,
-        "DATABASE_URL": fresh_database_url,
+# A real `catcher worker` process: outside the test process, so outside the network guard and the autouse
+# fixtures. It must not read the developer's .env (API keys, the real repos): `load_dotenv` is switched off in
+# the process itself, and the repos and keys it could reach are set to throwaway values.
+WORKER = [
+    sys.executable,
+    "-c",
+    "import catcher.cli as cli; cli.load_dotenv = lambda *args, **kwargs: False; cli.app()",
+    "worker",
+]
+
+
+def _worker_env(database_url: str, tmp_path: Path) -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k != "CATCHER_ALLOW_NETWORK"}
+    return {
+        **env,
+        "DATABASE_URL": database_url,  # the test database, never the developer's own
+        "IDEAS_REPO": str(tmp_path / "idea-bucket"),
+        "DOCS_REPO": str(tmp_path / "epiaku-docs"),
+        "OPENAI_API_KEY": "",
+        "FREELLMAPI_API_KEY": "",
+        "FREELLMAPI_URL": "http://127.0.0.1:1/v1",
         "LOG_FILE": str(tmp_path / "worker.log"),
         "LOG_LEVEL": "INFO",
     }
-    command = [sys.executable, "-c", "from catcher.cli import app; app()", "worker", "--poll-s", "3600"]
+
+
+def test_an_idle_worker_process_stops_at_once_on_sigterm(
+    runner: CliRunner, fresh_database_url: str, tmp_path: Path
+) -> None:
+    env = _worker_env(fresh_database_url, tmp_path)
+    command = [*WORKER, "--poll-s", "3600"]
     process = subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True)
     try:
         assert process.stderr is not None
@@ -398,13 +419,8 @@ def test_an_idle_worker_process_stops_at_once_on_sigterm(
 def test_a_worker_that_loses_its_lock_stops_with_exit_1(
     runner: CliRunner, engine, fresh_database_url: str, tmp_path: Path
 ) -> None:
-    env = {
-        **os.environ,
-        "DATABASE_URL": fresh_database_url,
-        "LOG_FILE": str(tmp_path / "worker.log"),
-        "LOG_LEVEL": "INFO",
-    }
-    command = [sys.executable, "-c", "from catcher.cli import app; app()", "worker", "--poll-s", "0.1"]
+    env = _worker_env(fresh_database_url, tmp_path)
+    command = [*WORKER, "--poll-s", "0.1"]
     process = subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True)
     try:
         assert process.stderr is not None

@@ -213,7 +213,7 @@ def test_a_dry_run_uses_saved_facts_but_never_asks_youtube_or_the_gate(tmp_path)
     access, _, _ = make(tmp_path, fetch)
     with pytest.raises(FetchSkipped):
         access.get(VID, facts_dir=tmp_path / "facts", fetch_allowed=False)
-    assert fetch.calls == [] and access.gate.state == OPEN  # the gate was never touched: no state recorded
+    assert fetch.calls == [] and access.gate.state is OPEN  # the gate was never touched: no state recorded
     access.get(VID, facts_dir=tmp_path / "facts")  # a real fetch saves the facts ...
     assert (
         access.get(VID, facts_dir=tmp_path / "facts", fetch_allowed=False).title == "T"

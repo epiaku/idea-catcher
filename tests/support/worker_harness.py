@@ -138,7 +138,6 @@ class WorkerHarness:
             youtube_offline=False,
         )
         services.backends = self._backend_for
-        services.facts = self._fetch
         services.youtube = YoutubeAccess(
             self._fetch, self.gate, clock=self.clock.timestamp, sleep=self.clock.advance, wait_max_s=0
         )
