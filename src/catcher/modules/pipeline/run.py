@@ -104,6 +104,10 @@ class RunReport:
         return dict(Counter(item.status for item in self.items))
 
 
+# The message of a failure whose document went back to inbox/ before anything changed.
+NOT_STARTED = "could not start work"
+
+
 class RunLockLost(RuntimeError):
     """The run lock was lost (`RunOptions.lock_check` raised, the cause): the run stopped there and committed
     nothing. `report` is what it did so far: those documents are changed in the files but not committed."""
@@ -381,7 +385,7 @@ def _run(ideas: Path, docs: Path, opts: RunOptions, svc: Services) -> RunReport:
                     touched_ideas += start_work(ideas, note)
                 except OSError as e:  # the document is still in inbox/ (or comes back in the handler)
                     touched_ideas += return_to_inbox(ideas, note)
-                    item.status, item.message = "failed", f"could not start work: {e}"
+                    item.status, item.message = "failed", f"{NOT_STARTED}: {e}"
                     log.error("%s: %s", who, item.message)
                     continue
             processed = process_note(note, svc, popts)

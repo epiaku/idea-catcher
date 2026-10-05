@@ -42,7 +42,7 @@ from catcher.modules.pipeline.inbox import (
 from catcher.modules.pipeline.inputs import prompt_input
 from catcher.modules.pipeline.process import ProcessOptions, default_services, process_note
 from catcher.modules.pipeline.publish import write_page
-from catcher.modules.pipeline.run import RunLockLost, RunOptions, RunReport, run_pipeline
+from catcher.modules.pipeline.run import NOT_STARTED, RunLockLost, RunOptions, RunReport, run_pipeline
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
 from catcher.modules.queue.models import JOB_STATUSES, Job
@@ -319,8 +319,7 @@ def run_pipeline_cmd(
             )
         except RunLockLost as e:
             _print_items(e.report)
-            done = sum(1 for item in e.report.items if item.status in CHANGED_BY_A_RUN)
-            typer.echo(f"{done} document(s) were finished and are NOT committed", err=True)
+            typer.echo(f"{_changed_by_the_run(e.report)} were finished and are NOT committed", err=True)
             log.error("%s", RUN_LOST)
             typer.echo(RUN_LOST, err=True)
             raise typer.Exit(1) from e
@@ -342,15 +341,33 @@ def run_pipeline_cmd(
 RUN_BUSY = "another worker or run is already running; one at a time: nothing was done"
 RUN_LOST = (
     "the run lost its database lock (the connection to Postgres was lost or restarted); it stopped before "
-    "the next step and committed nothing, so no worker or other run works beside it: the files it "
-    "already changed are not committed (see `git status`); run it again"
+    "the next step and committed nothing, so no worker or other run works beside it. The files it already "
+    "changed are not committed (see `git status` in both repos), and the next `run pipeline` does not commit "
+    "them either: it commits only the files it changes itself. They are committed by the next "
+    "`pipeline.publish` job: `catcher jobs add pipeline.publish`, then run the worker; or commit them by hand"
 )
 RUN_DB_ERROR = (
     "a database error stopped the run (see the log): documents may already have been moved and may not "
     "be committed; check `git status` in both repos, then run it again"
 )
 # The statuses of a document whose files the run changed (moved, archived, published or filed).
-CHANGED_BY_A_RUN = frozenset({"published", "deferred", "failed", "duplicate", "artifact", "requeued"})
+CHANGED_BY_A_RUN = frozenset({"published", "deferred", "failed", "duplicate", "requeued"})
+
+
+def _changed_by_the_run(report: RunReport) -> str:
+    """How many documents (distinct ids, plus the unreadable files moved to failed/) and artifacts the run
+    changed, as `N document(s)` or `N document(s) and M artifact(s)`. A document has several report lines
+    when it was requeued and then published: it counts once."""
+    documents = {
+        item.doc_id
+        for item in report.items
+        if item.doc_class != "artifact"
+        and item.status in CHANGED_BY_A_RUN
+        and not (item.status == "failed" and item.message.startswith(NOT_STARTED))
+    }
+    artifacts = sum(1 for item in report.items if item.doc_class == "artifact" and item.status == "artifact")
+    said = f"{len(documents) + len(report.unreadable)} document(s)"
+    return f"{said} and {artifacts} artifact(s)" if artifacts else said
 
 
 def _print_items(report: RunReport) -> None:
@@ -550,7 +567,7 @@ def worker(
 
     Exit codes: 0 stopped normally (also when jobs failed: see `catcher jobs list`); 1 the worker lost
     its one-worker lock, or with --once a claim hit a database error or a job could not be finished;
-    2 another worker runs, DATABASE_URL is malformed or the database cannot be reached."""
+    2 another worker or a `run pipeline` runs, DATABASE_URL is malformed or the database cannot be reached."""
     lease_s = _positive_seconds("--lease-s", lease_s)
     poll_s = _positive_seconds("--poll-s", poll_s)
     settings = Settings()

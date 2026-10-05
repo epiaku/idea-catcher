@@ -23,7 +23,8 @@ def _backend_is_gone(engine: Engine, pid: int | None, wait_s: float = 10.0) -> b
 
 def test_a_second_worker_lock_is_refused(pg_engine: Engine) -> None:
     with WorkerLock(pg_engine):
-        with pytest.raises(WorkerAlreadyRunning, match="one worker at a time"):
+        busy = "another worker or run is already running; one at a time"
+        with pytest.raises(WorkerAlreadyRunning, match=busy):
             WorkerLock(pg_engine).__enter__()
         assert pg_engine.pool.checkedout() == 1  # only the holder; the refused attempt returned its own
 

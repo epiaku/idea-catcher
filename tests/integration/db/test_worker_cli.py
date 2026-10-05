@@ -340,7 +340,7 @@ def test_a_second_worker_command_is_refused_with_exit_2(runner: CliRunner, engin
     with WorkerLock(engine):
         result = runner.invoke(app, ["worker", "--once"])
     assert result.exit_code == 2
-    assert "another worker is already running" in result.output
+    assert "another worker or run is already running; one at a time" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
     [job] = _jobs(engine)
     assert job.status == "queued"  # the refused worker claimed nothing

@@ -304,7 +304,7 @@ The status in the first column is one of:
 - **`requeued`** / **`would_requeue`**: `--requeue` moved the original from `archive/` back into `inbox/` (`would_requeue` in a `--dry-run`: nothing moved).
 - **`would_fetch`**: a YouTube clip with no saved facts, in a `--dry-run`. A dry run does not call YouTube.
 - **`waiting`**: a YouTube clip that has to wait for the gap between YouTube calls (or for a block to end). It is **not touched and stays in `inbox/`**: nothing to requeue, the next run takes it. The message says when the next call is allowed. If another run used the gap after this run had started the clip, or YouTube answered with a block, the clip is put **back** in `inbox/` with the same name and shows `waiting` too.
-- **`interrupted`**: Ctrl-C or a `kill` stopped the run during this document. It is put back in `inbox/` under the same name, what was already done is committed, and the run reports a problem (exit code 2). Run again to continue. Only one run can work at a time on a machine: a second one is refused with "another catcher run is in progress".
+- **`interrupted`**: Ctrl-C or a `kill` stopped the run during this document. It is put back in `inbox/` under the same name, what was already done is committed, and the run reports a problem (exit code 2). Run again to continue. Only one run or worker works at a time per database (the lock in step 0): a second one is refused with `another worker or run is already running; one at a time: nothing was done` (exit code 2).
 - **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, run it again with `--requeue NAME`, or move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting. `--retry-deferred` does this for all of them at once.
 - **`failed`**: could not be processed for good, for example invalid LLM output twice, an invalid page, an empty document, or one longer than `LLM_MAX_INPUT_CHARS` (it is not sent to the LLM). The note moves to `failed/` with a `.error.txt` that says why. To try it again after fixing the cause, use `--requeue NAME`.
 - **`duplicate`**: an earlier snapshot of a longer clip. Moved to `duplicates/`, no LLM call.
@@ -313,7 +313,7 @@ The status in the first column is one of:
 
 The last line shows the counts, and whether both repos were committed and pushed.
 
-**Exit code:** `0` when nothing failed. `1` when a note failed or a file could not be read, so scripts can notice.
+**Exit code:** `0` when nothing failed. `1` when a note failed, a file could not be read or a `--file`/`--requeue` name was not found, so scripts can notice; also `1` when the run lost its database lock halfway (a Postgres restart: it stops before the next step, commits nothing and says how many documents it had finished; those stay uncommitted until the next `pipeline.publish` job, see [Stage B](../idea-catcher-how-to-run-stage-b/)) or a database error stopped the run. `2` when nothing was done: `DATABASE_URL` is malformed, the database cannot be reached, a worker or another run holds the lock, or a path is wrong; also `2` after Ctrl-C or a `kill` (`interrupted`).
 
 **The log** goes to the terminal (and to `LOG_FILE` if set), one line per file and step, with progress like `(2/15)`, and a final `processed 15/15` line. Errors are always logged.
 

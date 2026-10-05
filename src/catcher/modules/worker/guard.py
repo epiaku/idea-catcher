@@ -56,7 +56,7 @@ class WorkerLock:
             )
             if not locked:
                 connection.close()
-                raise WorkerAlreadyRunning("another worker is already running; run one worker at a time")
+                raise WorkerAlreadyRunning("another worker or run is already running; one at a time")
             pid = connection.execute(text("select pg_backend_pid()")).scalar()
         except BaseException:
             _discard(connection, locked)
