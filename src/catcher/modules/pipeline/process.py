@@ -57,8 +57,8 @@ class Services:
     profiles: ProfilesConfig
     backends: BackendFactory
     tags: TagList
-    # Called directly only when `youtube` is None, which only tests do (they pass a fake): `default_services`
-    # always sets `youtube`, and its `facts` is the access's own fetcher, behind the gate.
+    # Called only when `youtube` is None, which only tests do (they pass a fake). `default_services` always
+    # sets `youtube` and keeps this raising default: YouTube is reached only through the access and its gate.
     facts: FactsFetcher = _no_fetch_without_the_gate
     glossary: Glossary = field(default_factory=Glossary)
     context: str = ""  # who Epiaku is, for the Channel Application part of YouTube summaries
@@ -105,7 +105,6 @@ def default_services(
         profiles=load_profiles(settings.profiles_file),
         backends=lambda p: make_backend(p, settings),
         tags=load_tags(),
-        facts=access.fetch,
         glossary=load_glossary(),
         context=load_context(),
         youtube=access,

@@ -55,8 +55,13 @@ def test_services_are_built_only_by_default_services_and_always_with_the_gate():
     assert _uses("Services", calls_only=True) == [("modules/pipeline/process.py", "default_services")]
     services = default_services(Settings())  # DATABASE_URL: a closed port (tests/conftest.py); no connection
     assert services.youtube is not None and isinstance(services.youtube.gate, PostgresGate)
-    assert services.facts == services.youtube.fetch
-    services.youtube.gate.engine.dispose()
+    try:
+        # `facts` is not a way around the gate: the real services keep the raising default, and every fetch
+        # goes through `youtube` (the access, which asks the gate first).
+        with pytest.raises(FactsUnavailable, match="only through the gate"):
+            services.facts("nGVZS_wUDGM")
+    finally:
+        services.youtube.gate.engine.dispose()
 
 
 def test_services_without_an_access_have_no_fetcher_by_default():
