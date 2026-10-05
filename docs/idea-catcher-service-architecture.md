@@ -73,7 +73,7 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | One call per class  | Every class (including both YouTube classes) makes exactly **one** LLM call, on its own prompt file. No separate review step and no second call for any class. |
 | Queue               | The Postgres `jobs` table **is** the queue, used through a shared module (`enqueue` / `claim` / `complete`) in the API and the worker. **No dedicated queue container** ([why](#queue-placement)). |
 | Database            | **PostgreSQL 17** (image `pgvector/pgvector:pg17`) for the queue, logging, metrics and future data. See [Database options](#db-options) for the alternatives.                          |
-| One truth (2026-10-04) | **Postgres is the only truth.** There is no mode that works with or without it: when the database is not running, the system does not run. The YouTube gate and the one-at-a-time lock live only in Postgres, for the worker and for the CLI (B4b); the rest of the file-held state (the LLM blocks, the item states) moves in B5. |
+| One truth (2026-10-04) | **Postgres is the only truth.** There is no mode that works with or without it: when the database is not running, the system does not run (only the single-document tools `scan` and `reason` work without it: they touch no gate, no lock and no checkout, and `reason` refuses YouTube clips). The lock and the gate are per database: two `DATABASE_URL`s on one set of checkouts are two writers and two gates. The YouTube gate and the one-at-a-time lock live only in Postgres, for the worker and for the CLI (B4b); the rest of the file-held state (the LLM blocks, the item states) moves in B5. |
 | Hosting             | **One Proxmox LXC with Docker Compose.** The same `compose.yaml` runs locally. No VM.                                                                                                     |
 | Service deploy      | **Manual**, with a `deploy.sh` script in the service repo.                                                                                                                                |
 | Docs site deploy    | **Unchanged.** The service commits pages to `epiaku-docs` `main`. You deploy the site manually with `deploy.sh`, as today.                                                               |
@@ -353,7 +353,7 @@ A run is up to three kinds of jobs: one `pipeline.run`, one `llm.reason` per not
 ```
 
 - **Overwrite by ID:** delete any existing page in the target folder whose frontmatter `id` matches, then write the page under its **calculated file name** `YYYYMMDD-<short guid>-<title>.md`, the same name as in `archive/` and `output/`.
-- **One Git writer:** only the worker touches the repos, and it runs one job at a time. `catcher run pipeline` (also `--dry-run`) takes the same Postgres advisory lock as the worker, so one run or worker works at a time (B4b; before that a `pipeline.lock` file guarded only the CLI). The phone may still push to idea-bucket during a run, so use `pull --rebase` before pushing and retry once.
+- **One Git writer:** only the worker touches the repos, and it runs one job at a time. `catcher run pipeline` (also `--dry-run`) and `catcher render` take the same Postgres advisory lock as the worker, so one run or worker works at a time (B4b; before that a `pipeline.lock` file guarded only the CLI). The phone may still push to idea-bucket during a run, so use `pull --rebase` before pushing and retry once.
 - **Per-note errors don't fail the run.** A bad note is marked `failed` (moved to `failed/`) or `deferred` (stalls in `output/` with `stage: deferred`), and the other notes go on.
 - **Python validation instead of a Hugo build:** the rendered page must parse as YAML frontmatter + markdown, contain `title`, `description`, `weight` and `type: docs`, only use tags from the allowed list, and only use known shortcodes (`youtube-lite`).
 - **Unknown tags** from the LLM are dropped from the page and logged as a `tag_suggestion` event.
@@ -861,14 +861,34 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - The LLM resources (`openai`, `freellmapi`) and the per-profile or per-backend blocking move into `resources` (today the worker's `BackendBlocks` is in memory).
 - Reconcile closes the `youtube` row (writes the closed state unless told the gate is open), because a rebuilt database starts it open and may have lost a block (decision 10).
 
-**Decision 2026-10-04: Postgres is the only truth, with no file mode.** The user's direction: we do not build a system that works with or without Postgres; when the database is not running, the system does not run. This settles the "two gates on one machine" item of B4 (no best-effort guard: one gate) and the open import edge cases (the import is gone).
+**Decision 2026-10-04: Postgres is the only truth, with no file mode.** The user's direction: we do not build a system that works with or without Postgres; when the database is not running, the system does not run. The exceptions are `scan` and `reason` (not for YouTube clips), which read one document and write nothing; `run pipeline`, `render`, `youtube facts`, `youtube gate`, the worker and the `jobs` commands need it. This settles the "two gates on one machine" item of B4 (no best-effort guard: one gate) and the open import edge cases (the import is gone).
 
 **Built (2026-10-04): B4b, one gate and one run lock, only in Postgres.** What exists:
 
 - **One YouTube gate.** `build_access` always builds a `PostgresGate` on `DATABASE_URL`; `run pipeline`, `youtube facts`, `render` and the worker all go through it. The facts are reached only through the access (the default `Services.facts` raises). When the database cannot be reached no call is made: a clip waits with `YouTube gate unavailable`, and `youtube facts` exits 2.
-- **One run lock.** `catcher run pipeline` (also `--dry-run`) takes the worker's advisory lock (`WorkerLock`) before it touches a file: exit 2 when the database cannot be reached or a worker or another run holds it. A run that loses the lock halfway stops before the next document, commits nothing, prints what it did and exits 1. `run_pipeline()` itself holds no lock.
+- **One run lock.** `catcher run pipeline` (also `--dry-run`) takes the worker's advisory lock (`WorkerLock`) before it touches a file: exit 2 when the database cannot be reached or a worker or another run holds it. A run that loses the lock halfway stops before the next document, commits nothing, prints how many documents (and artifacts) it finished and exits 1; those stay uncommitted until the next `pipeline.publish` job (the next `run pipeline` commits only its own files). `render` takes the same lock (fix wave), so a worker's publish never commits a preview page. `run_pipeline()` itself holds no lock.
 - **Deleted:** the file gate (`YoutubeGate`, `youtube-gate.json`, the `.corrupt` handling), `catcher youtube gate --import-file`, the `pipeline.lock` file and the setting `CATCHER_STATE_DIR` (an old line in `.env` is ignored). `catcher youtube gate` still shows the row.
-- **Tests:** the unit and component tests use an in-memory gate (`tests/support/memory_gate.py`) on the same rules, so they need no Docker; the network guard is on in every pytest run (off only for `CATCHER_ALLOW_NETWORK=1 uv run pytest -m live`).
+- **Tests:** the unit and component tests use an in-memory gate (`tests/support/memory_gate.py`) on the same rules, so they need no Docker; the network guard is on in every pytest run (off only for `CATCHER_ALLOW_NETWORK=1 uv run pytest -m live`, and then it says `BLOCKNET: guard OFF`).
+
+**Open items after B4b** (from the final review; the fix wave settled the rest):
+
+*For B5 (file-held truth that is left)*
+
+- **Item states live in the folders and the frontmatter** (`inbox/`, `output/` with `stage: deferred`, `archive/`, `failed/`, `duplicates/`), and the Stage A `run pipeline` never writes `job_items`, while the worker writes both: two truths for one document once both are used. Reconcile (or `run pipeline` writing `job_items`) has to settle it.
+- **LLM backend blocks are in memory.** The worker's `BackendBlocks` is per process, the Stage A run's `RunState.blocked` and `budget_blocked` are per run: a used-up budget the worker saw is unknown to the next `run pipeline` and the other way round. They move to `resources` rows.
+- The in-memory hold of a 429 that the gate could not record (`YoutubeAccess.unrecorded_until`) is per process by design (it exists because the database was down): a `run pipeline` that ends forgets it.
+
+*Its own task*
+
+- **`run pipeline` does not commit what a lost run left behind**: it commits only the files it changed itself. Committing like the worker (`commit_managed` over the managed folders) would fix it, but also commits hand edits under those folders and changes Stage A behaviour.
+
+*Deferred*
+
+- No `connect_timeout` in `make_worker_engine`: a black-holed host (not a refused port) makes `run pipeline`, `render` and the gate wait for the OS TCP timeout (the worker too).
+- `YoutubeAccess.fetch` is a public attribute holding the raw fetcher, and the AST tripwire (`test_no_fetch_without_the_gate.py`) checks names only; the raising `Services.facts` default is the real guard. Cheap hardening: rename it `_fetch` and pin `YoutubeAccess(` constructions.
+- `testdata reset` takes no lock (it rebuilds `tmp/ic`; only matters when a worker runs on the test repos).
+- No test for a worker started during a run (the same key covers it) or for the lock being released after Ctrl-C (the `ExitStack` and the connection's end cover it).
+- `InMemoryGate` (test only): a shared `make()` changes the clock, rng and hours of the one gate; no clamp of a test-set state more than 24 hours ahead.
 
 **Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 

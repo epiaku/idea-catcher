@@ -13,7 +13,7 @@ This page shows how to **run** the Idea Catcher: the local CLI of Stage A, and t
 - Work from the `idea-catcher` repo root, with the virtual environment active or with `uv run` in front of every command.
 - Copy `.env.example` to `.env` and fill it in. See the [configuration page](../idea-catcher-configuration/).
 - Make sure `IDEAS_REPO` and `DOCS_REPO` point to your local checkouts of `idea-bucket` and `epiaku-docs`.
-- **Start the database first.** `run pipeline` and `youtube facts` need Postgres (`DATABASE_URL`): it holds the YouTube gate and the lock that lets one run or worker work at a time. Start it and run `uv run catcher db upgrade` once (see [The database](../idea-catcher-how-to-run-stage-b/#database)). Without it they stop with exit code 2 and do nothing.
+- **Start the database first.** `run pipeline`, `render` and `youtube facts` need Postgres (`DATABASE_URL`): it holds the YouTube gate and the lock that lets one run or worker work at a time (per database: use one database for a set of checkouts). Start it and run `uv run catcher db upgrade` once (see [The database](../idea-catcher-how-to-run-stage-b/#database)). Without it they stop with exit code 2 and do nothing.
 - **To try things without any risk, first make test repos:** `uv run catcher testdata reset` (see [Recipes on the test data](#recipes-on-the-test-data)). It makes fresh copies in `tmp/ic`, from test data that is committed in this repo, and you run the Idea Catcher on them.
 - **zsh and `# comments`:** many commands below have a `# comment` after them. A default interactive zsh does not treat `#` as a comment, so the words after it are passed to the command as extra arguments (and a `;` in a comment starts a new command, giving errors like `zsh: command not found: the`). Fix it once by adding `setopt interactive_comments` to `~/.zshrc`, then open a new terminal (or run that line once in the current one). In this page, keep any `;` out of the inline comments.
 - Every command below starts with `uv run catcher`. `uv run catcher --help` lists all commands.
@@ -206,6 +206,8 @@ uv run catcher render DOCUMENT [--docs PATH] [--profile NAME]
 
 Makes the page for one document and writes it into `epiaku-docs`. It does not touch the document in `inbox/`, and it does not commit. You can look at the result before you commit anything.
 
+It needs the database: it takes the same lock as `run pipeline` first, so no worker commits (and pushes) the page while it is written. With a worker or a run going it exits with code 2 (`another worker or run is already running; one at a time: nothing was done`), and so it does when the database cannot be reached.
+
 ```bash
 uv run catcher render "../idea-bucket/inbox/clippings/New chat.md" --profile clippings
 uv run catcher render "../idea-bucket/inbox/clippings/A video.md"
@@ -227,7 +229,7 @@ It needs the database (the gate is in Postgres): without it, it says `the YouTub
 
 ## Stage B: the database and the worker {#stage-b}
 
-The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, how to stop the worker, and the exit codes. The commands on this page need only the database itself: `run pipeline` takes its lock there, and `run pipeline` and `youtube facts` use the YouTube gate there (`scan`, `reason` and `render` work without it, but a YouTube clip without saved facts then waits with `YouTube gate unavailable`). `scripts/check` runs every check at once (see that page).
+The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, how to stop the worker, and the exit codes. The commands on this page need only the database itself: `run pipeline` and `render` take its lock there, and `run pipeline`, `render` and `youtube facts` use the YouTube gate there. Only `scan` and `reason` work without it. `scripts/check` runs every check at once (see that page).
 
 ## YouTube and the gap between calls {#youtube-gap}
 
