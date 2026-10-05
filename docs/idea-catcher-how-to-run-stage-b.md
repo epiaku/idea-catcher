@@ -37,7 +37,7 @@ The same steps, on `IDEAS_REPO` and `DOCS_REPO` from your `.env`. **This calls t
 docker compose up -d db
 uv run catcher db upgrade
 
-# 1. see what is in the inbox first, free (Stage A, no database, no model)
+# 1. see what is in the inbox first, free (no model; it takes the worker's lock, so no worker may run)
 uv run catcher run pipeline --profile fake --dry-run
 
 # 2. a small first run: stage at most 3 documents, then run what is due
@@ -68,7 +68,7 @@ docker compose down                          # when you are done (the data stays
 
 ## Database {#database}
 
-The queue and the state tables live in Postgres. Stage A needs none of this: `run pipeline` and the other commands above never touch the database. The schema commands, the tests, the [worker and the `jobs` commands](#worker) use it.
+The queue, the state tables, the YouTube gate and the one-at-a-time lock live in Postgres, and nothing runs without it: the [worker and the `jobs` commands](#worker), `run pipeline` (also `--dry-run`), `youtube facts` and `youtube gate` stop with exit code 2 when the database cannot be reached. Only `scan`, `reason` and `render` work without it.
 
 **Start a Postgres 17 for development** with the `compose.yaml` in the repo root (the image has pgvector, as in the design):
 
@@ -152,25 +152,25 @@ What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 docum
 - **Stop it with Ctrl-C or `kill` (SIGTERM).** It finishes the job it is running, then exits (exit code 0). A **second** Ctrl-C stops at once: that job stays `running` until its lease ends (`--lease-s`, 120 seconds; a heartbeat renews it while the job runs), then the reaper puts it back on the queue and counts one attempt. After 3 such attempts the job fails, and its document is marked `failed` and moved to `failed/`.
 - **One worker at a time.** A second worker on the same database exits at once with code 2: `another worker is already running; run one worker at a time`. The lock lives on one database connection. Before every claim and every reap the worker checks that this connection still holds it; after a Postgres restart or a dropped connection it stops with exit code 1 (`the worker lost its database lock ...`), so a supervisor can start it again and it takes the lock again.
 - **No Postgres:** `cannot reach the database in DATABASE_URL` and exit code 2, for the worker and the `jobs` commands. A malformed `DATABASE_URL` gives `DATABASE_URL is not a valid database URL` and exit code 2; no message shows the URL (it holds the password).
-- **Do not run `run pipeline` (Stage A) on the checkout a worker uses.** Both move files in `inbox/` and commit; nothing stops that yet (an open item).
+- **`run pipeline` and the worker take the same lock.** `run pipeline` (also `--dry-run`) takes the worker's lock in Postgres before it touches a file, so while a worker runs it exits at once with code 2: `another worker or run is already running; one at a time: nothing was done`; with the database down: `cannot reach the database in DATABASE_URL: nothing was done` (code 2). A worker started during a run exits with code 2 the same way. A run that loses the lock halfway (a Postgres restart) stops before the next document, commits nothing, says what it had done, and exits with code 1: the next run or the worker's `pipeline.publish` commits the rest.
 
 ## The YouTube gate {#youtube-gate}
 
-The worker keeps the YouTube gap and the breaker (the rules are in [YouTube and the gap between calls](../idea-catcher-how-to-run/#youtube-gap)) in Postgres, in the `resources` row `youtube`, so every worker on the database sees the same gate. The Stage A commands keep their own gate in `youtube-gate.json` in `CATCHER_STATE_DIR`: the two do not see each other (no shared gap, no shared block), so let one of them do the YouTube clips.
+There is one YouTube gate: the gap and the breaker (the rules are in [YouTube and the gap between calls](../idea-catcher-how-to-run/#youtube-gap)) live in Postgres, in the `resources` row `youtube`. The worker, `run pipeline` and `youtube facts` all go through it, so they share the gap and every one of them sees a block. Without the database no call to YouTube is made.
 
 ```bash
 uv run catcher youtube gate                # youtube: open
                                            # youtube: next call allowed at 20:41
-                                           # youtube: blocked until 2026-10-05 02:38 (block 1)
-uv run catcher youtube gate --import-file  # copy a block of the Stage A gate file to the worker, once
+                                           # youtube: blocked until 14:04 (block 1)   (the date only when not today)
 ```
+
+**The old gate file.** Until 2026-10-04 the Stage A commands kept their own gate in `~/.catcher/state/youtube-gate.json`. Nothing reads it any more, and `--import-file` is gone: delete it with `rm -r ~/.catcher/state` (it may also hold an old `pipeline.lock`). An old `CATCHER_STATE_DIR` line in `.env` is ignored.
 
 What you see (checked on 2026-10-04, on a throwaway database with a fake block):
 
 - **A fetch job that waits for the gate stays queued.** The worker does not take it until the gap or the block is over, so it does not count an attempt and fills no log. `jobs list` shows why: `youtube.fetch  queued  0  2026-10-04T18:38:52+00:00  waiting for youtube until 2026-10-05 02:38`. With only such jobs, `worker --once` ends at once with `ran 0 job(s)`; other job types still run. A `youtube.fetch` you add by hand with `jobs add` waits in the same way (you do not need to add one: the pipeline queues them).
-- **`--import-file` merges** `youtube-gate.json` from `CATCHER_STATE_DIR` into the row. It only makes the gate more careful: of each value (the gap, the end of a block, the block count) it keeps the later or the larger one. It prints `imported: blocked until 2026-10-05 08:38 (block 2)`. Run it again and nothing changes: `nothing to import: the database already holds this state or a stricter one (youtube: ...; the file: ...)` with exit code 0. With no file: `no state file at <path>: nothing to import` (exit 2). A damaged file is kept as `youtube-gate.corrupt` and imported as closed, as the Stage A gate does.
 - **A missing or damaged row means closed** while the database lives: the gate rewrites the row as a block of `YOUTUBE_BLOCK_HOURS` and logs an ERROR. A time more than 24 hours ahead is damage, not a block: the gate cuts the end of a gap or a block to 24 hours and a block time (`blocked_at`) to now (and until then the queue does not let it hold the fetch jobs back).
-- **A new or rebuilt database starts open.** `db upgrade` seeds the row open, so a fresh install does not wait 6 hours for nothing. If you rebuild the database (or run `db downgrade` past `0004` and upgrade again) while YouTube blocks this IP, the block in the row is gone: run `catcher youtube gate --import-file` if the Stage A file still holds a block, check the log for `YouTube is blocking us`, and wait before you queue clips. From B5 on, `catcher reconcile` closes the gate after a rebuild.
+- **A new or rebuilt database starts open.** `db upgrade` seeds the row open, so a fresh install does not wait 6 hours for nothing. If you rebuild the database (or run `db downgrade` past `0004` and upgrade again) while YouTube blocks this IP, the block in the row is gone: check the log for `YouTube is blocking us` and wait before you queue clips or run `run pipeline` on them. From B5 on, `catcher reconcile` closes the gate after a rebuild.
 - **The database cannot be reached during a fetch decision:** no fetch is made, the job waits 60 seconds and tries again, and the document stays `waiting_youtube`.
 - **A 429 that cannot be written to the row** (the database fails right then): the worker makes no YouTube call for the first breaker step (`YOUTUBE_BLOCK_HOURS`, 6 hours) and keeps that block in memory. As soon as the gate answers again, the worker writes the block into the row (before anything else), and from then on `catcher youtube gate` shows it and a restart keeps it. Until then only the log (`YouTube is blocking us, and the gate could not record the block`) shows it, and a restart forgets it: read the log before you restart a worker after a database failure.
-- **Exit codes of `catcher youtube gate`:** `0` done (also `nothing to import` when the database already holds this state or a stricter one); `2` nothing imported because there is no file (`no state file at <path>: nothing to import`) or the file cannot be read or repaired (`... could not be read or repaired ...: nothing imported`), `DATABASE_URL` is malformed (`DATABASE_URL is not a valid database URL`), or the database cannot be reached (`cannot reach the database in DATABASE_URL`).
+- **Exit codes of `catcher youtube gate`:** `0` done; `2` `DATABASE_URL` is malformed (`DATABASE_URL is not a valid database URL`), or the database cannot be reached (`cannot reach the database in DATABASE_URL`).

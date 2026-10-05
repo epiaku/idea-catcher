@@ -10,7 +10,7 @@ Obsidian -> idea-bucket/inbox -> catcher run pipeline -> epiaku-docs (page)
                                       |-> output/ (the working copy), failed/, duplicates/
 ```
 
-**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate in Postgres are built (B0 to B4); item states, schedules and Compose come next.
+**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it); item states, schedules and Compose come next.
 
 ## 📑 Table of contents
 
@@ -32,6 +32,8 @@ Use throw-away copies of the repos. Nothing here touches your real `idea-bucket`
 ```bash
 uv sync
 cp .env.example .env                 # then fill in the API keys you need
+docker compose up -d db              # the database: run pipeline needs it (the YouTube gate and the run lock)
+uv run catcher db upgrade            # create the tables, once
 uv run catcher testdata reset        # fresh test repos in tmp/ic
 uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs --profile fake --dry-run
 ```
@@ -40,14 +42,14 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 
 | Command | What it does |
 | --- | --- |
-| `catcher run pipeline` | Process the inbox: summarize, write pages, archive, commit. `--file`, `--requeue`, `--limit`, `--dry-run`, `--push`, `--profile`, `--wait-youtube`, `--refresh-facts`, `--refresh-llm`, `--retry-deferred` |
+| `catcher run pipeline` | Process the inbox: summarize, write pages, archive, commit. Needs the database (`DATABASE_URL`): it takes the worker's lock, so it never runs next to a worker. `--file`, `--requeue`, `--limit`, `--dry-run`, `--push`, `--profile`, `--wait-youtube`, `--refresh-facts`, `--refresh-llm`, `--retry-deferred` |
 | `catcher scan` | List what is in the inbox, without changing anything |
 | `catcher reason`, `catcher render` | Try the LLM step, or write one page, on a single document |
-| `catcher youtube facts` | Print the facts of one YouTube video (it respects the YouTube rate limits) |
+| `catcher youtube facts` | Print the facts of one YouTube video (it goes through the YouTube gate in Postgres, so it needs the database) |
 | `catcher db upgrade`, `catcher db downgrade REVISION` (for example `-1`) | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see [How to run Stage B](docs/idea-catcher-how-to-run-stage-b.md)) |
 | `catcher worker` | Run the jobs in the queue, one at a time, until Ctrl-C (`--once`: run what is due, then exit). One worker at a time (Stage B) |
 | `catcher jobs add TYPE`, `catcher jobs list` | Put a job on the queue (`pipeline.run`, `pipeline.publish`, with `--param KEY=VALUE`), list the jobs (Stage B) |
-| `catcher youtube gate` | Show the YouTube gate the worker uses (open, the next allowed call, or a block); `--import-file` copies a block of the Stage A gate file into it once (Stage B) |
+| `catcher youtube gate` | Show the YouTube gate in Postgres, shared by the worker and the CLI (open, the next allowed call, or a block) |
 | `catcher testdata reset` | Make fresh test repos in `tmp/ic` (`--fresh-llm-and-youtube`: without the saved LLM replies and YouTube facts, so a run calls both for real) |
 | `catcher version` | Print the version |
 

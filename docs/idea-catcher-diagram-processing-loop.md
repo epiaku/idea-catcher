@@ -16,7 +16,7 @@ This is `catcher run pipeline`, from start to the summary line.
 flowchart TB
   start(["catcher run pipeline"]) --> pre{"idea-bucket inbox and<br/>epiaku-docs exist?"}
   pre -->|"no"| stopcfg["log an error, exit code 2<br/>nothing is touched"]
-  pre -->|"yes"| lock{"another run in progress?<br/>(a dry run needs no lock)"}
+  pre -->|"yes"| lock{"database down, or a worker<br/>or another run holds the lock?<br/>(the lock is in Postgres, also for a dry run)"}
   lock -->|"yes"| stoplock["report a problem, exit code 2<br/>nothing is touched"]
   lock -->|"no"| pull["with --push only:<br/>git pull both repos<br/>a failed pull is reported, nothing changed"]
   pull --> req{"--requeue or<br/>--retry-deferred?"}
@@ -56,7 +56,7 @@ flowchart TB
 ```
 
 - **One broken document never stops the run.** Every document is handled on its own, and an unexpected error becomes `failed` for that document only.
-- **`--dry-run`** goes through the same steps, but writes no file and makes no commit. It still calls the LLM if the profile is a real one, unless a good reply is saved (it reads those, free), so use `--profile fake` for a free check. It **never calls YouTube** and does not use up the gap: a clip without saved facts shows `would_fetch`. A dry run takes no run lock.
+- **`--dry-run`** goes through the same steps, but writes no file and makes no commit. It still calls the LLM if the profile is a real one, unless a good reply is saved (it reads those, free), so use `--profile fake` for a free check. It **never calls YouTube** and does not use up the gap: a clip without saved facts shows `would_fetch`. A dry run takes the run lock too, so it needs the database and cannot run next to a worker.
 - The commit is **one commit per repo at the end of the run**, with only the files the run touched.
 
 ## 2. One document: parse, analyse, summarize, check, write
@@ -188,7 +188,7 @@ sequenceDiagram
 | Compare clips | All clips with one id | The longest one goes on, the rest to `duplicates/` | `inbox.py` (`is_snapshot_of`) |
 | Name it | The date, a short id, the title | `YYYYMMDD-<id>-<title>.md`, used in every folder | `inbox.py` |
 | Start work | The note | The archive copy and the working copy | `inbox.py` (`start_work`) |
-| Get the facts (YouTube) | The video id | Facts: counts, description, chapters, transcript | `youtube/access.py`, `gate.py`, `cache.py`, `facts.py` |
+| Get the facts (YouTube) | The video id | Facts: counts, description, chapters, transcript | `youtube/access.py`, `pg_gate.py`, `cache.py`, `facts.py` |
 | Build the LLM input | The text, the facts, the tag lists, the glossary, the context | One dictionary for the prompt | `inputs.py` |
 | Call the LLM | The prompt and the schema | A validated summary | `llm/service.py`, `llm/backends` |
 | Check the summary (YouTube) | The summary and the facts | Verified links, warnings for a wrong timestamp or a tool that is not in the transcript | `youtube/checks.py` |
@@ -222,8 +222,8 @@ sequenceDiagram
 | **The offline switch** | `YOUTUBE_OFFLINE=1` | Never call YouTube (development and tests) |
 | **LLM retries** | Inside the backend | A 5xx, a timeout or a dropped connection is retried up to 5 calls, with 2, 4, 8 and 16 seconds between them. One more call if the JSON is invalid |
 | **The usage-limit block** | During a run | A used-up budget, a 429 or a bad key blocks that backend for the rest of the run. The other documents that need it are deferred at once, without a call (a saved reply is still used). The worker blocks a backend for `LLM_BLOCK_S` after any backend-unavailable error |
-| **The run lock** | Start of a real run | Only one `catcher run pipeline` at a time on a machine (`pipeline.lock`). A second one is refused. A dry run needs no lock |
-| **A damaged gate file** | The YouTube gate | The file is kept as `youtube-gate.corrupt` and the gate closes for the block hours, because losing an active block is the expensive mistake |
+| **The run lock** | Start of every run, also `--dry-run` | The worker's lock in Postgres: one run or worker at a time. A second one is refused (exit 2), and so is a run when the database cannot be reached |
+| **A damaged or missing gate row** | The YouTube gate (Postgres) | The gate closes for the block hours, because losing an active block is the expensive mistake. When the database cannot be reached, no call is made |
 | **Empty or too long** | Before the LLM call | A document that is empty or longer than `LLM_MAX_INPUT_CHARS` fails without a call |
 | **One broken document** | The loop | An unexpected error fails that one document only |
 | **`--limit N`** | The loop | At most N documents are started. The rest stay in the inbox |

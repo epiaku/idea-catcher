@@ -13,6 +13,7 @@ This page shows how to **run** the Idea Catcher: the local CLI of Stage A, and t
 - Work from the `idea-catcher` repo root, with the virtual environment active or with `uv run` in front of every command.
 - Copy `.env.example` to `.env` and fill it in. See the [configuration page](../idea-catcher-configuration/).
 - Make sure `IDEAS_REPO` and `DOCS_REPO` point to your local checkouts of `idea-bucket` and `epiaku-docs`.
+- **Start the database first.** `run pipeline` and `youtube facts` need Postgres (`DATABASE_URL`): it holds the YouTube gate and the lock that lets one run or worker work at a time. Start it and run `uv run catcher db upgrade` once (see [The database](../idea-catcher-how-to-run-stage-b/#database)). Without it they stop with exit code 2 and do nothing.
 - **To try things without any risk, first make test repos:** `uv run catcher testdata reset` (see [Recipes on the test data](#recipes-on-the-test-data)). It makes fresh copies in `tmp/ic`, from test data that is committed in this repo, and you run the Idea Catcher on them.
 - **zsh and `# comments`:** many commands below have a `# comment` after them. A default interactive zsh does not treat `#` as a comment, so the words after it are passed to the command as extra arguments (and a `;` in a comment starts a new command, giving errors like `zsh: command not found: the`). Fix it once by adding `setopt interactive_comments` to `~/.zshrc`, then open a new terminal (or run that line once in the current one). In this page, keep any `;` out of the inline comments.
 - Every command below starts with `uv run catcher`. `uv run catcher --help` lists all commands.
@@ -41,7 +42,7 @@ uv run catcher run pipeline --push                                   # 3. full r
 - **`youtube facts`**: prints the counts and transcript of one YouTube video.
 - **`db upgrade`, `db downgrade REVISION`**: create or roll back the Postgres tables (Stage B). See [How to Run Stage B](../idea-catcher-how-to-run-stage-b/#database).
 - **`worker`, `jobs add`, `jobs list`**: run the jobs in the Postgres queue, put a job on it, look at the jobs (Stage B). See [How to Run Stage B](../idea-catcher-how-to-run-stage-b/#worker).
-- **`youtube gate`**: shows the worker's YouTube gate in Postgres; `--import-file` copies a block of this machine's Stage A gate into it (Stage B). See [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate).
+- **`youtube gate`**: shows the YouTube gate in Postgres: open, the next allowed call, or a block. See [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate).
 - **`version`**: prints the version.
 
 **A run only looks at `inbox/` to find work.** When work on a document starts, it gets a **calculated file name** (`YYYYMMDD-<short guid>-<title>.md`) and leaves `inbox/`: the original goes to `archive/` and a working copy to `output/`, both under that name. If something temporary goes wrong (the LLM is down, a budget is used up), the working copy stays in `output/` with `stage: deferred` and the reason. The run never reads `output/`, so **to retry, use `--requeue NAME`** (it moves the original from `archive/` back into `inbox/`, clears the stale working copy in `output/`, and runs it again), or move the file back by hand. It keeps its calculated name, so the next run overwrites the stalled copy.
@@ -54,6 +55,7 @@ uv run catcher run pipeline [OPTIONS]
 
 What one run does, in order:
 
+0. Takes the lock in Postgres (also for `--dry-run`), so no worker and no other run works at the same time. If the database cannot be reached it says `cannot reach the database in DATABASE_URL: nothing was done`; if a worker or another run holds the lock, `another worker or run is already running; one at a time: nothing was done`. Both exit with code 2 and touch no file.
 1. Reads the documents in `inbox/` (nothing is written yet).
 2. Moves earlier snapshots of a longer clip to `duplicates/`. They get no LLM call.
 3. For each remaining document, right before its LLM step: gives it its calculated name, copies the original to `archive/` (with two frontmatter lines added), writes a working copy to `output/`, and removes it from `inbox/`. With `--limit` or `--file`, only those documents leave `inbox/`.
@@ -218,12 +220,14 @@ uv run catcher youtube facts URL_OR_VIDEO_ID
 Prints the counts, description and transcript of one video as JSON. It calls YouTube, not an LLM. It goes through the **same gap and breaker as a run** (`YOUTUBE_MIN_GAP_S`, `YOUTUBE_BLOCK_HOURS`) and saves nothing. If it says when the next call is allowed, wait, or set `YOUTUBE_MIN_GAP_S=0` for a hand test.
 
 ```bash
-uv run catcher youtube facts https://www.youtube.com/watch?v=MBPHU7aaklM
+uv run catcher youtube facts 'https://www.youtube.com/watch?v=MBPHU7aaklM'   # quotes: zsh reads ? as a pattern
 ```
+
+It needs the database (the gate is in Postgres): without it, it says `the YouTube gate is unavailable (the database): nothing was asked of YouTube` and exits with code 2. With `YOUTUBE_OFFLINE=1` and no saved facts it says so and exits with code 2.
 
 ## Stage B: the database and the worker {#stage-b}
 
-The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, how to stop the worker, and the exit codes. Stage A needs none of it: `run pipeline` and the other commands on this page never touch the database. `scripts/check` runs every check at once (see that page).
+The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, how to stop the worker, and the exit codes. The commands on this page need only the database itself: `run pipeline` takes its lock there, and `run pipeline` and `youtube facts` use the YouTube gate there (`scan`, `reason` and `render` work without it, but a YouTube clip without saved facts then waits with `YouTube gate unavailable`). `scripts/check` runs every check at once (see that page).
 
 ## YouTube and the gap between calls {#youtube-gap}
 
@@ -231,12 +235,12 @@ YouTube blocks an IP address that asks too fast, and retrying during a block mak
 
 - **Saved facts.** The facts of a video (title, description, chapters, transcript, counts) are saved once in `facts/<video id>.json` in `idea-bucket` and committed with everything else. A retry, a requeue or a rerun reads that file and **never calls YouTube again**. `--refresh-facts` fetches again. A video without captions is asked again only after a day.
 - **One fetch, paced.** One yt-dlp extraction gets the info and the captions: about 3 requests, `YOUTUBE_REQUEST_DELAY_S` (10 s) apart.
-- **A gap between fetches.** At least `YOUTUBE_MIN_GAP_S` (2 minutes) plus up to `YOUTUBE_GAP_JITTER_S` (5 minutes) of random time between the start of two fetches. The state is a small file on this machine (`youtube-gate.json` in `CATCHER_STATE_DIR`, `~/.catcher/state` by default), shared by every run of the Stage A commands. A file that cannot be read is kept as `youtube-gate.corrupt` and the gate **closes** for `YOUTUBE_BLOCK_HOURS`, because losing an active block by accident is the expensive mistake.
+- **A gap between fetches.** At least `YOUTUBE_MIN_GAP_S` (2 minutes) plus up to `YOUTUBE_GAP_JITTER_S` (5 minutes) of random time between the start of two fetches. The state is one row in Postgres (the `resources` row `youtube`), shared by `run pipeline`, `youtube facts` and the worker, so they all keep the same gap and see the same block. When the database cannot be reached, no call is made: the clip waits with `YouTube gate unavailable`.
 - **A clip that must wait stays in `inbox/`** with the status `waiting` and a message. It is not an error, and there is nothing to requeue: the next run takes it. With `--wait-youtube` the run sleeps instead (up to `YOUTUBE_WAIT_MAX_S`, 30 minutes).
 - **The breaker.** After a 429 or a bot check, no call is made for `YOUTUBE_BLOCK_HOURS` (6), then 12, then 24 hours. A fetch that works closes it.
-- **How to see whether YouTube is blocking you.** When the breaker opens, the log has an ERROR line: `YouTube is blocking us (block 1): no calls for 6 hours, until <time>`. Every clip that is waiting then says `YouTube blocked until <time>`. The state is in `~/.catcher/state/youtube-gate.json`: `blocked_until` is the end of the block, and `streak` counts the blocks in a row (0 means none); for the worker, `catcher youtube gate` shows the same. If it happens, raise `YOUTUBE_MIN_GAP_S` (for example back to `600`) before the block ends.
+- **How to see whether YouTube is blocking you.** When the breaker opens, the log has an ERROR line: `YouTube is blocking us (block 1): no calls for 6 hours, until <time>`. Every clip that is waiting then says `YouTube blocked until <time>`. `catcher youtube gate` shows the state, for example `youtube: blocked until 14:04 (block 1)` or `youtube: open`. If it happens, raise `YOUTUBE_MIN_GAP_S` (for example back to `600`) before the block ends.
 - **`YOUTUBE_OFFLINE=1`** never calls YouTube (saved facts still work). Tests and development use it or saved fixtures.
-- **The worker (Stage B) has its own gate.** It keeps the gap and the block in Postgres (the `resources` row `youtube`), not in this file; `catcher youtube gate` shows it. The two gates do not see each other. If you run both `run pipeline` and the worker on one machine, a block one of them hits does not stop the other (which then calls during the block and makes the ban longer), and they do not share the gap, so YouTube can get two fetches close together. Let one of them do the YouTube clips. After a block in Stage A, copy it to the worker with `catcher youtube gate --import-file` (see [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate)). There is no copy the other way: after a block the worker hit, do not run `run pipeline` on YouTube clips until `catcher youtube gate` says `open`.
+- **One gate.** Before 2026-10-04 the Stage A commands kept their own gate in a file (`~/.catcher/state/youtube-gate.json`). That file is no longer read: you can delete the folder `~/.catcher/state`. See [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate).
 
 All settings are in `.env`; see the [configuration page](../idea-catcher-configuration/).
 

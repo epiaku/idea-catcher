@@ -90,12 +90,11 @@ If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ER
   - `YOUTUBE_SKIP_MANIFESTS` (default off): skip yt-dlp's request for the video formats, which we never use. **Untested live:** try one `youtube facts` by hand before turning it on.
   - `YOUTUBE_WAIT_MAX_S` (default `1800`): with `--wait-youtube`, the longest sleep for the gap inside a run.
   - `YOUTUBE_NEGATIVE_TTL_H` (default `24`): a video without captions is asked about again only after this many hours.
-  - `CATCHER_STATE_DIR` (default `~/.catcher/state`): this machine's YouTube gate state for the Stage A commands (`run pipeline`, `youtube facts`), in `youtube-gate.json`. It is not in git, because a ban belongs to this IP. The worker (Stage B) keeps its gate in Postgres instead (the `resources` row `youtube`, see [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate)); it reads this folder only for `catcher youtube gate --import-file`.
-  - The gap and block settings above (`YOUTUBE_MIN_GAP_S`, `YOUTUBE_GAP_JITTER_S`, `YOUTUBE_BLOCK_HOURS`) apply to both gates.
+  - The gate state (the gap and a block) lives in Postgres, in the `resources` row `youtube` of `DATABASE_URL` (see [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate)). The worker, `run pipeline` and `youtube facts` share it, and the settings above apply to all of them. `CATCHER_STATE_DIR` is gone (2026-10-04): an old line in `.env` is ignored.
 - `TRANSCRIPT_LANGUAGES` (default `en`): preferred YouTube transcript languages, comma-separated, for example `en, nl`.
 - `GIT_AUTHOR_NAME` (default `idea-catcher`): author name on the commits the pipeline makes.
 - `GIT_AUTHOR_EMAIL` (default `idea-catcher@users.noreply.github.com`): author email on those commits.
-- `DATABASE_URL` (default `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`): the Postgres database for the Stage B queue and state. Only `catcher db upgrade` and `catcher db downgrade` use it so far; a plain `catcher run pipeline` does not need a database. The default matches the development container in [Database](../idea-catcher-how-to-run-stage-b/#database). It holds a password, so a real URL goes in `.env`.
+- `DATABASE_URL` (default `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`): the Postgres database: the queue, the state, the YouTube gate and the one-at-a-time lock. **Required** for `run pipeline` (also `--dry-run`), `youtube facts`, `youtube gate`, the worker, the `jobs` and the `db` commands: without it they stop with exit code 2. Only `scan`, `reason` and `render` work without it. The default matches the development container in [Database](../idea-catcher-how-to-run-stage-b/#database). It holds a password, so a real URL goes in `.env`.
 - `LOG_LEVEL` (default `INFO`): `DEBUG`, `INFO`, `WARNING` or `ERROR`. The flag `--log-level` overrides it for one run.
 - `LOG_FILE` (default none): also write the log to this file. The folder is created.
 

@@ -31,7 +31,7 @@ flowchart LR
     end
     clone_b["working copy of idea-bucket<br/>inbox, archive, output, failed, facts"]
     clone_d["working copy of epiaku-docs"]
-    state["~/.catcher/state<br/>YouTube gate: this machine's IP"]
+    state[("Postgres (DATABASE_URL)<br/>YouTube gate and the run lock")]
     cfg[".env and profiles.yaml<br/>keys and settings"]
   end
 
@@ -107,7 +107,7 @@ flowchart TB
 
 Both the `api` and the `worker` container use the same image: Python 3.12 with `uv`, Git, and `yt-dlp` with Deno. There is no Node, no Hugo and no Claude Code CLI in the image, because the docs site is still deployed by hand.
 
-**What is new compared with Stage A:** Postgres holds the state of every document and the queue (so the dashboard can show what is waiting, for how long, and what goes first), a worker runs the schedules (pull, process, publish), and an API starts runs and reads results. The YouTube gate state moves from a file into Postgres.
+**What is new compared with Stage A:** Postgres holds the state of every document and the queue (so the dashboard can show what is waiting, for how long, and what goes first), a worker runs the schedules (pull, process, publish), and an API starts runs and reads results. The YouTube gate state is in Postgres (since 2026-10-04 also for the CLI: there is no gate file any more).
 
 ## 3. The code inside the program
 
@@ -172,7 +172,7 @@ flowchart LR
 
 | Part | Where | State it keeps |
 | --- | --- | --- |
-| `catcher` CLI (Stage A) | Your Mac, started by hand | Nothing between runs, except the files in the two repos and the YouTube gate file |
+| `catcher` CLI (Stage A) | Your Mac, started by hand | Nothing between runs, except the files in the two repos; the YouTube gate and the run lock are in Postgres (since 2026-10-04) |
 | `worker` (Stage B) | LXC, a container | The queue and the document state, in Postgres |
 | `api` (Stage C) | LXC, a container | None. It writes jobs into Postgres and reads results from it |
 | `db` | LXC, a container | Jobs, items, events, the YouTube gate. Backed up nightly |
