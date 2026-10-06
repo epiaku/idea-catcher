@@ -4,19 +4,32 @@
 `facts/` and the LLM replies in `llm/`. A run reads those before it calls YouTube or a model, so the whole
 pipeline runs here with no external call, and every page must equal the page the user approved, kept in
 `tests/data/expected/` (which `catcher testdata reset` does not copy).
+
+The run goes through the worker path (`run_on_worker`, what `catcher run pipeline` does; B5b), on a copy of
+the data, so it needs the test database.
 """
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from golden import EXPECTED, PAGES, compare_pages
 from memory_gate import InMemoryGate
+from run_on_worker import run_on_worker
+from sqlalchemy import Engine
 
 from catcher.core.frontmatter import load
 from catcher.core.testdata import reset_test_repos
 from catcher.modules.llm.service import TransientBackendError
-from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.youtube.access import YoutubeAccess
+
+pytestmark = pytest.mark.db
+
+
+@pytest.fixture(autouse=True)
+def _database(pg_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", pg_engine.url.render_as_string(hide_password=False))
 
 
 class ExternalCall(AssertionError):
@@ -57,7 +70,7 @@ def test_the_whole_pipeline_on_the_committed_test_data(tmp_path, make_services, 
     youtube_calls: list[str] = []
     services = offline_services(make_services, tmp_path, model_calls, youtube_calls)
 
-    report = run_pipeline(ideas, docs, RunOptions(), services)
+    report = run_on_worker(SimpleNamespace(ideas=ideas, docs=docs), services)
 
     problems = [f"{i.doc_id} {i.status}: {i.message}" for i in report.items if i.status != "published"]
     assert report.counts() == {"published": 43, "artifact": 1}, problems
@@ -90,7 +103,7 @@ def test_deleting_the_saved_replies_would_call_the_model(tmp_path, make_services
     youtube_calls: list[str] = []
     services = offline_services(make_services, tmp_path, model_calls, youtube_calls)
 
-    report = run_pipeline(ideas, docs, RunOptions(), services)
+    report = run_on_worker(SimpleNamespace(ideas=ideas, docs=docs), services)
 
     counts = report.counts()
     assert model_calls  # the model was asked (and refused)

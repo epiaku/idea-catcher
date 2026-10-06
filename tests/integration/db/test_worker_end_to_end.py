@@ -9,6 +9,7 @@ and a deferred item that is retried later reads the saved facts."""
 
 from pathlib import Path
 
+import pytest
 from golden import EXPECTED, PAGES, compare_pages
 from memory_gate import InMemoryGate
 from sqlalchemy import select
@@ -86,6 +87,11 @@ def test_the_worker_publishes_the_frozen_real_run_with_no_external_call(frozen_h
     assert len(rows) == 43 and {i.status for i in rows.values()} == {"published"}
 
 
+@pytest.mark.skip(
+    reason="B5b ruling pending: B71 (drop on purpose proposed: it compares the worker with the old loop "
+    "being deleted; on run_on_worker both runs would share one database and the second would find every "
+    "item already published; B69 compares the worker with the approved pages)"
+)
 def test_the_worker_matches_stage_a_on_the_same_data(frozen_harness, make_services, tmp_path):
     h = frozen_harness
     stage_a = reset_test_repos(tmp_path / "stage-a")
