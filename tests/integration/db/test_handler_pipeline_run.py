@@ -1,9 +1,10 @@
 """The `pipeline.run` handler: the database row first, then the file move, and a crash leftover is adopted."""
 
+import logging
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from catcher import __version__
 from catcher.core.db import session_scope
@@ -11,9 +12,12 @@ from catcher.core.frontmatter import load, parse
 from catcher.modules.pipeline import inbox
 from catcher.modules.pipeline.inbox import load_staged_note, mark_deferred
 from catcher.modules.pipeline.mirror import MirrorState, read_mirror
+from catcher.modules.pipeline.scan_state import scan_item_files
 from catcher.modules.queue.items import set_item_status, stage_item
-from catcher.modules.queue.models import Job, JobItem
+from catcher.modules.queue.models import Job, JobEvent, JobItem
 from catcher.modules.queue.queue import claim
+from catcher.modules.queue.reconcile import reconcile
+from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker import handlers_pipeline
 from catcher.modules.worker.app import build_handlers
 from catcher.modules.worker.handlers import Done, Fail
@@ -590,3 +594,123 @@ def test_a_file_error_while_adopting_does_not_block_the_other_documents(harness,
     assert item.status == "failed" and "could not start work" in (item.error or "")
     assert (harness.ideas / "inbox/clippings/systeme.md").exists()
     assert len(items(harness)) == 3 and len(next_jobs(harness)) == 2
+
+
+# ---- retry_deferred also recovers active items that have no job (B5 final review I1) -----------------------
+
+
+def _lose_the_database_and_reconcile(harness) -> None:
+    """The rows and jobs are gone (a new database); `reconcile` rebuilds the rows from the folders: active
+    rows with no job to move them on."""
+    with session_scope(harness.ctx.engine) as session:
+        for table in ("job_events", "job_items", "jobs"):
+            session.execute(text(f"delete from {table}"))
+    with session_scope(harness.ctx.engine) as session:
+        reconcile(session, harness.ideas, now=harness.clock(), apply=True, scan=scan_item_files)
+
+
+def _item_events(harness, name: str) -> list[str]:
+    with session_scope(harness.ctx.engine) as session:
+        item = session.scalars(select(JobItem).where(JobItem.calculated_name == name)).one()
+        return [e.message for e in session.scalars(select(JobEvent).where(JobEvent.item_id == item.id))]
+
+
+@pytest.mark.parametrize("archived", [True, False], ids=["archive-copy", "working-copy-only"])
+def test_retry_deferred_publishes_a_waiting_llm_row_that_reconcile_left_without_a_job(harness, archived):
+    run(harness, only=["YouTube walks"])
+    name = item_named(harness, "notes", "YouTube walks.md").calculated_name
+    if not archived:
+        (harness.ideas / "archive" / name).unlink()
+    _lose_the_database_and_reconcile(harness)
+    assert item_named(harness, "notes", "YouTube walks.md").status == "waiting_llm"
+    assert next_jobs(harness) == []
+
+    harness.add_job("pipeline.run", retry_deferred=True, only=["YouTube walks"])
+    assert harness.drain(max_jobs=3) == ["succeeded", "succeeded"]
+
+    assert item_named(harness, "notes", "YouTube walks.md").status == "published"
+    assert len(harness.backends.note.prompts) == 1
+
+
+def test_retry_deferred_queues_a_fetch_for_a_waiting_youtube_row_without_a_job(harness):
+    run(harness, only=["yt"])
+    clip = item_named(harness, "clippings", "yt.md")
+    assert clip.status == "waiting_youtube"
+    (harness.ideas / "archive" / clip.calculated_name).unlink()  # only the working copy is left
+    _lose_the_database_and_reconcile(harness)
+    assert item_named(harness, "clippings", "yt.md").status == "waiting_youtube"
+
+    result = run(harness, retry_deferred=True, only=["yt"])
+
+    assert result == Done(counts(adopted=1))
+    again = item_named(harness, "clippings", "yt.md")
+    assert again.status == "waiting_youtube"
+    assert [(j.type, j.status, j.params, j.resource) for j in next_jobs(harness)] == [
+        ("youtube.fetch", "queued", {"calculated_name": clip.calculated_name}, "youtube")
+    ]
+    assert harness.fetch_calls == []  # queued, not fetched
+    assert any(
+        "no job: re-queued from the working copy" in m for m in _item_events(harness, clip.calculated_name)
+    )
+    assert load(harness.ideas / "output" / clip.calculated_name).fm["stage"] == "waiting_youtube"
+
+
+def test_retry_deferred_leaves_an_active_row_with_a_live_job_alone(harness):
+    run(harness, only=["YouTube walks"])
+    before = item_named(harness, "notes", "YouTube walks.md")
+    events = _item_events(harness, before.calculated_name)
+
+    result = run(harness, retry_deferred=True, only=["YouTube walks"])
+
+    assert result == Done(counts())
+    after = item_named(harness, "notes", "YouTube walks.md")
+    assert (after.status, after.stage_since) == ("waiting_llm", before.stage_since)
+    assert _item_events(harness, before.calculated_name) == events
+    assert (harness.ideas / "archive" / before.calculated_name).is_file()
+    assert [(j.type, j.status) for j in next_jobs(harness)] == [("llm.reason", "queued")]
+
+
+def test_retry_deferred_requeues_a_deferred_row_without_an_archive_copy_from_its_working_copy(harness):
+    run(harness, only=["systeme"], profile="clippings", refresh_llm=True)
+    stalled = item_named(harness, "clippings", "systeme.md")
+    _finish_jobs(harness)
+    with session_scope(harness.ctx.engine) as session:
+        ItemStates().transition(
+            session, stalled.calculated_name, "deferred", now=harness.clock(), reason="down"
+        )
+    (harness.ideas / "archive" / stalled.calculated_name).unlink()
+
+    result = run(harness, retry_deferred=True, only=["systeme"], profile="clippings", refresh_llm=True)
+
+    assert result == Done(counts(adopted=1))
+    assert item_named(harness, "clippings", "systeme.md").status == "waiting_llm"
+    queued = [j for j in next_jobs(harness) if j.status == "queued"]
+    assert [(j.type, j.params, j.dedupe_key) for j in queued] == [
+        (
+            "llm.reason",
+            {"calculated_name": stalled.calculated_name, "profile": "clippings", "refresh_llm": True},
+            f"reason:{stalled.calculated_name}",
+        )
+    ]
+
+
+def test_retry_deferred_warns_about_a_row_with_no_file_to_start_from_and_leaves_it(harness, caplog):
+    run(harness, only=["systeme"])
+    stalled = item_named(harness, "clippings", "systeme.md")
+    _finish_jobs(harness)
+    with session_scope(harness.ctx.engine) as session:
+        ItemStates().transition(
+            session, stalled.calculated_name, "deferred", now=harness.clock(), reason="down"
+        )
+    (harness.ideas / "archive" / stalled.calculated_name).unlink()
+    (harness.ideas / "output" / stalled.calculated_name).unlink()
+
+    with caplog.at_level("WARNING", logger="catcher.worker"):
+        result = run(harness, retry_deferred=True, only=["systeme"])
+
+    assert result == Done(counts())
+    assert item_named(harness, "clippings", "systeme.md").status == "deferred"
+    assert [j for j in next_jobs(harness) if j.status == "queued"] == []
+    assert any(
+        r.levelno == logging.WARNING and stalled.calculated_name in r.getMessage() for r in caplog.records
+    )

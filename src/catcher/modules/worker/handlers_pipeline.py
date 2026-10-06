@@ -365,13 +365,71 @@ def _requeue(ctx: HandlerContext, queries: list[str], job_id: uuid.UUID | None) 
         requeue_from_archive(ctx.ideas, keep)
 
 
-def _to_retry(ctx: HandlerContext) -> list[str]:
-    """`retry_deferred`: the calculated names of the items whose status is `deferred` or `stuck` (the
-    database is the truth, not the frontmatter in `output/`) and that have their original in `archive/`
-    to start again from."""
+NO_JOB = "no job: re-queued from the working copy"
+# the active statuses `retry_deferred` recovers when no live job carries the row (a row `reconcile` made, or
+# whose job ended without moving it); `staging` is left to the adoption step
+_RECOVERABLE_ACTIVE = ("waiting_youtube", "waiting_llm", "ready")
+
+
+def _from_working_copy(
+    ctx: HandlerContext, name: str, status: str, params: RunParams, job_id: uuid.UUID | None
+) -> bool:
+    """`retry_deferred` for an item with no archive copy: queue its next job from the working copy in
+    `output/`, the way `_adopt` does for a crash leftover (`_queue_next`: a clip without saved facts waits
+    for YouTube, anything else for the LLM). An active item first goes to `stuck` with the reason `NO_JOB`
+    (a warning event; it is not a `mark_stuck` outcome, so the stuck clock passes over it). False when the
+    working copy is missing or cannot be read (logged as a warning naming it; the item is left as it is)."""
+    out = ctx.ideas / "output" / name
+    try:
+        note = load_staged_note(ctx.ideas, out, ctx.clock()) if out.is_file() else None
+    except (FrontmatterError, UnicodeDecodeError, ValueError, OSError) as e:
+        log.warning(
+            "retry_deferred: %s (%s) cannot be retried: cannot read output/%s: %s", name, status, name, e
+        )
+        return False
+    if note is None:
+        log.warning(
+            "retry_deferred: %s (%s) cannot be retried: no copy in archive/ or output/ to start from",
+            name,
+            status,
+        )
+        return False
+    if status in ACTIVE_STATUSES:
+        with session_scope(ctx.engine) as session:
+            item = _transition(ctx, session, name, "stuck", now=ctx.clock(), job_id=job_id, reason=NO_JOB)
+        _mirror(ctx, item)
+    _queue_next(ctx, name, note, params, job_id)
+    log.warning("%s was %s with no archive copy: re-queued from its working copy in output/", name, status)
+    return True
+
+
+def _retry(ctx: HandlerContext, params: RunParams, job_id: uuid.UUID | None) -> tuple[list[str], int]:
+    """`retry_deferred`: the calculated names to requeue from `archive/` (for `_requeue`), and how many items
+    were re-queued from their working copy instead. The items are those whose status is `deferred` or
+    `stuck`, and those left `waiting_youtube`, `waiting_llm` or `ready` that no queued or running job carries
+    (`live_job_carries`; e.g. rows `reconcile` made: `_requeue` marks them `stuck` leftovers). The database is
+    the truth, not the frontmatter in `output/`. An item with no archive copy is re-queued from its working
+    copy (`_from_working_copy`); with neither, it is left as it is and a warning names it."""
     with session_scope(ctx.engine) as session:
-        names = [i.calculated_name for i in items_in_status(session, "deferred", "stuck")]
-    return [name for name in names if (ctx.ideas / "archive" / name).is_file()]
+        rows = [(i.calculated_name, i.status) for i in items_in_status(session, "deferred", "stuck")]
+        rows += [
+            (i.calculated_name, i.status)
+            for i in items_in_status(session, *_RECOVERABLE_ACTIVE)
+            if not live_job_carries(session, i.calculated_name)
+        ]
+    archived: list[str] = []
+    recovered = 0
+    for name, status in rows:
+        if (ctx.ideas / "archive" / name).is_file():
+            archived.append(name)
+            continue
+        with session_scope(ctx.engine) as session:
+            live = live_job_carries(session, name)
+        if live:
+            log.warning("not retried: %s is still being processed by a job (status %s)", name, status)
+        elif _from_working_copy(ctx, name, status, params, job_id):
+            recovered += 1
+    return archived, recovered
 
 
 def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
@@ -405,7 +463,9 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
             counts["errors"] += 1
 
     explicit = params.requeue or []
-    _requeue(ctx, [*explicit, *(_to_retry(ctx) if params.retry_deferred else [])], job.id)
+    retried, recovered = _retry(ctx, params, job.id) if params.retry_deferred else ([], 0)
+    counts["adopted"] += recovered  # re-queued from the working copy, as a crash leftover is adopted
+    _requeue(ctx, [*explicit, *retried], job.id)
 
     # `requeue` runs only the requeued documents, like `only` does for the ones it names (as in Stage A)
     only = None if params.only is None and not explicit else [*(params.only or []), *explicit]

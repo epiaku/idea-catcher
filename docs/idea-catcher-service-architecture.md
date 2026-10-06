@@ -888,7 +888,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - **One writer of item state.** `ItemStates.transition` (`modules/queue/states.py`) is the only code that changes `job_items.status` on the worker path: one commit writes the status, `stage_reason`, `stage_since` (only when the status really changes), `updated_at` and one `job_events` row; a repeated transition writes nothing. Migration `0005` adds `job_items.stage_since` and `resources.reason`.
 - **The frontmatter mirror** (`pipeline/mirror.py`), after the commit, best effort: `stage`, `stage_reason`, `stage_since` on the working copy in `output/` or the file in `failed/`. The finished page keeps only `stage: published` and `created_by`.
 - **Metrics on the item:** `llm_profile`, `llm_backend`, `llm_model`, `prompt_version`, `tokens_in`, `tokens_out`, `llm_duration_ms`, `warnings`, `docs_page` and `llm_result = {"attempts", "saved"}`; the state changes and warnings are events. The queries are in [Database & Metrics](#mvp-database).
-- **`stuck`:** at every reap an item `deferred` for `STUCK_AFTER_DAYS` (3) becomes `stuck`; `retry_deferred` retries `deferred` and `stuck` items. **`catcher items list [--status S] [--limit N]`** shows them.
+- **`stuck`:** at every reap an item `deferred` for `STUCK_AFTER_DAYS` (3) becomes `stuck`; `retry_deferred` retries `deferred` and `stuck` items and the active items no job carries. **`catcher items list [--status S] [--limit N]`** shows them.
 - **LLM blocks are `resources` rows**, shared by every worker and kept over a restart: a usage limit or a down backend `LLM_BLOCK_S` (600 s), a used-up budget `LLM_BUDGET_BLOCK_S` (6 h), a wrong model only its profile (`<backend>:<profile>`).
 - **`catcher reconcile [--ideas PATH] [--dry-run] [--keep-gate]`** rebuilds the rows from the folders, never deletes a file or a row, and closes the YouTube gate.
 
@@ -899,19 +899,23 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - **Reconcile closes the gate without growing the breaker** (streak at least 1, never a shorter block), and it closes it before it writes the rows. Each run without `--keep-gate` closes it again from now.
 - **The wrong-model rule is narrower than the plan** (ruling on the Task 5 review). The plan said any 4xx that is not auth or quota blocks only the profile. The code does that only for an HTTP 400 or 404 whose error code or text says the model is unknown; any other refused request blocks the whole backend for `LLM_BLOCK_S`, as before. Widen it only if we see it happen.
 - **A missing LLM row means open**, unlike `youtube` (missing means closed): an LLM block is only ever made by a failure. A failed read of the rows blocks every known backend for 30 s (fail closed); a failed write is logged, never raised. The `youtube` name cannot be blocked or unblocked through the LLM blocks.
-- **The `stuck` rule:** only `deferred` items become `stuck` (never `waiting_youtube` or `waiting_llm`); the requeue's own "active item with no job" leftover uses the same `stuck` status. Rows rebuilt by reconcile in an active status get no job: a `pipeline.run` with `retry_deferred` or `requeue` picks them up.
+- **The `stuck` rule:** only `deferred` items become `stuck` (never `waiting_youtube` or `waiting_llm`); the requeue's own "active item with no job" leftover uses the same `stuck` status. Rows rebuilt by reconcile in an active status get no job: a `pipeline.run` with `retry_deferred` picks them up (every `waiting_youtube`, `waiting_llm` or `ready` row no queued or running job carries, as well as `deferred` and `stuck`), from the archive copy or, without one, from the working copy in `output/`; a row with neither is left and named in a warning. `requeue=NAME` works from the archive copy only.
+- **The stuck clock reads the event data.** Every transition event carries `{"from", "to"}` in its data (reconcile's created event too); `stuck_since` reads that, and the message only for events written before the B5 fix wave.
 
 **Open items after B5** (from the B5 reviews; the final review adds its own):
 
 *Robustness*
 
 - A row holds only its last LLM run: a published item that is requeued and deferred mixes the new profile and backend with the old model and tokens, a requeue served from a saved reply drops the earlier live tokens, and the tokens of failed calls are only in the `llm/` trace. Cost queries read `published` rows only and undercount failed calls. Fix: put the tokens and the tried profile in the event data.
-- If writing the metrics fails after the page is made, the retry publishes with no metrics.
-- `stuck_since` reads the event message; make `transition` always write `{"from", "to"}` into the event data and read that (about 5 lines).
-- Rows written before B5 may keep a stale `error`, and `warnings` may hold JSON `null` instead of SQL NULL: `UPDATE job_items SET warnings = NULL WHERE warnings = 'null'::jsonb`.
+- If writing the metrics fails after the page is made, or the worker crashes between the page and its commit, the retry publishes with no metrics.
+- Rows written before B5 may hold JSON `null` in `warnings` instead of SQL NULL: `UPDATE job_items SET warnings = NULL WHERE warnings = 'null'::jsonb`.
 - The mirror: last writer wins (fine with one worker); on the file-error paths the item is `failed` while its file stays where it was with its old `stage`; a finished page that the reaper moves to `failed/` still says `published`.
 - The blocks: `blocked_at` moves to now even when the longer, older block is kept (LLM rows and the gate); expired rows are never removed; there is no command to lift a 6 h budget block early or to show `resources.reason` (use SQL); the wrong-model regex stops at a dot; a missing API key blocks its backend for `LLM_BLOCK_S` too.
 - Reconcile: a frontmatter `id` is stored as written (not through `safe_id`); after a fix the old path column is kept; rebuilt rows have no `docs_page`, no metrics and a `stage_since` of the reconcile time.
+- A brief error reading the blocks from Postgres defers every document in that 30 s window (fail closed); they then need a `retry_deferred` (the B6 scheduler adds it).
+- Reconcile on a live database turns a `stuck` row back into `deferred`, with a fresh clock, when the `stuck` mirror was never written (the folder wins).
+- A capture that cannot be analysed gets a doubled reason in its `failed/` file: `cannot read the capture: cannot analyse: ...`.
+- A dropped-tags event is written again when only the other warnings of the item change; `stuck_since` reads the item's whole event history at every deferral (fine at today's sizes); the wrong-model block key uses the error's backend while the check uses the profile's.
 - `retry_deferred` with a small `limit` moves the retried documents back to `inbox/` but stages only `limit` of them: the others wait there while their row keeps its old status, until the next `pipeline.run`.
 
 *Tests*
@@ -922,6 +926,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 *B5b: `run pipeline` over the worker path*
 
+- A working copy whose `stage` the worker set to `stuck` is ignored by Stage A's `run pipeline --retry-deferred` (it looks for `stage: deferred`): use the worker's `retry_deferred` until B5b.
 - `catcher run pipeline` becomes a thin wrapper: it queues `pipeline.run`, runs the worker in-process and prints the report from the database. The old loop retires with its folder states (`stage: analyzed`, `deferred_at`) and its per-run blocks (`RunState.blocked`, `budget_blocked`). Until then the Stage A run writes no `job_items`: run `catcher reconcile` after it if you also use the worker.
 - B5b decides what happens to `--dry-run` (decision 12: dry runs never go through the queue): keep a read-only inline path, or let `catcher scan` take its place.
 
