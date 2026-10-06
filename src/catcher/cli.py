@@ -51,6 +51,7 @@ from catcher.modules.queue.reconcile import reconcile
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
+from catcher.modules.worker.runner import RunDatabaseError, run_command
 from catcher.modules.youtube.access import build_access
 from catcher.modules.youtube.cache import FACTS_DIR
 from catcher.modules.youtube.facts import FactsUnavailable
@@ -271,8 +272,8 @@ def run_pipeline_cmd(
         bool,
         typer.Option(
             "--wait-youtube",
-            help="when a clip must wait for the gap between YouTube calls, sleep (up to YOUTUBE_WAIT_MAX_S) "
-            "instead of leaving it in inbox/ for a later run",
+            help="when a clip must wait for the gap between YouTube calls, wait (up to YOUTUBE_WAIT_MAX_S) "
+            "instead of leaving its fetch queued for a later `catcher worker`",
         ),
     ] = False,
     retry_deferred: Annotated[
@@ -290,18 +291,99 @@ def run_pipeline_cmd(
 ) -> None:
     """Process the documents in inbox/: publish pages, file failures and duplicates, and commit.
 
-    It needs the database: first it takes the worker's lock in DATABASE_URL (also for --dry-run), so one
-    worker or run works at a time, and holds it until the run ends.
+    It runs the worker path in this process: it takes the worker's lock in DATABASE_URL (also for --dry-run)
+    and holds it until the run ends, queues a `pipeline.run` job with the options, runs the worker until no
+    job is due, then queues and runs `pipeline.publish` (without --push it only commits: no pull, no push).
+    Ctrl-C or a `kill` puts the job it was running back in the queue and publishes nothing: `catcher worker`
+    finishes it.
 
-    Exit codes: 0 done; 1 a document failed or a name was not found, or the run lost its database lock (it
-    stopped before the next document and committed nothing); 2 a wrong path, DATABASE_URL is malformed, the
-    database cannot be reached, or a worker or another run is running (nothing was done)."""
+    Exit codes: 0 done; 1 a document failed, a name was not found, a file was unreadable, the publish failed,
+    the run was interrupted, or it lost its database lock (it stopped before the next job and committed
+    nothing); 2 a wrong path, DATABASE_URL is malformed, the database cannot be reached, or a worker or
+    another run is running (nothing was done)."""
     settings = Settings()
-    signal.signal(signal.SIGTERM, _terminate)  # a `kill` ends the run like Ctrl-C: the document goes back
+    signal.signal(signal.SIGTERM, _terminate)  # a `kill` ends the run like Ctrl-C: the job goes back
+    ideas_repo, docs_repo = ideas or settings.ideas_repo, docs or settings.docs_repo
+    _check_database_url(settings.database_url)
+    if dry_run:  # still the Stage A loop: a read-only preview (Task 4 moves it out)
+        args = (profile, limit, file, requeue, refresh_facts, wait_youtube, retry_deferred, refresh_llm)
+        _dry_run(settings, ideas_repo, docs_repo, *args)
+        return
+    params = _run_params(profile, limit, file, requeue, retry_deferred, refresh_llm, refresh_facts)
+    with ExitStack() as stack:
+        try:
+            outcome = run_command(
+                settings,
+                ideas=ideas_repo,
+                docs=docs_repo,
+                params=params,
+                push=push,
+                wait_youtube_s=settings.youtube_wait_max_s if wait_youtube else None,
+                services_factory=lambda s: _services(stack, s),  # built while the lock is held
+            )
+        except WorkerAlreadyRunning as e:
+            log.error("%s", RUN_BUSY)
+            typer.echo(RUN_BUSY, err=True)
+            raise typer.Exit(2) from e
+        except OperationalError as e:  # taking the lock: nothing was done
+            log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
+            typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
+            raise typer.Exit(2) from e
+        except RunDatabaseError as e:
+            typer.echo(RUN_DB_ERROR, err=True)
+            raise typer.Exit(1) from e
+    report = outcome.report
+    _print_items(report)
+    for line in outcome.blocked_lines:
+        typer.echo(line)
+    if outcome.lock_lost:
+        typer.echo(f"{_changed_by_the_run(report)} were finished and are NOT committed", err=True)
+        log.error("%s", RUN_LOST)
+        typer.echo(RUN_LOST, err=True)
+    elif outcome.interrupted:
+        typer.echo(
+            f"interrupted: {outcome.left_queued} job(s) left queued, run catcher worker to finish", err=True
+        )
+    else:
+        typer.echo(f"summary: {report.counts()} committed={outcome.committed} pushed={outcome.pushed}")
+    raise typer.Exit(outcome.exit_code)
+
+
+def _run_params(
+    profile: str | None,
+    limit: int | None,
+    file: list[str] | None,
+    requeue: list[str] | None,
+    retry_deferred: bool,
+    refresh_llm: bool,
+    refresh_facts: bool,
+) -> dict[str, Any]:
+    """The `pipeline.run` params of the command's options: only the ones given."""
+    given: dict[str, Any] = {"limit": limit, "only": file, "requeue": requeue, "profile": profile}
+    params = {key: value for key, value in given.items() if value is not None}
+    flags = {"retry_deferred": retry_deferred, "refresh_llm": refresh_llm, "refresh_facts": refresh_facts}
+    params.update({key: True for key, on in flags.items() if on})
+    return params
+
+
+def _dry_run(
+    settings: Settings,
+    ideas: Path,
+    docs: Path,
+    profile: str | None,
+    limit: int | None,
+    file: list[str] | None,
+    requeue: list[str] | None,
+    refresh_facts: bool,
+    wait_youtube: bool,
+    retry_deferred: bool,
+    refresh_llm: bool,
+) -> None:
+    """`run pipeline --dry-run`: the Stage A loop, unchanged, until Task 4 makes it a preview."""
     opts = RunOptions(
         profile=profile,
-        dry_run=dry_run,
-        push=push,
+        dry_run=True,
+        push=False,
         limit=limit,
         only=file,
         requeue=requeue,
@@ -310,13 +392,10 @@ def run_pipeline_cmd(
         retry_deferred=retry_deferred,
         refresh_llm=refresh_llm,
     )
-    _check_database_url(settings.database_url)
     with ExitStack() as stack:
         opts.lock_check = _hold_the_run_lock(stack, settings)  # before any file is touched
         try:
-            report = run_pipeline(
-                ideas or settings.ideas_repo, docs or settings.docs_repo, opts, _services(stack, settings)
-            )
+            report = run_pipeline(ideas, docs, opts, _services(stack, settings))
         except RunLockLost as e:
             _print_items(e.report)
             typer.echo(f"{_changed_by_the_run(e.report)} were finished and are NOT committed", err=True)
@@ -341,10 +420,10 @@ def run_pipeline_cmd(
 RUN_BUSY = "another worker or run is already running; one at a time: nothing was done"
 RUN_LOST = (
     "the run lost its database lock (the connection to Postgres was lost or restarted); it stopped before "
-    "the next step and committed nothing, so no worker or other run works beside it. The files it already "
-    "changed are not committed (see `git status` in both repos), and the next `run pipeline` does not commit "
-    "them either: it commits only the files it changes itself. They are committed by the next "
-    "`pipeline.publish` job: `catcher jobs add pipeline.publish`, then run the worker; or commit them by hand"
+    "the next job and committed nothing, so no worker or other run works beside it. The files it already "
+    "changed are not committed (see `git status` in both repos); the jobs it left are still queued. The next "
+    "`pipeline.publish` job commits them: `catcher jobs add pipeline.publish`, then run the worker (the next "
+    "`run pipeline` publishes too); or commit them by hand"
 )
 RUN_DB_ERROR = (
     "a database error stopped the run (see the log): documents may already have been moved and may not "

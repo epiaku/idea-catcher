@@ -1,11 +1,16 @@
 """What `catcher run pipeline` says when its database lock is lost or a database error stops the run (the
-lock itself is a stand-in here; it is tested on a real database in tests/integration/db)."""
+run itself, `run_command`, is a stand-in here; the lock is tested on a real database in tests/integration/db).
+
+Ported in B5b Task 3: these tests patched the old loop (`cli.run_pipeline` raising `RunLockLost`); the
+command now calls `run_command`, which returns a `RunOutcome` with `lock_lost`, or raises `RunDatabaseError`.
+Each test keeps its exit code and its messages."""
 
 from sqlalchemy.exc import OperationalError
 from typer.testing import CliRunner
 
 import catcher.cli as cli
 from catcher.modules.pipeline.run import ItemReport, RunReport
+from catcher.modules.worker.runner import RunDatabaseError, RunOutcome
 
 
 def _report() -> RunReport:
@@ -19,12 +24,10 @@ def _report() -> RunReport:
 
 
 def test_a_lost_lock_shows_what_was_done_and_that_it_is_not_committed(monkeypatch, no_run_lock):
-    from catcher.modules.pipeline.run import RunLockLost
+    def lose(settings, **kwargs):
+        return RunOutcome(report=_report(), lock_lost=True, exit_code=1)
 
-    def lose(ideas, docs, opts, svc):
-        raise RunLockLost(_report()) from RuntimeError("the lock connection died")
-
-    monkeypatch.setattr(cli, "run_pipeline", lose)
+    monkeypatch.setattr(cli, "run_command", lose)
     monkeypatch.setattr(cli, "default_services", lambda settings: None)
     result = CliRunner().invoke(cli.app, ["run", "pipeline"])
     assert result.exit_code == 1, result.output
@@ -38,28 +41,26 @@ def test_a_lost_lock_shows_what_was_done_and_that_it_is_not_committed(monkeypatc
 
 
 def test_a_lost_lock_says_who_commits_the_leftovers(monkeypatch, no_run_lock):
-    """The next `run pipeline` commits only the files it changes itself: the documents the lost run finished
-    are committed by the next `pipeline.publish` job (or by hand), and the message must say so."""
-    from catcher.modules.pipeline.run import RunLockLost
+    """The documents the lost run finished are committed by the next `pipeline.publish` job (or by hand), and
+    the message must say so. (B5b: the next `run pipeline` publishes the managed folders as a whole, so it
+    commits them too; the old "does not commit them" no longer holds.)"""
 
-    def lose(ideas, docs, opts, svc):
-        raise RunLockLost(_report())
+    def lose(settings, **kwargs):
+        return RunOutcome(report=_report(), lock_lost=True, exit_code=1)
 
-    monkeypatch.setattr(cli, "run_pipeline", lose)
+    monkeypatch.setattr(cli, "run_command", lose)
     monkeypatch.setattr(cli, "default_services", lambda settings: None)
     result = CliRunner().invoke(cli.app, ["run", "pipeline"])
     assert result.exit_code == 1, result.output
     said = " ".join(result.output.split())
     assert "run it again" not in said
-    assert "the next `run pipeline` does not commit them" in said
+    assert "The next `pipeline.publish` job commits them" in said
     assert "`catcher jobs add pipeline.publish`" in said
     assert "then run the worker" in said
     assert "or commit them by hand" in said
 
 
 def test_the_lost_lock_count_counts_documents_not_report_lines(monkeypatch, no_run_lock):
-    from catcher.modules.pipeline.run import RunLockLost
-
     report = RunReport(
         items=[
             ItemReport("a1", "note", "requeued", "archive/notes/a.md -> inbox/"),
@@ -73,10 +74,10 @@ def test_the_lost_lock_count_counts_documents_not_report_lines(monkeypatch, no_r
         unreadable={"notes/broken.md": "bad frontmatter"},  # moved to failed/: changed, not committed
     )
 
-    def lose(ideas, docs, opts, svc):
-        raise RunLockLost(report)
+    def lose(settings, **kwargs):
+        return RunOutcome(report=report, lock_lost=True, exit_code=1)
 
-    monkeypatch.setattr(cli, "run_pipeline", lose)
+    monkeypatch.setattr(cli, "run_command", lose)
     monkeypatch.setattr(cli, "default_services", lambda settings: None)
     result = CliRunner().invoke(cli.app, ["run", "pipeline"])
     assert result.exit_code == 1, result.output
@@ -84,10 +85,11 @@ def test_the_lost_lock_count_counts_documents_not_report_lines(monkeypatch, no_r
 
 
 def test_a_database_error_during_the_run_does_not_say_nothing_was_done(monkeypatch, no_run_lock):
-    def fail(ideas, docs, opts, svc):
-        raise OperationalError("select 1", {}, Exception("server closed the connection unexpectedly"))
+    def fail(settings, **kwargs):
+        cause = OperationalError("select 1", {}, Exception("server closed the connection unexpectedly"))
+        raise RunDatabaseError("OperationalError") from cause
 
-    monkeypatch.setattr(cli, "run_pipeline", fail)
+    monkeypatch.setattr(cli, "run_command", fail)
     monkeypatch.setattr(cli, "default_services", lambda settings: None)
     result = CliRunner().invoke(cli.app, ["run", "pipeline"])
     assert result.exit_code == 1, result.output
@@ -115,7 +117,12 @@ def test_the_run_disposes_the_gate_engine_it_built(monkeypatch, no_run_lock):
         return engines[-1]
 
     monkeypatch.setattr("catcher.core.db.make_worker_engine", make_engine)  # the one `build_access` uses
-    monkeypatch.setattr(cli, "run_pipeline", lambda ideas, docs, opts, svc: RunReport())
+
+    def run(settings, *, services_factory, **kwargs):
+        services_factory(settings)  # the command's real services, with the gate engine it must dispose
+        return RunOutcome(report=RunReport())
+
+    monkeypatch.setattr(cli, "run_command", run)
     result = CliRunner().invoke(cli.app, ["run", "pipeline"])
     assert result.exit_code == 0, result.output
     assert [engine.disposed for engine in engines] == [1]

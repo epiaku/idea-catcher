@@ -7,7 +7,7 @@ from typing import Any
 
 from catcher.core.config import Settings
 from catcher.core.db import make_worker_engine, utc_now
-from catcher.modules.pipeline.process import default_services
+from catcher.modules.pipeline.process import Services, default_services
 from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter_mirror
@@ -69,12 +69,14 @@ def build_context(
     ideas: Path | None = None,
     docs: Path | None = None,
     clock: Callable[[], datetime] = utc_now,
+    services: Services | None = None,
 ) -> HandlerContext:
     """The context every handler gets: the real services (`default_services`), a worker engine for
     DATABASE_URL (sessions with a lock timeout), and the two checkouts. The caller disposes the engine.
 
     The YouTube gate is the row `youtube` in Postgres on that same engine (the one gate), and
-    it and the YouTube access read the same `clock`, so a frozen clock freezes both."""
+    it and the YouTube access read the same `clock`, so a frozen clock freezes both. Given `services` are used
+    as they are (`run pipeline` passes the command's own, built while it holds the lock)."""
     engine = make_worker_engine(settings.database_url)
 
     def epoch() -> float:
@@ -88,14 +90,14 @@ def build_context(
         clock=epoch,
     )
     ideas = ideas or settings.ideas_repo
-    services = default_services(settings, gate=gate, clock=epoch)
+    svc = services if services is not None else default_services(settings, gate=gate, clock=epoch)
 
     def known_backends() -> set[str]:
-        return {profile.backend for profile in services.profiles.profiles.values()}
+        return {profile.backend for profile in svc.profiles.profiles.values()}
 
     return HandlerContext(
         settings=settings,
-        services=services,
+        services=svc,
         engine=engine,
         ideas=ideas,
         docs=docs or settings.docs_repo,

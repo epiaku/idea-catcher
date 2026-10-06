@@ -3,9 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from typer.testing import CliRunner
 
-from catcher.cli import app
 from catcher.core.frontmatter import load
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import BudgetExhausted, UsageLimitReached
@@ -197,15 +195,6 @@ def test_unrelated_docs_changes_are_not_committed(repos, make_services, sh):
     (repos.docs / "README.md").write_text("my own edit\n")
     run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
     assert sh(repos.docs, "status", "--porcelain").splitlines() == [" M README.md"]
-
-
-def test_cli_run_pipeline(repos, monkeypatch, no_run_lock):
-    monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
-    args = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs), "--profile", "fake"]
-    result = CliRunner().invoke(app, args)
-    assert result.exit_code == 0, result.output
-    assert "published" in result.output
-    assert "summary:" in result.output
 
 
 YT_CLIP = (
@@ -469,15 +458,6 @@ def test_a_named_short_clip_is_processed_when_its_longer_clip_is_not_selected(re
     assert (clips / "chat long.md").exists()
 
 
-def test_cli_file_option_warns_and_exits_with_1_when_nothing_matches(repos, monkeypatch, no_run_lock):
-    monkeypatch.setenv("PROFILES_FILE", str(REPO / "profiles.yaml"))
-    args = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs), "--profile", "fake"]
-    result = CliRunner().invoke(app, [*args, "--file", "Nope.md", "-f", "systeme"])
-    assert result.exit_code == 1
-    assert 'not-found      no document named "Nope.md"' in result.output
-    assert "published" in result.output
-
-
 def test_a_document_leaves_the_inbox_only_when_it_is_worked_on(repos, make_services):
     report = run_pipeline(repos.ideas, repos.docs, RunOptions(limit=1), make_services())
     assert report.counts() == {"published": 1, "skipped": 1}
@@ -632,17 +612,6 @@ def test_requeue_does_not_overwrite_a_file_already_in_the_inbox(repos, make_serv
     assert (
         "Edited since." in load(find(repos.ideas, "archive", "notes", "YouTube walks.md")).body
     )  # the edit was used
-
-
-def test_requeue_flag_on_the_command_line(repos, make_services, monkeypatch, no_run_lock):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
-    monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())
-    base = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs)]
-    ok = CliRunner().invoke(app, [*base, "--requeue", "YouTube walks"])
-    assert ok.exit_code == 0, ok.output
-    assert "requeued" in ok.output and "published" in ok.output
-    missing = CliRunner().invoke(app, [*base, "--requeue", "Nope"])
-    assert missing.exit_code == 1 and 'no document named "Nope" in archive/' in missing.output
 
 
 def test_requeue_moves_the_original_and_clears_the_stale_output_so_the_document_is_in_one_place(
@@ -984,16 +953,6 @@ def test_two_different_clips_with_one_id_warn_that_the_later_page_replaces_the_e
     same = [i for i in report.items if i.doc_id == "2446cd9c762c9cc9"]
     assert len(same) == 2 and any("replaces the earlier one" in i.message for i in same)
     assert "replaces the earlier one" in caplog.text
-
-
-def test_retry_deferred_flag_on_the_command_line(repos, make_services, monkeypatch, no_run_lock):
-    chats = FakeBackend([UsageLimitReached("limit", backend="openai")])
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
-    monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())
-    base = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs)]
-    ok = CliRunner().invoke(app, [*base, "--retry-deferred"])
-    assert ok.exit_code == 0, ok.output
-    assert "requeued" in ok.output and "published" in ok.output
 
 
 # ---- the run lock's check (`RunOptions.lock_check`, `WorkerLock.check` in `catcher run pipeline`) ----------

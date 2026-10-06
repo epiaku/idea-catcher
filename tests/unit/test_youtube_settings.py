@@ -58,18 +58,20 @@ def test_the_run_command_has_the_youtube_flags(monkeypatch, no_run_lock):
     from typer.testing import CliRunner
 
     import catcher.cli as cli
+    from catcher.core.config import Settings
     from catcher.modules.pipeline.run import RunReport
+    from catcher.modules.worker.runner import RunOutcome
 
     seen: dict = {}
 
-    def fake_run(ideas, docs, opts, svc):
-        seen["opts"] = opts
-        return RunReport()
+    def fake_run(settings, **kwargs):  # B5b: the command calls run_command (the worker path), not the loop
+        seen.update(kwargs)
+        return RunOutcome(report=RunReport())
 
-    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(cli, "run_command", fake_run)
     monkeypatch.setattr(cli, "default_services", lambda settings: None)
     result = CliRunner().invoke(cli.app, ["run", "pipeline", "--refresh-facts", "--wait-youtube"])
     assert result.exit_code == 0, result.output
-    assert seen["opts"].refresh_facts is True and seen["opts"].wait_youtube is True
+    assert seen["params"]["refresh_facts"] is True and seen["wait_youtube_s"] == Settings().youtube_wait_max_s
     plain = CliRunner().invoke(cli.app, ["run", "pipeline"])
-    assert plain.exit_code == 0 and seen["opts"].refresh_facts is False and seen["opts"].wait_youtube is False
+    assert plain.exit_code == 0 and "refresh_facts" not in seen["params"] and seen["wait_youtube_s"] is None

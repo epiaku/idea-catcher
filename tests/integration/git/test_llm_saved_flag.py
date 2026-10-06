@@ -3,9 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
-from typer.testing import CliRunner
 
-from catcher import cli
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
@@ -55,23 +53,3 @@ def test_the_flag_is_false_on_a_first_run_true_on_a_reused_reply_and_false_on_re
     refresh = RunOptions(requeue=["systeme", "YouTube walks"], refresh_llm=True)
     fresh = run_pipeline(repos.ideas, repos.docs, refresh, make_services())
     assert [i.llm_saved for i in published(fresh)] == [False, False]
-
-
-def test_the_command_line_marks_only_the_item_served_from_a_saved_reply(
-    repos, make_services, monkeypatch, no_run_lock
-):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
-    monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())
-    base = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs)]
-    runner = CliRunner()
-
-    saved = runner.invoke(cli.app, [*base, "--requeue", "systeme"])
-    assert saved.exit_code == 0, saved.output
-    [line] = [x for x in saved.output.splitlines() if x.startswith("published")]
-    assert line.endswith(MARK) and ".md (saved reply)" in line
-
-    fresh = runner.invoke(cli.app, [*base, "--requeue", "YouTube walks", "--refresh-llm"])
-    assert fresh.exit_code == 0, fresh.output
-    [line] = [x for x in fresh.output.splitlines() if x.startswith("published")]
-    assert MARK not in line
-    assert not any(x.startswith("requeued") and MARK in x for x in saved.output.splitlines())

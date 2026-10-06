@@ -18,6 +18,7 @@ from catcher.modules.llm import service
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.pipeline.run import RunOptions, RunReport, run_pipeline
 from catcher.modules.pipeline.tags import TagList, load_tags
+from catcher.modules.worker.runner import RunOutcome
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
 WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
@@ -183,20 +184,24 @@ def test_refresh_llm_calls_the_model_again_and_overwrites_the_trace(repos, make_
 
 
 def test_requeue_with_refresh_llm_calls_the_model_again(repos, make_services, monkeypatch, no_run_lock):
-    # The flags reach the run: `--requeue` leaves `refresh_llm` off, `--refresh-llm` turns it on
-    seen: list[RunOptions] = []
+    # The flags reach the run (B5b: as the params of its `pipeline.run` job): `--requeue` leaves
+    # `refresh_llm` off, `--refresh-llm` turns it on
+    seen: list[dict] = []
 
-    def fake_run(ideas, docs, opts, svc):
-        seen.append(opts)
-        return RunReport()
+    def fake_run(settings, *, params, **kwargs):
+        seen.append(params)
+        return RunOutcome(report=RunReport())
 
-    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setattr(cli, "run_command", fake_run)
     monkeypatch.setattr(cli, "default_services", lambda settings: None)
     runner = CliRunner()
     args = ["run", "pipeline", "--ideas", str(repos.ideas), "--docs", str(repos.docs), "--requeue", "systeme"]
     assert runner.invoke(cli.app, args).exit_code == 0
     assert runner.invoke(cli.app, [*args, "--refresh-llm"]).exit_code == 0
-    assert [(o.requeue, o.refresh_llm) for o in seen] == [(["systeme"], False), (["systeme"], True)]
+    assert [(p["requeue"], p.get("refresh_llm", False)) for p in seen] == [
+        (["systeme"], False),
+        (["systeme"], True),
+    ]
     assert "--refresh-llm" in runner.invoke(cli.app, ["run", "pipeline", "--help"]).output
 
     # ... and the run then calls the model for the requeued document, not for the others

@@ -1,7 +1,8 @@
 """`catcher run pipeline` takes the worker's Postgres lock for the whole run (real Postgres, CliRunner).
 
 With the database down, or with a worker (or another run) holding the lock, it exits 2 before it touches a
-file; when the lock is lost during the run, it stops with exit 1 before the next document."""
+file; when the lock is lost during the run, it stops with exit 1 before the next job (B5b: the run goes
+through the worker)."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from typer.testing import CliRunner
 
 from catcher.cli import app
 from catcher.core.db import make_engine
-from catcher.modules.pipeline import run as run_mod
+from catcher.modules.llm.backends.fake import FakeBackend
 from catcher.modules.worker.guard import WorkerLock
 
 pytestmark = pytest.mark.db
@@ -44,7 +45,10 @@ def engine(fresh_database_url: str) -> Engine:
 def runner(fresh_database_url: str, monkeypatch: pytest.MonkeyPatch, make_services) -> CliRunner:
     monkeypatch.setenv("DATABASE_URL", fresh_database_url)
     monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())  # no real LLM
-    return CliRunner()
+    cli = CliRunner()
+    upgraded = cli.invoke(app, ["db", "upgrade"])  # B5b: a run queues jobs, so it needs the tables
+    assert upgraded.exit_code == 0, upgraded.output
+    return cli
 
 
 def _args(repos, *extra: str) -> list[str]:
@@ -141,25 +145,42 @@ def test_run_pipeline_takes_and_releases_the_lock(
 
 
 def test_a_run_that_loses_its_lock_stops_with_exit_1_before_the_next_document(
-    runner: CliRunner, repos, engine, sh, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, repos, engine, sh, monkeypatch: pytest.MonkeyPatch, make_services
 ) -> None:
-    real_process_note = run_mod.process_note
+    """B5b: the run goes through the worker, and the lock is checked before each JOB, not each document.
+    `pipeline.run` takes both documents out of inbox/ in one job, so "the second document is still in inbox/"
+    became "the second document's job is still queued" (none lost: the next worker finishes it). The lock is
+    lost while the first document's `llm.reason` job runs (it used to be lost in `process_note`)."""
 
-    def process_and_lose_the_lock(note, svc, opts):
-        processed = real_process_note(note, svc, opts)
-        [pid] = _advisory_locks(engine)  # a Postgres restart, or a dropped connection, ends the lock
-        with engine.connect() as admin:
-            assert admin.execute(text("select pg_terminate_backend(:pid, 5000)"), {"pid": pid}).scalar()
-        return processed
+    class LosesTheLock(FakeBackend):
+        def complete(self, prompt, *, model, task):
+            if not self.prompts:  # a Postgres restart, or a dropped connection, ends the lock
+                [pid] = _advisory_locks(engine)
+                with engine.connect() as admin:
+                    assert admin.execute(
+                        text("select pg_terminate_backend(:pid, 5000)"), {"pid": pid}
+                    ).scalar()
+            return super().complete(prompt, model=model, task=task)
 
-    monkeypatch.setattr(run_mod, "process_note", process_and_lose_the_lock)
+    monkeypatch.setattr(
+        "catcher.cli.default_services", lambda settings: make_services(note_backend=LosesTheLock())
+    )
     commits = sh(repos.ideas, "log", "--oneline")
     result = runner.invoke(app, _args(repos))
     assert result.exit_code == 1, result.output
     assert "the run lost its database lock" in result.output
     assert "Traceback" not in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
-    assert len(_inbox(repos.ideas)) == 1  # the second document was not started
+    with engine.connect() as connection:  # the second document was not started: its job is still queued
+        statuses = sorted(connection.execute(text("select status from job_items")).scalars())
+        reasons = sorted(
+            connection.execute(text("select status from jobs where type = 'llm.reason'")).scalars()
+        )
+        publishes = connection.execute(
+            text("select count(*) from jobs where type = 'pipeline.publish'")
+        ).scalar()
+    assert statuses == ["published", "waiting_llm"] and reasons == ["queued", "succeeded"]
+    assert publishes == 0
     assert sh(repos.ideas, "log", "--oneline") == commits  # nothing was committed after the lock was lost
     assert sh(repos.ideas, "status", "--porcelain") != ""  # the first one is changed, not committed
     assert any(line.startswith("published") for line in result.output.splitlines())  # what was done
