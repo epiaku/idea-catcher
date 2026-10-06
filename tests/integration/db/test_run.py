@@ -155,11 +155,12 @@ def test_push_updates_both_remotes(repos, make_services, sh):
     assert sh(repos.ideas_bare, "log", "-1", "--format=%s", "main").strip().startswith("idea-catcher:")
 
 
-@pytest.mark.skip(reason="B5b ruling pending: B52 (the preview says would_call_llm, not would_publish)")
 def test_dry_run_touches_nothing(repos, make_services):
     before = (files(repos.ideas), files(repos.docs))
     report = run_on_worker(repos, make_services(), dry_run=True)
-    assert report.counts() == {"would_publish": 2}
+    # B52 (ruling): the preview never calls a model, so a document without a saved reply is would_call_llm
+    # (the old dry run called the model and said would_publish)
+    assert report.counts() == {"would_call_llm": 2}
     assert (files(repos.ideas), files(repos.docs)) == before
     assert report.committed == {}
 
@@ -573,12 +574,11 @@ def test_a_file_over_the_size_limit_is_skipped_with_a_warning_and_stays_in_the_i
     assert any(r.levelname == "WARNING" and "ARTIFACT_MAX_MB" in r.getMessage() for r in caplog.records)
 
 
-@pytest.mark.skip(reason="B5b ruling pending: B52 (the preview says would_call_llm, not would_publish)")
 def test_a_dry_run_only_reports_the_artifact(repos, make_services):
     src = add_artifact(repos)
     before = files(repos.ideas)
     report = run_on_worker(repos, make_services(), dry_run=True)
-    assert report.counts() == {"would_publish": 2, "would_copy": 1}
+    assert report.counts() == {"would_call_llm": 2, "would_copy": 1}  # B52 (ruling): would_call_llm
     assert src.exists() and files(repos.ideas) == before and not (repos.docs / "idea-bucket").exists()
 
 
@@ -998,10 +998,6 @@ def test_retry_deferred_with_nothing_stalled_does_nothing(repos, make_services):
     assert run_on_worker(repos, make_services(), retry_deferred=True).items == []
 
 
-@pytest.mark.skip(
-    reason="B5b ruling pending: B46/B28 (with limit=1 the worker stages another document first and the clip "
-    "is `skipped` by the limit, not `waiting`; with only=['a'] instead of limit=1 the port passes)"
-)
 def test_a_gate_that_closes_after_the_check_sends_the_clip_back_to_the_inbox(
     repos, make_services, yt_facts, tmp_path
 ):
@@ -1010,7 +1006,9 @@ def test_a_gate_that_closes_after_the_check_sends_the_clip_back_to_the_inbox(
     services, calls, clock, _ = youtube_services(make_services, tmp_path, yt_facts)
     services.youtube.gate.reserve()  # another process just took the slot
     services.youtube.wait_needed = lambda *args, **kwargs: None  # the earlier check said "go ahead"
-    report = run_on_worker(repos, services, limit=1, clock=clock.dt, sleep=clock.sleep)
+    # B46 (ruling): one document in play, named, instead of limit=1 (the worker's limit counts staged
+    # documents and would stage another one first)
+    report = run_on_worker(repos, services, only=["a"], clock=clock.dt, sleep=clock.sleep)
     assert statuses(report) == {"AAAAAAAAAAA": "waiting"} and calls == []
     # B46 (changed): no pre-check any more; the fetch job waits for the gate's time and the clip waits
     # staged in output/, not back in inbox/ (still no requeue needed)

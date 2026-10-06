@@ -9,18 +9,13 @@ and a deferred item that is retried later reads the saved facts."""
 
 from pathlib import Path
 
-import pytest
 from golden import EXPECTED, PAGES, compare_pages
-from memory_gate import InMemoryGate
 from sqlalchemy import select
-from worker_harness import ExternalCall, FrozenHarness, RaisingBackend
+from worker_harness import FrozenHarness
 
 from catcher.core.db import session_scope
-from catcher.core.testdata import reset_test_repos
 from catcher.modules.llm.backends.fake import FakeBackend
-from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.queue.models import Job, JobItem
-from catcher.modules.youtube.access import YoutubeAccess
 from catcher.modules.youtube.facts import YoutubeFacts
 
 MAX_JOBS = 200  # 44 documents: a pipeline.run, then an llm.reason per page (and a fetch per clip at most)
@@ -85,35 +80,6 @@ def test_the_worker_publishes_the_frozen_real_run_with_no_external_call(frozen_h
     assert sh(ideas, "status", "--porcelain") == "" and sh(docs, "status", "--porcelain") == ""
     rows = items(h)
     assert len(rows) == 43 and {i.status for i in rows.values()} == {"published"}
-
-
-@pytest.mark.skip(
-    reason="B5b ruling pending: B71 (drop on purpose proposed: it compares the worker with the old loop "
-    "being deleted; on run_on_worker both runs would share one database and the second would find every "
-    "item already published; B69 compares the worker with the approved pages)"
-)
-def test_the_worker_matches_stage_a_on_the_same_data(frozen_harness, make_services, tmp_path):
-    h = frozen_harness
-    stage_a = reset_test_repos(tmp_path / "stage-a")
-    model_calls: list[str] = []
-    youtube_calls: list[str] = []
-
-    def no_youtube(vid: str) -> YoutubeFacts:
-        youtube_calls.append(vid)
-        raise ExternalCall(f"tests must not call YouTube ({vid})")
-
-    services = make_services(facts=no_youtube)
-    services.backends = lambda profile: RaisingBackend(model_calls)
-    gate = InMemoryGate(min_gap_s=600, jitter_s=0, block_hours=6)
-    services.youtube = YoutubeAccess(no_youtube, gate, wait_max_s=0)
-    report = run_pipeline(stage_a["idea-bucket"], stage_a["epiaku-docs"], RunOptions(), services)
-    assert report.counts() == {"published": 43, "artifact": 1}
-    assert model_calls == [] and youtube_calls == []
-
-    assert set(run_and_publish(h)) == {"succeeded"}
-
-    assert compare_pages(h.docs / PAGES, stage_a["epiaku-docs"] / PAGES) == 43
-    assert h.model_calls == [] and h.fetch_calls == []
 
 
 def test_an_llm_failure_makes_no_youtube_call(frozen_harness, sh):
