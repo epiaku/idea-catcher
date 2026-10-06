@@ -523,3 +523,63 @@ def test_reconcile_exits_2_without_the_database(runner: CliRunner, tmp_path, mon
     assert malformed.exit_code == 2, malformed.output
     assert "DATABASE_URL is not a valid database URL" in malformed.output
     assert "s3cr3t-pw" not in malformed.output
+
+
+# ---- fix round 1: one bad file never stops the rest -------------------------------------------------------
+
+BROKEN_SOURCE = "https://[oops/x"  # urlparse raises ValueError (Invalid IPv6 URL) on it
+
+
+def test_a_file_whose_source_cannot_be_parsed_is_skipped_and_the_rest_reconciled(pg_engine, tmp_path):
+    ideas = make_ideas(tmp_path)
+    write(
+        ideas / "output" / "notes" / "noclass.md",
+        {"id": "id-x", "source": BROKEN_SOURCE, "stage": "waiting_llm"},
+    )
+    write(ideas / "failed" / "notes" / "noid.md", {"source": BROKEN_SOURCE})  # no class, no id
+    finished_page(ideas, "notes/page.md")
+    write(ideas / "archive" / "notes" / "page.md", {"source": BROKEN_SOURCE})  # its class comes from here
+    working_copy(ideas, "notes/good.md", "deferred")
+
+    report = run(pg_engine, ideas)
+
+    assert report.created == ["notes/good.md"]
+    assert set(report.skipped) == {"notes/noclass.md", "notes/noid.md", "notes/page.md"}
+    for reason in report.skipped.values():
+        assert reason.startswith("cannot read") and "Traceback" not in reason and "\n" not in reason
+    assert set(rows(pg_engine)) == {"notes/good.md"}
+
+
+def test_odd_files_are_skipped_not_fatal(pg_engine, tmp_path):
+    ideas = make_ideas(tmp_path)
+    (ideas / "output" / "notes").mkdir(parents=True)
+    (ideas / "output" / "notes" / "list.md").write_text("---\n- a\n- b\n---\nbody\n", encoding="utf-8")
+    (ideas / "output" / "notes" / "empty.md").write_text("", encoding="utf-8")
+    (ideas / "output" / "notes" / "binary.md").write_bytes(b"\x00\xff\xfe\x81 not text")
+    working_copy(ideas, "notes/good.md", "waiting_llm")
+
+    report = run(pg_engine, ideas)
+
+    assert report.created == ["notes/good.md"]
+    assert set(report.skipped) == {"notes/list.md", "notes/empty.md", "notes/binary.md"}
+    assert "mapping" in report.skipped["notes/list.md"]
+
+
+def test_a_failure_after_the_gate_was_closed_says_so(runner: CliRunner, pg_engine, tmp_path, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    ideas = make_ideas(tmp_path)
+    the_tree(ideas)
+
+    def broken(*args, **kwargs):
+        raise OperationalError("select 1", {}, Exception("server closed the connection"))
+
+    monkeypatch.setattr(cli, "reconcile", broken)
+    result = runner.invoke(app, ["reconcile", "--ideas", str(ideas)])
+
+    assert result.exit_code == 1, result.output
+    until = clock_text((REAL_NOW + timedelta(hours=6)).timestamp(), REAL_NOW.timestamp())
+    assert f"the YouTube gate was already closed until {until}" in result.output
+    assert "no row was written" in result.output
+    assert gate_row(pg_engine).blocked_until == REAL_NOW + timedelta(hours=6)
+    assert rows(pg_engine) == {}

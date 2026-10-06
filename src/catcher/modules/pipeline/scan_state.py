@@ -169,7 +169,8 @@ def _found(ideas: Path, folder: str, path: Path, name: str) -> FoundItem:
 
 def scan_item_files(ideas: Path) -> list[FoundItem]:
     """Every `.md` file in `output/`, `failed/` and `duplicates/` (hidden files and folders are left out), in
-    folder then name order. A name can appear in more than one folder: each file is returned."""
+        folder then name order. A name can appear in more than one folder: each file is returned. A file that
+    cannot be read in any way is returned with an `error`, never raised."""
     found: list[FoundItem] = []
     for folder in SCANNED_FOLDERS:
         root = ideas / folder
@@ -177,5 +178,17 @@ def scan_item_files(ideas: Path) -> list[FoundItem]:
             rel = path.relative_to(root)
             if not path.is_file() or any(part.startswith(".") for part in rel.parts):
                 continue
-            found.append(_found(ideas, folder, path, rel.as_posix()))
+            found.append(_found_safely(ideas, folder, path, rel.as_posix()))
     return found
+
+
+def _found_safely(ideas: Path, folder: str, path: Path, name: str) -> FoundItem:
+    """`_found`, but any error while reading one file (a `source:` that cannot be parsed, in the file or in
+    its archived original) makes that file a skipped one with a short reason: one file never stops the
+    rest of the scan."""
+    try:
+        return _found(ideas, folder, path, name)
+    except Exception as e:
+        log.warning("reconcile: cannot read %s/%s: %s: %s", folder, name, type(e).__name__, e)
+        detail = " ".join(f"{type(e).__name__}: {e}".split())[:200]
+        return FoundItem(name, folder, error=f"cannot read: {detail}")

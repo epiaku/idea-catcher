@@ -461,6 +461,7 @@ def reconcile_cmd(
         engine = make_worker_engine(settings.database_url)
         stack.callback(engine.dispose)
         gate_line = None
+        gate_note = None  # said when the rows fail after the gate was closed
         if not dry_run and not keep_gate:  # first: a rebuild must never leave the gate open by mistake
             gate = PostgresGate(engine, block_hours=settings.youtube_block_hours, clock=_gate_clock)
             try:
@@ -471,6 +472,7 @@ def reconcile_cmd(
                 raise typer.Exit(1) from None
             until = clock_text(state.blocked_until, _gate_clock())
             gate_line = f"YouTube gate closed until {until} (reconcile; use --keep-gate to skip)"
+            gate_note = f"the YouTube gate was already closed until {until}; nothing else was changed"
         try:
             with session_scope(engine) as session:
                 report = reconcile(
@@ -480,10 +482,14 @@ def reconcile_cmd(
         except WorkerLockLost as e:
             log.error("%s", e)
             typer.echo(f"{e}: no row was written", err=True)
+            if gate_note:
+                typer.echo(gate_note, err=True)
             raise typer.Exit(1) from e
         except SQLAlchemyError as e:
             log.error("a database error stopped reconcile: %s", getattr(e, "orig", None) or type(e).__name__)
             typer.echo(RECONCILE_DB_ERROR, err=True)
+            if gate_note:
+                typer.echo(gate_note, err=True)
             raise typer.Exit(1) from e
     for name in report.created:
         typer.echo(f"{'created':<9} {name}")
