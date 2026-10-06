@@ -5,12 +5,22 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from run_on_worker import run_on_worker
+from sqlalchemy import Engine
 
 from catcher.core.config import Settings
 from catcher.core.frontmatter import load
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import BackendUnavailable
-from catcher.modules.pipeline.run import RunOptions, run_pipeline
+
+pytestmark = pytest.mark.db
+
+
+@pytest.fixture(autouse=True)
+def _database(pg_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run_on_worker` runs the command's path (B5b) on the test database."""
+    monkeypatch.setenv("DATABASE_URL", pg_engine.url.render_as_string(hide_password=False))
+
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
 WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
@@ -66,7 +76,7 @@ def traces(ideas: Path) -> list[Path]:
 
 
 def test_a_run_writes_a_trace_per_document_and_commits_it(repos, make_services, sh):
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    report = run_on_worker(repos, make_services())
     assert report.counts() == {"published": 2}
     assert len(traces(repos.ideas)) == 2
     note = read(trace_of(repos.ideas, "notes", "YouTube walks.md"))
@@ -80,7 +90,7 @@ def test_a_run_writes_a_trace_per_document_and_commits_it(repos, make_services, 
 
 
 def test_the_trace_name_matches_the_archive_and_output_name(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     for sub, original in (("notes", "YouTube walks.md"), ("clippings", "systeme.md")):
         name = archived(repos.ideas, sub, original).name
         assert (repos.ideas / "output" / sub / name).exists()
@@ -89,21 +99,21 @@ def test_the_trace_name_matches_the_archive_and_output_name(repos, make_services
 
 
 def test_a_requeue_overwrites_the_same_trace_file(repos, make_services, sh):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     first = path.read_text()
     assert read(path)["output"]["title"] == "Fake Chat"
 
-    again = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    again = run_on_worker(repos, make_services())
     assert again.items == [] and path.read_text() == first  # not processed again: nothing new written
 
     v2 = json.dumps({**CANNED["ai-chat"], "title": "Bundles v2"})
     chats = FakeBackend([v2])
-    report = run_pipeline(
-        repos.ideas,
-        repos.docs,
-        RunOptions(requeue=["systeme"], refresh_llm=True),  # a requeue alone reuses the saved reply
+    report = run_on_worker(
+        repos,  # a requeue alone reuses the saved reply
         make_services(chat_backend=chats),
+        requeue=["systeme"],
+        refresh_llm=True,
     )
     assert report.counts() == {"requeued": 1, "published": 1}
     assert read(path)["output"]["title"] == "Bundles v2"  # the same file, overwritten
@@ -113,7 +123,7 @@ def test_a_requeue_overwrites_the_same_trace_file(repos, make_services, sh):
 
 def test_a_failed_llm_call_still_leaves_a_trace_with_the_error(repos, make_services, sh):
     chats = FakeBackend(["nope", "still nope"])
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    report = run_on_worker(repos, make_services(chat_backend=chats))
     assert report.counts() == {"published": 1, "failed": 1}
     trace = read(trace_of(repos.ideas, "clippings", "systeme.md"))
     assert trace["outcome"] == "invalid_output" and trace["output"] is None
@@ -123,7 +133,7 @@ def test_a_failed_llm_call_still_leaves_a_trace_with_the_error(repos, make_servi
 
     (repos.ideas / "inbox/clippings/second.md").write_text(chat("925d9b0b4ca21b63"))
     down = FakeBackend([BackendUnavailable("the backend is down")])
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=down))
+    report = run_on_worker(repos, make_services(chat_backend=down))
     assert report.counts() == {"deferred": 1}
     trace = read(trace_of(repos.ideas, "clippings", "second.md"))
     assert trace["outcome"] == "backend_error" and trace["error"] == "the backend is down"
@@ -132,28 +142,28 @@ def test_a_failed_llm_call_still_leaves_a_trace_with_the_error(repos, make_servi
 
 
 def test_a_dry_run_writes_no_trace(repos, make_services):
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), make_services())
-    assert report.counts() == {"would_publish": 2}
+    report = run_on_worker(repos, make_services(), dry_run=True)
+    assert report.counts() == {"would_call_llm": 2}  # B52 (ruling): the preview never calls a model
     assert not (repos.ideas / "llm").exists()
 
 
 def test_llm_trace_false_writes_nothing(repos, make_services, sh):
     services = make_services()
     services.settings = Settings(llm_trace=False)
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    report = run_on_worker(repos, services)
     assert report.counts() == {"published": 2}
     assert not (repos.ideas / "llm").exists()
     assert sh(repos.ideas, "status", "--porcelain") == ""
 
 
 def test_the_prompt_is_not_saved_by_default_but_is_with_llm_trace_prompt(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services())
+    run_on_worker(repos, make_services(), only=["YouTube walks"])
     trace = read(trace_of(repos.ideas, "notes", "YouTube walks.md"))
     assert trace["prompt"] is None and len(trace["prompt_sha256"]) == 64
 
     services = make_services()
     services.settings = Settings(llm_trace_prompt=True)
-    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["systeme"]), services)
+    run_on_worker(repos, services, only=["systeme"])
     trace = read(trace_of(repos.ideas, "clippings", "systeme.md"))
     assert "sell bundles?" in trace["prompt"]
 
@@ -161,7 +171,7 @@ def test_the_prompt_is_not_saved_by_default_but_is_with_llm_trace_prompt(repos, 
 def test_an_unwritable_trace_folder_does_not_fail_the_document(repos, make_services, caplog):
     (repos.ideas / "llm").write_text("not a folder\n")
     caplog.set_level("WARNING", logger="catcher")
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    report = run_on_worker(repos, make_services())
     assert report.counts() == {"published": 2}
     assert (repos.ideas / "llm").is_file()
     warnings = [r for r in caplog.records if r.name == "catcher.process" and r.levelname == "WARNING"]
@@ -173,7 +183,7 @@ def test_the_trace_holds_no_secret(repos, make_services):
     services.settings = Settings(
         openai_api_key="sk-secret-123", freellmapi_api_key="free-secret-456", llm_trace_prompt=True
     )
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), services)
+    report = run_on_worker(repos, services)
     assert report.counts() == {"published": 2}
     written = [p for p in (repos.ideas / "llm").rglob("*") if p.is_file()]
     assert len(written) == 2
@@ -183,17 +193,17 @@ def test_the_trace_holds_no_secret(repos, make_services):
 
 
 def test_a_failed_requeue_keeps_the_paid_replies_of_the_first_run(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     first = path.read_bytes()
     assert read(path)["outcome"] == "ok"
 
     down = FakeBackend([BackendUnavailable("the backend is down")])
-    report = run_pipeline(
-        repos.ideas,
-        repos.docs,
-        RunOptions(requeue=["systeme"], refresh_llm=True),  # a requeue alone reuses the saved reply
+    report = run_on_worker(
+        repos,  # a requeue alone reuses the saved reply
         make_services(chat_backend=down),
+        requeue=["systeme"],
+        refresh_llm=True,
     )
     assert report.counts().get("deferred") == 1
     assert path.read_bytes() == first
