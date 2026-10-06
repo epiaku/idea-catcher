@@ -540,7 +540,13 @@ def scan_inbox(ideas_repo: Path, *, now: datetime | None = None, only: list[str]
             result.errors[f"inbox/{rel.as_posix()}"] = error or "unreadable"
             log.error("cannot read inbox/%s: %s", rel.as_posix(), error)
             continue
-        note = _analyse(path, doc, f"inbox/{rel.as_posix()}", now)
+        try:
+            note = _analyse(path, doc, f"inbox/{rel.as_posix()}", now)
+        except Exception as e:  # one bad capture (a broken source: line...) must not stop the whole scan
+            reason = " ".join(str(e).split()) or type(e).__name__
+            result.errors[f"inbox/{rel.as_posix()}"] = f"cannot analyse: {reason}"
+            log.error("cannot analyse inbox/%s: %s", rel.as_posix(), reason)
+            continue
         note.inbox_rel = rel
         result.notes.append(note)
     return result

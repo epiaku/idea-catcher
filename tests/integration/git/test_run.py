@@ -319,6 +319,19 @@ def test_an_unreadable_capture_is_reported_and_filed_as_failed(repos, make_servi
     assert sh(repos.ideas, "status", "--porcelain") == ""
 
 
+def test_a_capture_with_a_broken_source_line_is_filed_as_failed_and_the_run_goes_on(repos, make_services, sh):
+    (repos.ideas / "inbox/clippings/broken.md").write_text("---\nsource: https://[oops/x\n---\nbody\n")
+    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    assert list(report.unreadable) == ["inbox/clippings/broken.md"]
+    assert report.unreadable["inbox/clippings/broken.md"].startswith("cannot analyse: ")
+    assert report.counts().get("published", 0) >= 1
+    assert (
+        "cannot analyse: "
+        in find(repos.ideas, "failed", "clippings", "broken.md").with_suffix(".error.txt").read_text()
+    )
+    assert sh(repos.ideas, "status", "--porcelain") == ""
+
+
 def test_a_used_up_budget_logs_one_error_per_backend_and_keeps_the_notes(repos, make_services, caplog):
     (repos.ideas / "inbox/clippings/second.md").write_text(chat("925d9b0b4ca21b63"))
     chats = FakeBackend([BudgetExhausted("insufficient_quota", backend="openai")])

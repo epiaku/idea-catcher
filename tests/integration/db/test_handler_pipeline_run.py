@@ -199,6 +199,21 @@ def test_duplicates_unreadable_and_artifacts_are_handled_like_stage_a(harness, s
     assert sh(harness.docs, "rev-list", "--count", "HEAD").strip() == "1"
 
 
+def test_a_capture_with_a_broken_source_line_goes_to_failed_and_the_others_are_staged(harness):
+    ideas = harness.ideas
+    broken = "---\nsource: https://[oops/x\n---\nbody\n"
+    (ideas / "inbox/clippings/broken.md").write_text(broken)
+
+    result = run(harness, only=["YouTube walks", "broken.md"])
+
+    assert result == Done(counts(staged=1, unreadable=1))
+    [failed] = (ideas / "failed/clippings").glob("*-broken.md")
+    assert failed.read_text() == broken
+    assert "cannot analyse: " in failed.with_suffix(".error.txt").read_text()
+    assert not (ideas / "inbox/clippings/broken.md").exists()
+    assert item_named(harness, "notes", "YouTube walks.md").status == "waiting_llm"
+
+
 def test_a_crash_after_the_staging_row_is_adopted_with_the_same_name(harness, monkeypatch):
     real_start_work = handlers_pipeline.start_work
     crashed: list[str] = []

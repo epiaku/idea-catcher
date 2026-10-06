@@ -98,6 +98,17 @@ def test_unreadable_files_are_reported_and_left_alone(tmp_path):
     assert len(result.notes) == 1
 
 
+def test_a_capture_with_a_broken_source_line_is_reported_and_the_others_are_scanned(tmp_path):
+    bad = put(tmp_path, "inbox/clippings/broken.md", "---\nsource: https://[oops/x\n---\nbody\n")
+    put(tmp_path, "inbox/notes/good.md", "A good idea\n")
+    put(tmp_path, "inbox/notes/other.md", "Another good idea\n")
+    result = scan_inbox(tmp_path, now=NOW)
+    assert bad.exists() and list(result.errors) == ["inbox/clippings/broken.md"]
+    assert result.errors["inbox/clippings/broken.md"].startswith("cannot analyse: ")
+    assert "\n" not in result.errors["inbox/clippings/broken.md"]
+    assert sorted(n.path.name for n in result.notes) == ["good.md", "other.md"]
+
+
 def test_hidden_folders_and_other_folders_are_ignored(tmp_path):
     put(tmp_path, "inbox/.trash/deleted.md", "gone\n")
     put(tmp_path, "output/notes/final.md", "---\ntitle: T\n---\nx\n")
