@@ -40,9 +40,10 @@ from catcher.modules.pipeline.inbox import (
     scan_inbox,
 )
 from catcher.modules.pipeline.inputs import prompt_input
+from catcher.modules.pipeline.preview import preview
 from catcher.modules.pipeline.process import ProcessOptions, Services, default_services, process_note
 from catcher.modules.pipeline.publish import write_page
-from catcher.modules.pipeline.run import NOT_STARTED, RunLockLost, RunOptions, RunReport, run_pipeline
+from catcher.modules.pipeline.run import NOT_STARTED, RunReport
 from catcher.modules.pipeline.scan_state import scan_item_files
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
@@ -306,11 +307,10 @@ def run_pipeline_cmd(
     signal.signal(signal.SIGTERM, _terminate)  # a `kill` ends the run like Ctrl-C: the job goes back
     ideas_repo, docs_repo = ideas or settings.ideas_repo, docs or settings.docs_repo
     _check_database_url(settings.database_url)
-    if dry_run:  # still the Stage A loop: a read-only preview (Task 4 moves it out)
-        args = (profile, limit, file, requeue, refresh_facts, wait_youtube, retry_deferred, refresh_llm)
-        _dry_run(settings, ideas_repo, docs_repo, *args)
-        return
     params = _run_params(profile, limit, file, requeue, retry_deferred, refresh_llm, refresh_facts)
+    if dry_run:  # a read-only preview of its own: no job, no row, no file
+        _dry_run(settings, ideas_repo, docs_repo, params)
+        return
     with ExitStack() as stack:
         try:
             outcome = run_command(
@@ -379,46 +379,12 @@ def _run_params(
     return params
 
 
-def _dry_run(
-    settings: Settings,
-    ideas: Path,
-    docs: Path,
-    profile: str | None,
-    limit: int | None,
-    file: list[str] | None,
-    requeue: list[str] | None,
-    refresh_facts: bool,
-    wait_youtube: bool,
-    retry_deferred: bool,
-    refresh_llm: bool,
-) -> None:
-    """`run pipeline --dry-run`: the Stage A loop, unchanged, until Task 4 makes it a preview."""
-    opts = RunOptions(
-        profile=profile,
-        dry_run=True,
-        push=False,
-        limit=limit,
-        only=file,
-        requeue=requeue,
-        refresh_facts=refresh_facts,
-        wait_youtube=wait_youtube,
-        retry_deferred=retry_deferred,
-        refresh_llm=refresh_llm,
-    )
+def _dry_run(settings: Settings, ideas: Path, docs: Path, params: dict[str, Any]) -> None:
+    """`run pipeline --dry-run`: a read-only preview (`preview`). It holds the run lock like a run does, so a
+    worker's files are not read halfway through a change, and writes nothing."""
     with ExitStack() as stack:
-        opts.lock_check = _hold_the_run_lock(stack, settings)  # before any file is touched
-        try:
-            report = run_pipeline(ideas, docs, opts, _services(stack, settings))
-        except RunLockLost as e:
-            _print_items(e.report)
-            typer.echo(f"{_changed_by_the_run(e.report)} were finished and are NOT committed", err=True)
-            log.error("%s", RUN_LOST)
-            typer.echo(RUN_LOST, err=True)
-            raise typer.Exit(1) from e
-        except SQLAlchemyError as e:  # the lock's own errors are handled above; this one came from the run
-            log.error("a database error stopped the run: %s", getattr(e, "orig", None) or type(e).__name__)
-            typer.echo(RUN_DB_ERROR, err=True)
-            raise typer.Exit(1) from e
+        _hold_the_run_lock(stack, settings)
+        report = preview(ideas, docs, params, _services(stack, settings))
     _print_items(report)
     typer.echo(f"summary: {report.counts()} committed={report.committed} pushed={report.pushed}")
     if report.problems:

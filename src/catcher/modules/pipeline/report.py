@@ -32,6 +32,7 @@ Status = Literal[
     "would_requeue",
     "waiting",
     "would_fetch",
+    "would_call_llm",
     "interrupted",
 ]
 
