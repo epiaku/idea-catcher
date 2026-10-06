@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from catcher.modules.queue.items import stage_item
 from catcher.modules.queue.models import JobEvent, JobItem
 from catcher.modules.queue.queue import enqueue
-from catcher.modules.queue.states import ItemStates, LlmMetrics, record_metrics
+from catcher.modules.queue.states import STUCK_SINCE, ItemStates, LlmMetrics, record_metrics, stuck_since
 
 NAME = "notes/an-idea.md"
 
@@ -53,7 +53,7 @@ def test_transition_changes_status_reason_and_stage_since_and_writes_an_event(
     assert event.ts == later
     assert event.level == "info"
     assert event.message == f"{NAME}: staging -> deferred: the model is blocked"
-    assert event.data is None
+    assert event.data == {"from": "staging", "to": "deferred"}
 
 
 def test_a_reason_is_kept_in_stage_reason_for_every_status_but_in_error_only_for_failed_and_deferred(
@@ -157,7 +157,7 @@ def test_the_event_carries_the_job_id_and_level(session: Session, clock) -> None
     [event] = _events(session)
     assert event.job_id == job.id
     assert event.level == "error"
-    assert event.data == {"attempts": 3}
+    assert event.data == {"attempts": 3, "from": "staging", "to": "failed"}
 
 
 def test_the_mirror_is_called_only_by_mirror_after_commit(session: Session, clock) -> None:
@@ -225,3 +225,94 @@ def test_a_published_item_without_warnings_has_sql_null_warnings(session: Sessio
         {"name": NAME},
     ).one()
     assert tuple(row) == (True, 0)
+
+
+# ---- the stuck clock reads the event data, not the message ---------------------------------------
+
+
+def test_every_transition_event_says_from_and_to_and_keeps_the_callers_other_keys(
+    session: Session, clock
+) -> None:
+    _stage(session, clock.now)
+    states = ItemStates()
+
+    states.transition(session, NAME, "deferred", now=clock.now, reason="blocked")
+    states.transition(
+        session, NAME, "stuck", now=clock.now, data={"attempts": 3, "from": "nonsense", "to": "nonsense"}
+    )
+
+    assert [event.data for event in _events(session)] == [
+        {"from": "staging", "to": "deferred"},
+        {"attempts": 3, "from": "deferred", "to": "stuck"},  # `from` and `to` are always the real ones
+    ]
+
+
+def _mark_stuck_by_hand(session: Session, clock) -> datetime:
+    """The item deferred, then made `stuck` as `mark_stuck` does it (with the STUCK_SINCE mark)."""
+    _stage(session, clock.now)
+    states = ItemStates()
+    states.transition(session, NAME, "deferred", now=clock.now, reason="blocked")
+    since = clock.now + timedelta(days=3)
+    states.transition(
+        session, NAME, "stuck", now=since, reason="deferred for 3 days", data={STUCK_SINCE: since.isoformat()}
+    )
+    return since
+
+
+def test_a_reworded_event_message_does_not_change_the_stuck_clock(session: Session, clock) -> None:
+    since = _mark_stuck_by_hand(session, clock)
+    for event in _events(session):
+        event.message = f"something else entirely about {event.id}"
+    session.flush()
+
+    assert stuck_since(session, NAME) == since
+
+
+def test_an_old_event_without_from_and_to_is_still_read_from_its_message(session: Session, clock) -> None:
+    """Events written before the event data said `from`/`to` keep working (an existing database)."""
+    _stage(session, clock.now)
+    item = session.scalars(select(JobItem).where(JobItem.calculated_name == NAME)).one()
+    since = clock.now + timedelta(days=3)
+    session.add_all(
+        [
+            JobEvent(
+                item_id=item.id, ts=clock.now, level="warning", message=f"{NAME}: staging -> deferred: x"
+            ),
+            JobEvent(
+                item_id=item.id,
+                ts=since,
+                level="warning",
+                message=f"{NAME}: deferred -> stuck: deferred for 3 days: x",
+                data={STUCK_SINCE: since.isoformat(), "deferred_since": clock.now.isoformat()},
+            ),
+            JobEvent(item_id=item.id, ts=since, level="info", message=f"{NAME}: staging -> waiting_llm"),
+        ]
+    )
+    session.flush()
+
+    assert stuck_since(session, NAME) == since
+
+
+def test_a_stuck_row_that_reconcile_created_is_read_from_its_created_event(session: Session, clock) -> None:
+    """Reconcile writes `reconcile: created <name> as stuck ...` with `{"from": None, "to": "stuck"}`."""
+    _stage(session, clock.now)
+    item = session.scalars(select(JobItem).where(JobItem.calculated_name == NAME)).one()
+    since = clock.now - timedelta(days=1)
+    session.add(
+        JobEvent(
+            item_id=item.id,
+            ts=clock.now,
+            level="info",
+            message=f"reconcile: created {NAME} as stuck (from output/)",
+            data={
+                "reconcile": "created",
+                "folder": "output",
+                "from": None,
+                "to": "stuck",
+                STUCK_SINCE: since.isoformat(),
+            },
+        )
+    )
+    session.flush()
+
+    assert stuck_since(session, NAME) == since

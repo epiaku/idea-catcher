@@ -57,7 +57,8 @@ class ItemStates:
         The row is locked (`FOR UPDATE`). It changes only when the status or the reason differs from the
         stored one: then `stage_reason = reason` (for every status), `error` as `set_item_status` keeps it
         (the reason for `failed` and `deferred`, cleared otherwise), `updated_at = now`, `stage_since = now`
-        only when the status changed, and one `job_events` row (`level`, `job_id`, `data` as given)."""
+        only when the status changed, and one `job_events` row (`level`, `job_id`, and `data`: the caller's
+        keys plus `{"from": <old status>, "to": <status>}`, which always win; `stuck_since` reads them)."""
         require_aware(now)
         if status not in ITEM_STATUSES:
             raise ValueError(f"unknown item status {status!r}")
@@ -77,7 +78,10 @@ class ItemStates:
         if old != status:
             item.stage_since = now
         message = f"{calculated_name}: {old} -> {status}" + (f": {reason}" if reason else "")
-        session.add(JobEvent(job_id=job_id, item_id=item.id, ts=now, level=level, message=message, data=data))
+        event_data = {**(data or {}), "from": old, "to": status}
+        session.add(
+            JobEvent(job_id=job_id, item_id=item.id, ts=now, level=level, message=message, data=event_data)
+        )
         session.flush()
         return item
 
@@ -219,28 +223,34 @@ def record_llm_tried(session: Session, calculated_name: str, *, profile: str, ba
     return item
 
 
-def _transition_target(calculated_name: str, message: str) -> str | None:
-    """The new status of a transition event's message (`<name>: <old> -> <new>[: <reason>]`), or None when
-    the event is not a transition (a dropped-tags warning)."""
+def _transition_target(calculated_name: str, event: JobEvent) -> str | None:
+    """The new status of a transition event, or None when the event is not a transition (a dropped-tags
+    warning). It is `data["to"]` (every transition since the B5 fix wave, and reconcile's created event); an
+    older event without it is read from its message (`<name>: <old> -> <new>[: <reason>]`)."""
+    data = event.data or {}
+    if "to" in data:
+        target = data["to"]
+        return target if isinstance(target, str) and target in ITEM_STATUSES else None
     prefix = f"{calculated_name}: "
-    if not message.startswith(prefix):
+    if not event.message.startswith(prefix):
         return None
-    old, arrow, rest = message.removeprefix(prefix).partition(" -> ")
+    old, arrow, rest = event.message.removeprefix(prefix).partition(" -> ")
     new = rest.split(":", 1)[0]
     return new if arrow and old in ITEM_STATUSES and new in ITEM_STATUSES else None
 
 
 def stuck_since(session: Session, calculated_name: str) -> datetime | None:
-    """When the item became `stuck`, if its last outcome was `stuck` by `mark_stuck` (a retry may be running
-    since); None otherwise. The last outcome is the item's newest event that moved it to a final status; a
-    `stuck` without the `STUCK_SINCE` mark (an active leftover `_requeue` found) is not an outcome and is
-    passed over."""
+    """When the item became `stuck`, if its last outcome was `stuck` by `mark_stuck` (or a row `reconcile`
+    created `stuck`; a retry may be running since); None otherwise. The last outcome is the item's newest
+    event that moved it to a final status (read from the event data, see `_transition_target`); a `stuck`
+    without the `STUCK_SINCE` mark (an active leftover `_requeue` found) is not an outcome and is passed
+    over."""
     item_id = session.scalar(select(JobItem.id).where(JobItem.calculated_name == calculated_name))
     if item_id is None:
         return None
     events = session.scalars(select(JobEvent).where(JobEvent.item_id == item_id).order_by(JobEvent.id.desc()))
     for event in events:
-        target = _transition_target(calculated_name, event.message)
+        target = _transition_target(calculated_name, event)
         if target not in TERMINAL_STATUSES:
             continue
         mark = (event.data or {}).get(STUCK_SINCE) if target == "stuck" else None

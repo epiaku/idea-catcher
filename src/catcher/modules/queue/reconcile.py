@@ -121,7 +121,7 @@ def _create(session: Session, ideas: Path, found: FoundFile, now: datetime) -> N
     )
     session.add(item)
     session.flush()
-    data: dict[str, Any] = {"reconcile": "created", "folder": found.folder, "to": status}
+    data: dict[str, Any] = {"reconcile": "created", "folder": found.folder, "from": None, "to": status}
     if status == "stuck":
         data[STUCK_SINCE] = since.isoformat()
     message = f"reconcile: created {found.name} as {status} (from {found.folder}/)"

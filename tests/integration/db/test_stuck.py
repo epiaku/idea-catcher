@@ -4,7 +4,7 @@ ends it. Real Postgres, real repos, fake model, frozen clock."""
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from catcher.core.config import Settings
@@ -12,8 +12,10 @@ from catcher.core.db import session_scope
 from catcher.core.frontmatter import load
 from catcher.modules.llm.backends.fake import FakeBackend
 from catcher.modules.llm.service import BackendUnavailable
+from catcher.modules.pipeline.scan_state import scan_item_files
 from catcher.modules.queue.models import Job, JobEvent, JobItem
 from catcher.modules.queue.queue import claim, enqueue
+from catcher.modules.queue.reconcile import reconcile
 from catcher.modules.queue.states import mark_stuck
 from catcher.modules.worker import loop
 
@@ -182,3 +184,33 @@ def test_stuck_after_days_is_validated(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("STUCK_AFTER_DAYS", bad)
         with pytest.raises(ValidationError, match="stuck_after_days"):
             Settings()
+
+
+def test_a_stuck_row_that_reconcile_created_stays_stuck_with_its_clock_when_it_defers_again(harness):
+    """The database is lost while an item is stuck; `reconcile` creates its row `stuck` from the working copy;
+    the retry defers again: still `stuck`, with the clock of the file (not a fresh `deferred`)."""
+    item = deferred_note(harness)
+    harness.clock.advance(3 * DAY)
+    assert run_mark_stuck(harness) == [item.calculated_name]
+    harness.ctx.item_states.mirror_after_commit(item_of(harness, NOTE))
+    with session_scope(harness.ctx.engine) as session:  # the database is lost
+        session.execute(text("delete from job_events"))
+        session.execute(text("delete from job_items"))
+    harness.clock.advance(HOUR)
+    with session_scope(harness.ctx.engine) as session:
+        report = reconcile(session, harness.ideas, now=harness.clock(), apply=True, scan=scan_item_files)
+    assert report.created == [item.calculated_name]
+    created = item_of(harness, NOTE)
+    assert created.status == "stuck"
+
+    harness.clock.advance(DAY)
+    harness.backends.note = FakeBackend([BackendUnavailable("still unreachable")])
+    harness.add_job("pipeline.run", retry_deferred=True, only=["YouTube walks"])
+    assert harness.drain(max_jobs=3) == ["succeeded", "succeeded"]
+
+    again = item_of(harness, NOTE)
+    assert len(harness.backends.note.prompts) == 1  # it really was retried
+    assert again.status == "stuck"
+    assert again.stage_since == created.stage_since  # the clock is not reset
+    harness.clock.advance(10 * DAY)
+    assert run_mark_stuck(harness) == []
