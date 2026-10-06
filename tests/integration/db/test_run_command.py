@@ -261,6 +261,39 @@ def test_wait_youtube_does_not_wait_longer_than_its_limit(clip_run) -> None:
     assert outcome.left_queued == 1 and outcome.blocked_lines[0].startswith("1 clip(s) wait for YouTube")
 
 
+def test_a_later_run_reports_the_clip_an_earlier_run_left_waiting(clip_run) -> None:
+    """B5b ruling (B72 report scope): the clip of the first run is still waiting, then the second run's drain
+    fetches and publishes it; both runs' reports list it."""
+    first = clip_run.run(wait_youtube_s=None)
+    assert {item.doc_class: item.status for item in first.report.items} == {
+        "note": "published",
+        "youtube": "waiting",
+    }
+    still = clip_run.run(wait_youtube_s=None)  # the gate is still closed: listed as waiting, no fetch
+    assert [(item.doc_class, item.status) for item in still.report.items] == [("youtube", "waiting")]
+    clip_run.clock.advance(GAP_S)
+    second = clip_run.run(wait_youtube_s=None)
+    assert [(item.doc_class, item.status) for item in second.report.items] == [("youtube", "published")]
+    assert clip_run.fetch_calls == ["nGVZS_wUDGM"] and second.left_queued == 0
+
+
+def test_a_run_after_ctrl_c_reports_the_documents_it_finished(
+    repos, use_services, make_services, pg_engine
+) -> None:
+    def interrupt_the_first(call: int) -> None:
+        if call == 1:
+            raise KeyboardInterrupt
+
+    use_services(make_services(note_backend=HookBackend(interrupt_the_first)))
+    assert CliRunner().invoke(app, _args(repos)).exit_code == 1
+    use_services(make_services())
+    result = CliRunner().invoke(app, _args(repos))
+    assert result.exit_code == 0, result.output
+    # the earlier run's two documents, each listed once
+    assert [line.split()[0] for line in result.stdout.splitlines()] == ["published", "published", "summary:"]
+    assert "summary: {'published': 2}" in result.output
+
+
 # --- the lock, Ctrl-C -----------------------------------------------------------------------------------
 
 

@@ -4,7 +4,8 @@ The command holds the worker's Postgres lock (`WorkerLock`) for the whole run, s
 It queues `pipeline.run` with the user's options as params, runs the same `Worker` that `catcher worker
 --once` runs until nothing is due (the run's own `youtube.fetch` and `llm.reason` jobs included), queues
 `pipeline.publish` (`pull` = `push`: without `--push` only a local commit, no network) and runs it, then
-builds the report from the database (`report_for_job`).
+builds the report from the database (`report_for_job`). The report also lists an earlier run's documents
+that this run's drain worked on (their jobs were still queued) and those still waiting in the queue.
 
 - **The lock** is checked before each job (`Worker.run_once`). A lost lock stops the run there: no further
   job, no publish, nothing committed; the outcome says what was done (`lock_lost`, exit 1).
@@ -44,7 +45,7 @@ from catcher.modules.queue import queue
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerLock, WorkerLockLost
-from catcher.modules.worker.handlers import HandlerContext
+from catcher.modules.worker.handlers import Handler, HandlerContext, HandlerResult
 from catcher.modules.worker.loop import Worker
 from catcher.modules.youtube.gate_rules import clock_text
 
@@ -146,20 +147,45 @@ def run_command(
             services = services_factory(settings)
         ctx = build_context(settings, ideas=ideas, docs=docs, clock=clock, services=services)
         stack.callback(ctx.engine.dispose)
+        worked_on: list[str] = []
         worker = Worker(
             ctx,
-            build_handlers(),
+            _recording(build_handlers(), worked_on),
             worker_id=_worker_id(),
             lease_s=LEASE_S,
             heartbeat_s=LEASE_S / 3,
             lock_check=lock.check,
         )
         try:
-            return _run(ctx, worker, params, push=push, wait_youtube_s=wait_youtube_s, sleep=sleep)
+            return _run(
+                ctx,
+                worker,
+                params,
+                push=push,
+                wait_youtube_s=wait_youtube_s,
+                sleep=sleep,
+                worked_on=worked_on,
+            )
         except SQLAlchemyError as e:
             log.error("a database error stopped the run: %s", getattr(e, "orig", None) or type(e).__name__)
             raise RunDatabaseError(str(type(e).__name__)) from e
     raise AssertionError("unreachable")  # the with block returns or raises; ExitStack could swallow in theory
+
+
+def _recording(handlers: dict[str, Handler], worked_on: list[str]) -> dict[str, Handler]:
+    """The handlers, each first noting the document its job works on (`calculated_name`) in `worked_on`, so
+    the report also lists an earlier run's documents whose queued jobs this run's drain ran."""
+
+    def record(handler: Handler) -> Handler:
+        def run(ctx: HandlerContext, job: Job) -> HandlerResult:
+            name = (job.params or {}).get("calculated_name")
+            if isinstance(name, str) and name not in worked_on:
+                worked_on.append(name)
+            return handler(ctx, job)
+
+        return run
+
+    return {job_type: record(handler) for job_type, handler in handlers.items()}
 
 
 def _earlier_run_jobs(engine: Engine) -> int:
@@ -187,6 +213,7 @@ def _run(
     push: bool,
     wait_youtube_s: float | None,
     sleep: Callable[[float], object],
+    worked_on: list[str],
 ) -> RunOutcome:
     run_id: uuid.UUID | None = None
     publish_id: uuid.UUID | None = None
@@ -212,8 +239,12 @@ def _run(
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
         if run_id is not None:
-            outcome.report = report_for_job(session, run_id)
             names = _run_item_names(session, run_id)
+            # an earlier run's documents: the ones this drain worked on, and the ones still waiting in the
+            # queue (a closed YouTube gate), as Stage A reported every waiting clip on each run
+            earlier = list(dict.fromkeys(n for n in [*worked_on, *_waiting_names(session)] if n not in names))
+            outcome.report = report_for_job(session, run_id, also=earlier)
+            names += earlier
             outcome.left_queued = _queued_jobs_of_run(session, run_id, names, publish_id)
             outcome.blocked_lines = _blocked_lines(ctx, session, names, now)
             outcome.blocked_lines += _youtube_wait_line(session, names, now)
@@ -290,6 +321,14 @@ def _run_item_names(session: Session, run_id: uuid.UUID) -> list[str]:
             )
         )
     )
+
+
+def _waiting_names(session: Session) -> list[str]:
+    """The documents whose `youtube.fetch` or `llm.reason` job is still queued (any run's)."""
+    statement = select(Job.params["calculated_name"].astext).where(
+        Job.status == "queued", Job.type.in_(("youtube.fetch", "llm.reason"))
+    )
+    return [name for name in session.scalars(statement) if name]
 
 
 def _of_run(run_id: uuid.UUID, names: list[str], publish_id: uuid.UUID | None) -> Any:

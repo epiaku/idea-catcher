@@ -758,10 +758,6 @@ def statuses(report) -> dict[str, str]:
     return {i.doc_id: i.status for i in report.items if i.doc_class == "youtube"}
 
 
-@pytest.mark.skip(
-    reason="B5b ruling pending: B45/B72 (the second run finishes the first run's clip, but its report only "
-    "lists the items of its own pipeline.run: statuses(second) == {}; the rest passes)"
-)
 def test_a_second_clip_inside_the_gap_waits_in_the_inbox_and_the_next_run_takes_it(
     repos, make_services, yt_facts, tmp_path, sh
 ):
@@ -833,10 +829,6 @@ def test_a_dry_run_saves_no_facts(repos, make_services, yt_facts, tmp_path):
     assert services.youtube.gate.state is OPEN
 
 
-@pytest.mark.skip(
-    reason="B5b ruling pending: B47 (the waiting clips are staged in output/, not left in inbox/; and the "
-    "second run's report does not list the first run's waiting clips, B72; the rest passes)"
-)
 def test_a_429_opens_the_breaker_and_every_other_clip_waits_without_a_call(
     repos, make_services, yt_facts, tmp_path
 ):
@@ -849,7 +841,9 @@ def test_a_429_opens_the_breaker_and_every_other_clip_waits_without_a_call(
     assert sorted(statuses(report).values()) == ["waiting", "waiting"]  # the 429 one too: no requeue needed
     assert all("YouTube blocked until" in i.message for i in report.items if i.doc_class == "youtube")
     assert len(calls) == 1  # the one call that got the 429, and no more
-    assert sorted(p.name for p in clips.glob("*.md") if p.name in ("a.md", "b.md")) == ["a.md", "b.md"]
+    # B47 (ruling, as B45/B46): the waiting clips are staged (in output/, their fetch jobs queued), not left
+    # in inbox/; still nothing deferred, so no requeue is needed
+    assert not [p.name for p in clips.glob("*.md") if p.name in ("a.md", "b.md")]
     assert deferred_in_output(repos.ideas) == []  # nothing stalled in output/: no requeue needed
 
     clock.now += 3 * 3600  # hours later the gap is long gone, but the breaker is still open
@@ -896,10 +890,6 @@ def in_inbox(ideas: Path) -> list[str]:
     return sorted(p.name for p in (ideas / "inbox").rglob("*.md"))
 
 
-@pytest.mark.skip(
-    reason="B5b ruling pending: B56/B72 (the next run finishes the interrupted document, but its report only "
-    "lists the items of its own pipeline.run: again.counts() == {}; the rest passes)"
-)
 def test_ctrl_c_in_the_middle_of_a_note_puts_it_back_in_the_inbox_and_still_commits(
     repos, make_services, monkeypatch, sh
 ):

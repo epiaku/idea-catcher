@@ -9,6 +9,7 @@ there because their item is still active)."""
 
 import uuid
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -79,9 +80,11 @@ _WAITING_DEFAULT = {
 _NEXT_JOB = {"waiting_youtube": "fetch", "waiting_llm": "reason"}  # the dedupe key prefix of its next job
 
 
-def report_for_job(session: Session, job_id: uuid.UUID) -> RunReport:
+def report_for_job(session: Session, job_id: uuid.UUID, also: Iterable[str] = ()) -> RunReport:
     """The report of the run whose `pipeline.run` job is `job_id`, from the database. Raises LookupError when
-    there is no such job.
+    there is no such job. `also` names more items (calculated names) to report with the run's own: the
+    documents of an earlier run that this run's drain worked on (their jobs were still queued). Each item is
+    listed once.
 
     The lines come in Stage A's order: the requeue moves and skips, the duplicates, one line per item of the
     run (by calculated name), the documents `limit` left in `inbox/`, then the artifacts. An item's status
@@ -106,7 +109,7 @@ def report_for_job(session: Session, job_id: uuid.UUID) -> RunReport:
             ItemReport(entry["doc_id"], entry["doc_class"], "duplicate", f"duplicate of {entry['winner']}")
         )
 
-    adopted = list(names.get("adopted", []))
+    adopted = [*names.get("adopted", []), *also]
     same_id = set(names.get("same_id", []))
     rows = session.scalars(
         select(JobItem)
