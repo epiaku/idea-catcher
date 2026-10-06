@@ -14,6 +14,7 @@ from catcher.modules.llm.backends.fake import FakeBackend
 from catcher.modules.pipeline.report import ItemReport, RunReport, report_for_job
 from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.queue.models import Job, JobItem
+from catcher.modules.worker.handlers_pipeline import handle_pipeline_run
 
 VID = "nGVZS_wUDGM"
 
@@ -170,3 +171,31 @@ def test_report_of_a_failed_run_has_its_error_as_a_problem(harness):
     with session_scope(harness.ctx.engine) as session:
         [job] = session.scalars(select(Job)).all()
         assert job.status == "failed"
+
+
+def test_report_has_a_skipped_line_for_a_capture_whose_item_is_still_active(harness):
+    harness.add_job("pipeline.run", only=["yt"])
+    harness.drain()  # pipeline.run, then the fetch; the gap now keeps nothing waiting: the clip is published
+    with session_scope(harness.ctx.engine) as session:
+        [clip] = session.scalars(select(JobItem)).all()
+        clip.status = "waiting_llm"  # as if its llm.reason were still queued
+        name, doc_id = clip.calculated_name, clip.doc_id
+    shutil.copy(harness.ideas / "archive" / name, harness.ideas / "inbox" / name)
+    job_id = harness.add_job("pipeline.run", only=["yt"])
+    with session_scope(harness.ctx.engine) as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        result = handle_pipeline_run(harness.ctx, job)
+        job.status, job.result = "succeeded", result.result  # type: ignore[union-attr]
+
+    with session_scope(harness.ctx.engine) as session:
+        report = report_for_job(session, job_id)
+
+    assert report.counts() == {"skipped": 1}
+    [line] = report.items
+    assert (line.doc_id, line.doc_class, line.message) == (
+        doc_id,
+        "youtube",
+        "still being processed, stays in inbox/",
+    )
+    assert (harness.ideas / "inbox" / name).exists()

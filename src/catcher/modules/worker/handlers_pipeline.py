@@ -11,7 +11,8 @@ copy in `output/`, out of `inbox/`); (3) the item waits for YouTube or the LLM a
 one commit. A crash between those steps leaves a `staging` row, which the next run adopts under the same
 name. The handler runs no git command (publishing is `pipeline.publish`) and holds no long transaction.
 Its job result is the counts plus, under `names`, what leaves no item row (duplicates, artifacts, unreadable
-files, names that matched nothing, requeue moves and skips, the documents `limit` left): `report_for_job`
+files, names that matched nothing, requeue moves and skips, the documents `limit` left, and the captures
+left in `inbox/` because their item is still active): `report_for_job`
 builds the run's report from it.
 
 `llm.reason` turns one staged working copy in `output/` into its page: saved facts only (it never calls
@@ -540,6 +541,7 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         __version__,
     )
     left_by_limit: list[dict[str, str]] = []
+    inbox_skipped: list[dict[str, str]] = []
     same_id: list[str] = []
     seen_ids: set[str] = set()  # the ids staged so far: a later page with one of them replaces the earlier
     for note in to_process:
@@ -549,7 +551,8 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
             left_by_limit.append(_doc(note))  # one line for all of them below: an inbox can hold hundreds
             continue
         name = _stage(ctx, job, note)
-        if name is None:
+        if name is None:  # its item is still active: the capture waits in inbox/ for a later run
+            inbox_skipped.append({**_doc(note), "reason": STILL_ACTIVE})
             continue
         if note.doc_id in seen_ids:
             log.warning("%s: %s", note_label(note), SAME_ID)
@@ -571,6 +574,7 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         "adopted": adopted,
         "requeued": requeue.moved,
         "requeue_skipped": requeue.skipped,
+        "inbox_skipped": inbox_skipped,
         "not_in_archive": [query for query in requeue.not_found if query in explicit],
         "unreadable": dict(scan.errors),
         "not_found": not_found,
@@ -582,6 +586,8 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
     return Done({**counts, "names": _bounded(names)})
 
 
+# The reason of a capture whose item is still active (a clip waiting for YouTube that was clipped again).
+STILL_ACTIVE = "still being processed, stays in inbox/"
 # The most names one list (or dict) of the `pipeline.run` result holds: the result is one JSON value on the
 # job row, and an inbox can hold thousands. A cut list is marked `"truncated": true`; the counts stay whole.
 NAMES_MAX = 500

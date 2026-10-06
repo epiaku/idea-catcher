@@ -2,6 +2,7 @@
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -859,3 +860,26 @@ def test_refresh_facts_is_copied_into_the_fetch_job_even_when_facts_are_saved(ha
         "youtube.fetch",
         {"calculated_name": item.calculated_name, "refresh_facts": True},
     )
+
+
+def test_a_capture_whose_item_is_still_active_is_named_skipped_and_stays_in_the_inbox(harness):
+    run(harness, only=["yt"])  # the clip waits for YouTube; its fetch job is queued
+    clip = item_named(harness, "clippings", "yt.md")
+    assert clip.status == "waiting_youtube"
+    again = harness.ideas / "inbox" / clip.calculated_name  # clipped again: back under its calculated name
+    shutil.copy(harness.ideas / "archive" / clip.calculated_name, again)
+
+    result = run(harness, only=["yt"])
+
+    assert without_names(result) == Done(counts())  # nothing staged twice; the counts keys are unchanged
+    assert names_of(result)["inbox_skipped"] == [
+        {
+            "name": clip.calculated_name,
+            "doc_id": clip.doc_id,
+            "doc_class": "youtube",
+            "reason": "still being processed, stays in inbox/",
+        }
+    ]
+    assert again.exists()
+    assert item_named(harness, "clippings", "yt.md").status == "waiting_youtube"
+    assert [j.type for j in next_jobs(harness)] == ["youtube.fetch"]

@@ -4,7 +4,8 @@
 loop (`run_pipeline`) fills them as it goes; `report_for_job` builds the same shape from the database after a
 worker run: the `job_items` of the run's `pipeline.run` job (`root_job_id`, plus the items it adopted), and
 the names in that job's result for what leaves no item row (duplicates, artifacts, unreadable files, names
-that matched nothing, requeue moves and skips, the documents `limit` left in `inbox/`)."""
+that matched nothing, requeue moves and skips, the documents `limit` left in `inbox/`, and the captures left
+there because their item is still active)."""
 
 import uuid
 from collections import Counter
@@ -114,6 +115,8 @@ def report_for_job(session: Session, job_id: uuid.UUID) -> RunReport:
     for row in rows:
         report.items.append(_item_line(session, row, same=row.calculated_name in same_id))
 
+    for entry in names.get("inbox_skipped", []):  # its item is still active: the capture stays in inbox/
+        report.items.append(ItemReport(entry["doc_id"], entry["doc_class"], "skipped", entry["reason"]))
     for entry in names.get("left_by_limit", []):
         report.items.append(ItemReport(entry["doc_id"], entry["doc_class"], "skipped", LIMIT_REACHED))
     for entry in names.get("artifacts", []):
