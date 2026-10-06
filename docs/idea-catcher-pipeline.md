@@ -413,6 +413,8 @@ Until Postgres arrives in [Stage B](../idea-catcher-service-architecture/#mvp-st
 
 A run **never reads `output/`**, so `analyzed` and `deferred` copies just wait there until you retry them.
 
+**The worker (Stage B, from B5).** On the worker path the **database is the truth**: the item's row in `job_items` holds one of nine states (`staging`, `waiting_youtube`, `waiting_llm`, `ready`, `published`, `deferred`, `stuck`, `failed`, `duplicate`). The worker mirrors that state into the working copy in `output/` (or the file in `failed/`) after every status change: `stage` (the state), `stage_reason` (why) and `stage_since` (since when). The mirror is best effort: if it cannot be written, the row still holds the state and the next change writes it. The finished page keeps `stage: published` and `created_by`, as above. The list above stays true for `run pipeline` until B5b makes it a wrapper over the worker. See [Item states, stuck and reconcile](../idea-catcher-how-to-run-stage-b/#item-states).
+
 ### The steps of one document {#capture-steps}
 
 1. **Read.** Scan `inbox/` (or only the documents named with `--file`). Work out the class and `id` in memory. Nothing is written yet. A file that cannot be read is archived and moved to `failed/`.

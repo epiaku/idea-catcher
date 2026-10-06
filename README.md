@@ -49,6 +49,8 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 | `catcher db upgrade`, `catcher db downgrade REVISION` (for example `-1`) | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see [How to run Stage B](docs/idea-catcher-how-to-run-stage-b.md)) |
 | `catcher worker` | Run the jobs in the queue, one at a time, until Ctrl-C (`--once`: run what is due, then exit). One worker at a time (Stage B) |
 | `catcher jobs add TYPE`, `catcher jobs list` | Put a job on the queue (`pipeline.run`, `pipeline.publish`, with `--param KEY=VALUE`), list the jobs (Stage B) |
+| `catcher items list` | List the documents the worker handles: state, since when and why (`--status stuck`, `--limit N`; Stage B) |
+| `catcher reconcile` | Rebuild the item rows from the idea-bucket folders after a lost or new database; never deletes a file or a row, and closes the YouTube gate (`--dry-run` first, `--keep-gate`; Stage B) |
 | `catcher youtube gate` | Show the YouTube gate in Postgres, shared by the worker and the CLI (open, the next allowed call, or a block) |
 | `catcher testdata reset` | Make fresh test repos in `tmp/ic` (`--fresh-llm-and-youtube`: without the saved LLM replies and YouTube facts, so a run calls both for real) |
 | `catcher version` | Print the version |

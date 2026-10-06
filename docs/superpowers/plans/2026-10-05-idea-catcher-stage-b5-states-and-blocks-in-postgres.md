@@ -1,5 +1,7 @@
 # Stage B5: Item States, Metrics and LLM Blocks in Postgres Implementation Plan
 
+**Status: built 2026-10-06** (Tasks 1-7 on `stage-b`; what changed from this plan is in the architecture doc, "Built (2026-10-06): B5").
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** On the worker path, Postgres holds the truth for every document's state, the LLM metrics, the events and the LLM backend blocks; the documents in `output/` show that state in their frontmatter; `stuck` is detected; `catcher reconcile` rebuilds the database from the folders.

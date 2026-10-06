@@ -376,33 +376,36 @@ Every 30 s the loop checks whether a schedule is due, and enqueues the matching 
 
 ### 🗄️ Database & Metrics {#mvp-database}
 
-**PostgreSQL 17**, with migrations in **Alembic** (why Postgres: see [Database options](#db-options)). Three tables are enough for the MVP:
+**PostgreSQL 17**, with migrations in **Alembic** (why Postgres: see [Database options](#db-options)). The tables as built (B5, migration `0005`; `schedules` comes with B6):
 
 ```text
-jobs        id (uuid), root_id, type, queue, status, trigger, api_key_name,
-            params jsonb, llm jsonb, result jsonb, error, priority, attempts,
-            run_after, progress_done, progress_total, progress_message,
-            created_at, started_at, finished_at, heartbeat_at
-job_items   id, root_id → jobs (the pipeline.run that first saw it), doc_id, doc_class,
-            inbox_path, original_filename, calculated_filename,   (the calculated name and subfolder are
-            archive_path, output_path, failed_path, docs_page     the same in every folder),
-            status (analyzed / waiting_llm / ready / published / deferred / stuck / failed / duplicate),
-            failed_days, warnings jsonb, error,
-            llm_profile, llm_backend, llm_model, prompt_version,
-            tokens_in, tokens_out, llm_duration_ms, llm_result jsonb,
-            created_at, updated_at
-job_events  id, job_id, root_id, doc_id, ts, level (info / warning / error), message, data jsonb
+jobs        id (uuid), type, status, priority, run_after, reason, params jsonb, result jsonb, error,
+            attempts, max_attempts, locked_by, lease_until, heartbeat_at, dedupe_key, resource,
+            claim_seq, created_at, started_at, finished_at
+job_items   id, calculated_name (unique), doc_id, doc_class, origin, root_job_id → jobs (the pipeline.run
+            that staged it), status (staging / waiting_youtube / waiting_llm / ready / published /
+            deferred / stuck / failed / duplicate), stage_reason, stage_since,
+            inbox_path, archive_path, output_path, failed_path, docs_page, original_filename,
+            llm_profile, llm_backend, llm_model, prompt_version, tokens_in, tokens_out,
+            llm_duration_ms, llm_result jsonb {"attempts", "saved"}, warnings jsonb (dropped tags),
+            error, created_at, updated_at
+job_events  id, job_id, item_id, ts, level (info / warning / error), message, data jsonb
+resources   name (youtube, openai, freellmapi, openai:clippings...), next_allowed_at, blocked_until,
+            blocked_at, streak, concurrency, reason, updated_at
 ```
 
-This already answers the metrics questions, even before a dashboard exists:
+This already answers the metrics questions, even before a dashboard exists. The queries below were run on a throwaway database on 2026-10-06. **Read the LLM columns only for `published` rows**: a row holds its last run, and a reply served from a saved one (`llm_result.saved`) cost nothing now, so the cost query leaves it out.
 
-| Question                                     | Query                                                                     |
-| -------------------------------------------- | ------------------------------------------------------------------------- |
-| When did each run happen, and how did it end? | `jobs WHERE type='pipeline.run'`                                         |
-| How many docs of each type per run or per day? | `job_items GROUP BY root_id / day, doc_class, status`                   |
-| Warnings and errors?                         | `job_events WHERE level IN ('warning','error')`, `job_items.status`       |
-| Which model, how many tokens?                | `job_items.llm_backend, llm_model, tokens_*`                              |
-| What is waiting or stuck?                    | `job_items WHERE status IN ('waiting_llm','deferred','stuck')`            |
+| Question                                       | Query                                                                                                                                                                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| When did each run happen, and how did it end?  | `SELECT id, status, created_at, finished_at, result FROM jobs WHERE type = 'pipeline.run' ORDER BY created_at DESC`                                                                                         |
+| How many docs of each class per day?           | `SELECT date(created_at) AS day, doc_class, status, count(*) FROM job_items GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`                                                                                                |
+| ... per run?                                   | `SELECT root_job_id, status, count(*) FROM job_items GROUP BY 1, 2`                                                                                                                                          |
+| Warnings and errors?                           | `SELECT e.ts, e.level, i.calculated_name, e.message FROM job_events e LEFT JOIN job_items i ON i.id = e.item_id WHERE e.level IN ('warning', 'error') ORDER BY e.ts DESC`                                      |
+| Which model, how many tokens (what we paid)?   | `SELECT llm_backend, llm_model, count(*), sum(tokens_in), sum(tokens_out) FROM job_items WHERE status = 'published' AND (llm_result->>'saved')::bool IS NOT TRUE GROUP BY 1, 2`                               |
+| What is waiting or stuck?                      | `SELECT calculated_name, status, stage_since, stage_reason FROM job_items WHERE status IN ('waiting_youtube', 'waiting_llm', 'deferred', 'stuck') ORDER BY stage_since` (or `catcher items list --status stuck`) |
+| Which pages dropped tags?                      | `SELECT calculated_name, warnings FROM job_items WHERE warnings IS NOT NULL`                                                                                                                                 |
+| Which backend or profile is blocked, and why?  | `SELECT name, blocked_until, reason FROM resources WHERE blocked_until IS NOT NULL`                                                                                                                         |
 
 Backups: a nightly `pg_dump` to a mounted folder, plus the Proxmox backup (vzdump) of the LXC.
 
@@ -692,7 +695,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 6. **Git:** the commit set is "everything in the managed folders" (`archive/ output/ failed/ duplicates/ facts/`, plus inbox deletions), not a list of touched paths. Push right after each commit; abort a failed rebase and report it. A `git` resource with concurrency 1. A requeue goes through the tool, not by hand. Once a worker exists, the CLI refuses to run against the live remote.
 7. **Schedules:** cron strings in `.env`, an explicit timezone, one scheduler, and a small table with `last_fired_at` so a missed slot runs once.
 8. **Time:** every queue and gate query takes `now` from Python (never SQL `now()`), so tests can freeze it.
-9. **One generic `resource` table** (YouTube, `openai`, `freellmapi`, `git`): `name`, `next_allowed_at`, `blocked_until`, `blocked_at`, `streak`, `concurrency`. A used-up budget is remembered between runs. A missing or damaged row means **closed**. *B4 built the `youtube` row; the LLM resources come in B5.*
+9. **One generic `resource` table** (YouTube, `openai`, `freellmapi`, `git`): `name`, `next_allowed_at`, `blocked_until`, `blocked_at`, `streak`, `concurrency`. A used-up budget is remembered between runs. A missing or damaged row means **closed**. *B4 built the `youtube` row; B5 added the LLM rows (`openai`, `freellmapi`, `<backend>:<profile>`), where a missing row means **open**: an LLM block is only made by a failure.*
 10. **Reconcile and the mirror:** Postgres is the truth for processing state. `catcher reconcile` rebuilds item state, name and class from the folders and the frontmatter; it cannot rebuild attempts, tokens, events or the YouTube gate. While the database lives, a missing `youtube` row means **closed** (the gate inserts it closed and logs an ERROR). A freshly migrated database starts **open** (migration `0004` seeds the row open; seeding it closed would make every new install wait `YOUTUBE_BLOCK_HOURS` for nothing), so after a rebuild check the log for a block before you queue clips; B5's `reconcile` closes the gate, because a rebuild may have lost a block. The frontmatter mirror uses **`stage`, `stage_reason`, `stage_since`**; reconcile also reads the Stage A names (`analyzed_at`, `deferred_at`, `deferred_reason`).
 11. **Our own queue first.** Procrastinate only if the queue core passes about 300 lines or shows concurrency bugs; switching later changes the tables, and that is accepted.
 12. **Dry runs never go through the queue**; the CLI runs them inline. So the "one run at a time" dedupe only ever sees real runs. The dedupe key is part of the job row (`dedupe_key`), not tied to a job type.
@@ -707,7 +710,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 | B3 (built 2026-10-03) | Job handlers that call the Stage A functions: `pipeline.run`, `llm.reason`, `pipeline.publish`, and a separate **`youtube.fetch`** (the rate-limited resource, idempotent, saved facts) so that **an LLM failure never causes a YouTube call**. Every handler is idempotent (overwrite by id already helps) | `catcher jobs add pipeline.run` + `catcher worker` on a copy of the repos gives the same pages as Stage A. A failing LLM makes no YouTube call |
 | B4 (built 2026-10-04) | **The YouTube gate moves into Postgres** (`resources`). The claim reserves the slot in the same transaction, so two workers can never break the gap. A 429 sets `blocked_until` and pushes `run_after` past it **without counting an attempt** | Fake clock: two workers cannot break the gap; a block stops every fetch; a working fetch closes the breaker |
 | B4b (built 2026-10-04) | **One gate and one run lock, only in Postgres.** `run pipeline` and `youtube facts` go through the Postgres gate, and `run pipeline` takes the worker's lock. The file gate, `pipeline.lock`, `--import-file` and `CATCHER_STATE_DIR` are deleted | With the database stopped `run pipeline` and `youtube facts` exit 2 and change nothing; with a worker running `run pipeline` exits 2 |
-| B5   | **State, retries and metrics.** `job_items.status` (waiting, deferred, stuck, failed...), `stuck` after 3 days, per-backend blocking on a quota error, and how the in-call LLM retries (5 calls) and the job-level `retry_delay` add up. The **frontmatter mirror** (`stage`, `stage_reason`, `stage_since`) is written on status changes only. A `catcher reconcile` rebuilds the database from the folders. The metrics queries | Set `run_after` and the clock in tests. Stop FreeLLMApi and check that jobs defer. Delete the database and reconcile. Query the metrics with SQL |
+| B5 (built 2026-10-06) | **State, retries and metrics.** `job_items.status` (waiting, deferred, stuck, failed...), `stuck` after 3 days, per-backend blocking on a quota error, and how the in-call LLM retries (5 calls) and the job-level `retry_delay` add up. The **frontmatter mirror** (`stage`, `stage_reason`, `stage_since`) is written on status changes only. A `catcher reconcile` rebuilds the database from the folders. The metrics queries | Set `run_after` and the clock in tests. Stop FreeLLMApi and check that jobs defer. Delete the database and reconcile. Query the metrics with SQL |
 | B6   | **The scheduler loop in the worker** with three cron variables: `SCHEDULE_IDEAS_PULL` (often), `SCHEDULE_PIPELINE_RUN` and `SCHEDULE_PUBLISH` (a few times a day), plus a manual `catcher publish`. A missed slot runs once | Fake clock: each schedule fires on time; a missed slot runs once; the pull runs more often than the publish |
 | B7   | The worker in Compose next to `db`: the `repos` volume, the image (Python 3.12, `uv`, Git, `yt-dlp` + Deno) | `docker compose up`, then watch scheduled runs happen |
 | B8   | **Backfill import.** `catcher youtube import` finds the YouTube links in the docs, skips the video ids that already have a page, and adds the rest as **low-priority** jobs. A paced channel listing. An LLM budget or a daily `--limit` | Fixtures only in the tests. A hand test on a small channel |
@@ -805,16 +808,11 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - `GIT_LOCK` is per process, and only `pipeline.publish` takes it: use the `git` resource.
 - The status read and write in `youtube.fetch` and a few other handler paths are not one transaction.
 
-*For B5 (reconcile and item states)*
-
-- A reset of an item does not clear `stage_reason` (and `failed_path`, `warnings`).
-- A `waiting_youtube` item's `updated_at` is not refreshed while its fetch is deferred: reconcile must not call it `stuck` while a fetch is queued. (Since B4 a waiting fetch job is not even claimed, so nothing touches the item until the gate opens.)
-- An item whose handler could not commit its own status, or whose failed job could not fail it (a database error), stays active until reconcile; a `requeue` of it marks it `stuck` and runs it again.
+*For B5 (reconcile and item states)*: settled in B5 (a reset clears `stage_reason` and sets `stage_since`; only `deferred` items become `stuck`, never a `waiting_youtube` one). What is left is in "Open items after B5".
 
 *Robustness*
 
-- ~~**A down LLM backend is called once per queued `llm.reason` job**~~ (final review F4). **Done 2026-10-04:** the worker keeps an in-memory `BackendBlocks` (`worker/blocks.py`, one per worker process): a usage limit, a used-up budget or a down backend blocks that backend for `LLM_BLOCK_S` (600 s), the next documents are deferred without a call (a saved reply is still served), and after the cool-down one document tries again. Not persisted: a restart forgets it. B5 moves per-backend blocking into the Postgres `resources` table.
-- **The F4 block is per backend, not per profile.** Any 4xx blocks the whole backend, so a misspelled `OPENAI_MODEL_CLIPPINGS` also blocks the working `youtube` profile (same openai backend) for `LLM_BLOCK_S`. B5's blocking in Postgres should decide: per backend for limits and budget, per profile for a wrong model.
+- ~~**A down LLM backend is called once per queued `llm.reason` job**~~ (final review F4). Done 2026-10-04, and since B5 the blocks are rows in `resources` (see B5 below).
 - `os.killpg` is POSIX only: fall back to `terminate()`/`kill()` on Windows.
 - The ssh-config probe uses a plain `subprocess.run`, so a timeout or `OSError` there is not a `GitError`.
 - `worker --once` spins on a handler that defers to a time already due (only with a gate time in the past). *Mostly settled in B4:* a fetch job that carries the `youtube` resource is no longer claimed while the gate is closed; a `youtube.fetch` added by hand with `jobs add` has no resource and is still claimed and deferred.
@@ -856,10 +854,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - The two "gate unavailable" tests do not assert why (lock timeout or connection error), nor the ERROR line.
 - `test_two_engines_reserving_together_get_one_go_ahead` is evidence of the row lock, not proof (it also passes when the threads happen to run one after the other); the lock is also pinned by `test_the_clock_is_read_under_the_row_lock`.
 
-*For B5*
-
-- The LLM resources (`openai`, `freellmapi`) and the per-profile or per-backend blocking move into `resources` (today the worker's `BackendBlocks` is in memory).
-- Reconcile closes the `youtube` row (writes the closed state unless told the gate is open), because a rebuilt database starts it open and may have lost a block (decision 10).
+*For B5*: both settled in B5 (the LLM blocks are `resources` rows; `catcher reconcile` closes the gate).
 
 **Decision 2026-10-04: Postgres is the only truth, with no file mode.** The user's direction: we do not build a system that works with or without Postgres; when the database is not running, the system does not run. The exceptions are `scan` and `reason` (not for YouTube clips), which read one document and write nothing; `run pipeline`, `render`, `youtube facts`, `youtube gate`, the worker and the `jobs` commands need it. This settles the "two gates on one machine" item of B4 (no best-effort guard: one gate) and the open import edge cases (the import is gone).
 
@@ -872,10 +867,8 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 **Open items after B4b** (from the final review; the fix wave settled the rest):
 
-*For B5 (file-held truth that is left)*
+*For B5 (file-held truth that is left)*: the worker's half is settled in B5 (the database is the truth, the blocks are rows); the Stage A `run pipeline` still keeps its states in the folders and its blocks per run until B5b (see "Open items after B5").
 
-- **Item states live in the folders and the frontmatter** (`inbox/`, `output/` with `stage: deferred`, `archive/`, `failed/`, `duplicates/`), and the Stage A `run pipeline` never writes `job_items`, while the worker writes both: two truths for one document once both are used. Reconcile (or `run pipeline` writing `job_items`) has to settle it.
-- **LLM backend blocks are in memory.** The worker's `BackendBlocks` is per process, the Stage A run's `RunState.blocked` and `budget_blocked` are per run: a used-up budget the worker saw is unknown to the next `run pipeline` and the other way round. They move to `resources` rows.
 - The in-memory hold of a 429 that the gate could not record (`YoutubeAccess.unrecorded_until`) is per process by design (it exists because the database was down): a `run pipeline` that ends forgets it.
 
 *Its own task*
@@ -889,6 +882,48 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - `testdata reset` takes no lock (it rebuilds `tmp/ic`; only matters when a worker runs on the test repos).
 - No test for a worker started during a run (the same key covers it) or for the lock being released after Ctrl-C (the `ExitStack` and the connection's end cover it).
 - `InMemoryGate` (test only): a shared `make()` changes the clock, rng and hours of the one gate; no clamp of a test-set state more than 24 hours ahead.
+
+**Built (2026-10-06): B5, item states, metrics and LLM blocks in Postgres.** On the worker path the database is the truth. What exists (how to use it: [Item states, stuck and reconcile](../idea-catcher-how-to-run-stage-b/#item-states)):
+
+- **One writer of item state.** `ItemStates.transition` (`modules/queue/states.py`) is the only code that changes `job_items.status` on the worker path: one commit writes the status, `stage_reason`, `stage_since` (only when the status really changes), `updated_at` and one `job_events` row; a repeated transition writes nothing. Migration `0005` adds `job_items.stage_since` and `resources.reason`.
+- **The frontmatter mirror** (`pipeline/mirror.py`), after the commit, best effort: `stage`, `stage_reason`, `stage_since` on the working copy in `output/` or the file in `failed/`. The finished page keeps only `stage: published` and `created_by`.
+- **Metrics on the item:** `llm_profile`, `llm_backend`, `llm_model`, `prompt_version`, `tokens_in`, `tokens_out`, `llm_duration_ms`, `warnings`, `docs_page` and `llm_result = {"attempts", "saved"}`; the state changes and warnings are events. The queries are in [Database & Metrics](#mvp-database).
+- **`stuck`:** at every reap an item `deferred` for `STUCK_AFTER_DAYS` (3) becomes `stuck`; `retry_deferred` retries `deferred` and `stuck` items. **`catcher items list [--status S] [--limit N]`** shows them.
+- **LLM blocks are `resources` rows**, shared by every worker and kept over a restart: a usage limit or a down backend `LLM_BLOCK_S` (600 s), a used-up budget `LLM_BUDGET_BLOCK_S` (6 h), a wrong model only its profile (`<backend>:<profile>`).
+- **`catcher reconcile [--ideas PATH] [--dry-run] [--keep-gate]`** rebuilds the rows from the folders, never deletes a file or a row, and closes the YouTube gate.
+
+**Changed from the plan** (B5):
+
+- **The mirror names sit next to the Stage A names.** The worker writes `stage`, `stage_reason`, `stage_since` on top of what the shared Stage A helpers write (`analyzed_at`, `deferred_at`, `deferred_reason` stay); the readers and reconcile understand both. The Stage A loop is unchanged.
+- **`stage_since` is the time of the last real status change.** A (re)staged item gets a fresh `stage_since` and an empty `stage_reason`; a `stuck` item keeps the time it became stuck, also when a retry defers it again.
+- **Reconcile closes the gate without growing the breaker** (streak at least 1, never a shorter block), and it closes it before it writes the rows. Each run without `--keep-gate` closes it again from now.
+- **The wrong-model rule is narrower than the plan** (ruling on the Task 5 review). The plan said any 4xx that is not auth or quota blocks only the profile. The code does that only for an HTTP 400 or 404 whose error code or text says the model is unknown; any other refused request blocks the whole backend for `LLM_BLOCK_S`, as before. Widen it only if we see it happen.
+- **A missing LLM row means open**, unlike `youtube` (missing means closed): an LLM block is only ever made by a failure. A failed read of the rows blocks every known backend for 30 s (fail closed); a failed write is logged, never raised. The `youtube` name cannot be blocked or unblocked through the LLM blocks.
+- **The `stuck` rule:** only `deferred` items become `stuck` (never `waiting_youtube` or `waiting_llm`); the requeue's own "active item with no job" leftover uses the same `stuck` status. Rows rebuilt by reconcile in an active status get no job: a `pipeline.run` with `retry_deferred` or `requeue` picks them up.
+
+**Open items after B5** (from the B5 reviews; the final review adds its own):
+
+*Robustness*
+
+- A row holds only its last LLM run: a published item that is requeued and deferred mixes the new profile and backend with the old model and tokens, a requeue served from a saved reply drops the earlier live tokens, and the tokens of failed calls are only in the `llm/` trace. Cost queries read `published` rows only and undercount failed calls. Fix: put the tokens and the tried profile in the event data.
+- If writing the metrics fails after the page is made, the retry publishes with no metrics.
+- `stuck_since` reads the event message; make `transition` always write `{"from", "to"}` into the event data and read that (about 5 lines).
+- Rows written before B5 may keep a stale `error`, and `warnings` may hold JSON `null` instead of SQL NULL: `UPDATE job_items SET warnings = NULL WHERE warnings = 'null'::jsonb`.
+- The mirror: last writer wins (fine with one worker); on the file-error paths the item is `failed` while its file stays where it was with its old `stage`; a finished page that the reaper moves to `failed/` still says `published`.
+- The blocks: `blocked_at` moves to now even when the longer, older block is kept (LLM rows and the gate); expired rows are never removed; there is no command to lift a 6 h budget block early or to show `resources.reason` (use SQL); the wrong-model regex stops at a dot; a missing API key blocks its backend for `LLM_BLOCK_S` too.
+- Reconcile: a frontmatter `id` is stored as written (not through `safe_id`); after a fix the old path column is kept; rebuilt rows have no `docs_page`, no metrics and a `stage_since` of the reconcile time.
+- `retry_deferred` with a small `limit` moves the retried documents back to `inbox/` but stages only `limit` of them: the others wait there while their row keeps its old status, until the next `pipeline.run`.
+
+*Tests*
+
+- `ItemStates`: no test for the `level` check or two sessions at once; no test that a repeated transition does not rewrite the file.
+- The blocks race test cannot fail (`block()` swallows errors): assert no ERROR log and swap the ends over several rounds. A stale comment in `test_handler_llm_reason.py` still talks about in-memory blocks.
+- Reconcile: no test for a failing gate close, nor for the CLI's `--dry-run` leaving the rows alone. The worker with stand-in settings marks nothing stuck and logs nothing about it.
+
+*B5b: `run pipeline` over the worker path*
+
+- `catcher run pipeline` becomes a thin wrapper: it queues `pipeline.run`, runs the worker in-process and prints the report from the database. The old loop retires with its folder states (`stage: analyzed`, `deferred_at`) and its per-run blocks (`RunState.blocked`, `budget_blocked`). Until then the Stage A run writes no `job_items`: run `catcher reconcile` after it if you also use the worker.
+- B5b decides what happens to `--dry-run` (decision 12: dry runs never go through the queue): keep a read-only inline path, or let `catcher scan` take its place.
 
 **Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 

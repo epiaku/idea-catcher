@@ -142,7 +142,7 @@ What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 docum
 
 - **A fresh answer:** `uv run catcher jobs add pipeline.run --param refresh_llm=true` calls the model even when a reply is saved, so it costs money with real keys. With the empty key above it only shows that the documents defer (`OPENAI_API_KEY is not set`). With `refresh_llm=true` a rerun after a crash also skips the reply the first try saved, so **the model can be paid twice**; without it the model is paid once.
 - **Dry runs never go through the queue.** `jobs add` refuses a `dry_run` parameter (exit code 2): use `run pipeline --dry-run`.
-- **A job's status is not a document's status.** A document that defers (the LLM is down, a budget is used up) or fails for good is an item outcome: its job still `succeeded`. The item states are in the `job_items` table (there is no command for them yet) and in the working copy in `output/` (`stage: deferred`), as in Stage A. A job `failed` means the job itself went wrong: a git error, a parameter the job carries that is wrong, or an unexpected error in the code. When a failed job carries a document (`llm.reason`, `youtube.fetch`), the worker marks that document `failed` with the job's error and moves its working copy to `failed/`, unless another queued or running job carries it; a `requeue` runs it again.
+- **A job's status is not a document's status.** A document that defers (the LLM is down, a budget is used up) or fails for good is an item outcome: its job still `succeeded`. The item states are in the `job_items` table (`catcher items list` shows them) and in the working copy in `output/` (`stage: deferred`); see [Item states, stuck and reconcile](#item-states). A job `failed` means the job itself went wrong: a git error, a parameter the job carries that is wrong, or an unexpected error in the code. When a failed job carries a document (`llm.reason`, `youtube.fetch`), the worker marks that document `failed` with the job's error and moves its working copy to `failed/`, unless another queued or running job carries it; a `requeue` runs it again.
 - **A backend that is down or out of budget is not called again for a while.** After one document finds its LLM backend out of its usage limit or budget, or down, the next documents that need that backend are `deferred` without a call until the cool-down ends (`LLM_BLOCK_S`, 10 minutes; a saved reply is still used). A used-up budget blocks it for `LLM_BUDGET_BLOCK_S` (6 hours), and a model the backend does not know blocks only that profile. Retry them later with `jobs add pipeline.run --param retry_deferred=true`. The blocks are kept in Postgres (`resources`), so a restart keeps them.
 - **`worker --once` exits 0 even when a job failed.** Look at `jobs list`. A job deferred to a later time (a YouTube gap) is not due, so `--once` leaves it.
 - **Exit codes of `catcher worker`:** `0` it stopped normally (also when jobs failed); `1` it lost its one-worker lock (see below), or with `--once` a claim hit a database error (`could not claim a job`) or a job could not be finished (`error=1` in the summary; the reaper puts it back after its lease); `2` another worker runs, `DATABASE_URL` is malformed, or the database cannot be reached.
@@ -153,6 +153,63 @@ What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 docum
 - **One worker at a time.** A second worker on the same database, or a worker started while a `run pipeline` runs, exits at once with code 2: `another worker or run is already running; one at a time`. The lock lives on one database connection. Before every claim and every reap the worker checks that this connection still holds it; after a Postgres restart or a dropped connection it stops with exit code 1 (`the worker lost its database lock ...`), so a supervisor can start it again and it takes the lock again.
 - **No Postgres:** `cannot reach the database in DATABASE_URL` and exit code 2, for the worker and the `jobs` commands. A malformed `DATABASE_URL` gives `DATABASE_URL is not a valid database URL` and exit code 2; no message shows the URL (it holds the password).
 - **`run pipeline` and the worker take the same lock.** `run pipeline` (also `--dry-run`) takes the worker's lock in Postgres before it touches a file, so while a worker runs it exits at once with code 2: `another worker or run is already running; one at a time: nothing was done`; with the database down: `cannot reach the database in DATABASE_URL: nothing was done` (code 2). A worker started during a run exits with code 2 (`another worker or run is already running; one at a time`). `render` takes the same lock (it writes a page into `epiaku-docs`, which a worker's `pipeline.publish` would commit and push), with the same exit codes and messages. A run that loses the lock halfway (a Postgres restart) stops before the next document, commits nothing, says what it had done (`N document(s) were finished and are NOT committed`), and exits with code 1. **The next `run pipeline` does not commit those documents**: it commits only the files it changes itself. They stay uncommitted until the next `pipeline.publish` job commits them (`catcher jobs add pipeline.publish`, then the worker), or until you commit them by hand. The lock is per database: see [The database](#database).
+
+## Item states, stuck and reconcile {#item-states}
+
+On the worker path **the database is the truth** for every document: its row in `job_items` has one of nine states. The worker changes them in one place, and each change writes a `job_events` row.
+
+| State             | What it means                                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------------------------- |
+| `staging`         | `pipeline.run` made the row and is moving the capture out of `inbox/`                                 |
+| `waiting_youtube` | a YouTube clip waits for its `youtube.fetch` job (the facts)                                          |
+| `waiting_llm`     | waits for its `llm.reason` job                                                                        |
+| `ready`           | allowed in the table, but the worker does not use it yet (`waiting_llm` goes straight to `published`) |
+| `published`       | done: the page is in `epiaku-docs` and the working copy in `output/` is that page                     |
+| `deferred`        | stalled for a while (LLM down, a budget or usage limit, no facts); retried by `retry_deferred`        |
+| `stuck`           | `deferred` for more than `STUCK_AFTER_DAYS` (3) days; still retried                                   |
+| `failed`          | failed for good: the file is in `failed/` with an `.error.txt`                                        |
+| `duplicate`       | an earlier snapshot of a longer clip, in `duplicates/`                                                |
+
+**The frontmatter shows the state.** After every status change the worker writes three lines into the working copy in `output/` (or the file in `failed/`): `stage`, `stage_reason` and `stage_since`. The Stage A names stay next to them (`analyzed_at`, `deferred_at`, `deferred_reason`). The finished page says `stage: published` and `created_by: idea catcher`, nothing more, because it is the same file as the page in `epiaku-docs`. If the mirror cannot be written, the row still has the state and the next change writes it.
+
+```yaml
+stage: deferred                                # a working copy (checked 2026-10-06)
+stage_since: '2026-10-06T08:10:58+00:00'
+stage_reason: OPENAI_API_KEY is not set
+```
+
+**See the items without SQL:**
+
+```bash
+uv run catcher items list                    # newest first: name, class, state, since (local time), reason
+uv run catcher items list --status stuck     # only one state; --limit N (default 50)
+```
+
+**`stuck`.** At every reap (at the start of the worker, also with `--once`, and every 60 seconds) an item that has been `deferred` for `STUCK_AFTER_DAYS` (3) days becomes `stuck`, with a warning event and the reason `deferred for 4 days: <old reason>`. Its `stage_since` is then the time it became stuck. It is not given up: `jobs add pipeline.run --param retry_deferred=true` retries `deferred` **and** `stuck` items, a retry that defers again keeps it `stuck`, and a publish ends it. The retried documents go back through `inbox/`, so a `limit` counts them too: with `limit=0` they wait in `inbox/` (their row keeps its state) until the next `pipeline.run`.
+
+**How the retries add up.**
+
+- **Inside one `llm.reason` job** the LLM service retries a temporary error (a 5xx, a timeout) up to `LLM_MAX_ATTEMPTS` (5) calls. After that the document is `deferred` or `failed`, and the job still `succeeded`.
+- **There is no job-level retry layer.** A deferred document waits for a `pipeline.run` with `retry_deferred`. You add that by hand for now; the scheduler adds it in B6.
+- **The backend blocks** are the only waiting time: a usage limit or a down backend blocks it for `LLM_BLOCK_S` (600 s), a used-up budget for `LLM_BUDGET_BLOCK_S` (6 hours), and a model the backend does not know blocks only its profile (`openai:clippings`). The documents that need a blocked backend are `deferred` without a call. A block is a row in `resources`, so it survives a worker restart.
+- **A crashed job** (the worker died) comes back after its lease and is failed after 3 attempts; that is the only attempt counter.
+
+**`catcher reconcile` rebuilds the rows from the folders**, for a lost or new database. Run it with `--dry-run` first:
+
+```bash
+uv run catcher reconcile --dry-run    # says what it would do: created, fixed, missing, skipped; writes nothing
+uv run catcher reconcile              # writes the rows and closes the YouTube gate
+uv run catcher youtube gate           # youtube: blocked until 16:12 (block 1)
+```
+
+- **What it does.** A document in `output/`, `failed/` or `duplicates/` without a row gets one, with the state its folder and its `stage` give (an `info` event `reconcile: created ...`). A row whose file moved gets the state of its new folder (`fixed`). A file it cannot read is `skipped` with the reason.
+- **What it does not do.** It never deletes a file or a row and never changes a file. A row whose file is gone is only reported (`missing`). It cannot rebuild attempts, tokens, models or events.
+- **The folder wins.** A stale working copy can move a row back to an older state, and a `failed` row whose file stayed in `output/` goes back to an active state with no job. Look at the `--dry-run` list first.
+- **No jobs.** A row it creates in an active state (`waiting_llm`, `deferred`...) gets no job. Run `jobs add pipeline.run --param retry_deferred=true` (or `--param requeue=NAME`) for them.
+- **It needs the database and the run lock**, like `run pipeline`: exit code 2 while a worker or a run is running, or when the database cannot be reached; 1 when a database error stopped it.
+- **It closes the YouTube gate** for `YOUTUBE_BLOCK_HOURS` (6 hours), because a rebuilt database starts with the gate open and may have lost a block. Every run without `--keep-gate` closes it again from now, so use `--keep-gate` when you run it a second time. `--dry-run` never touches the gate.
+
+What you see (checked on 2026-10-06, on a throwaway database and test repos): after `db downgrade base --yes` and `db upgrade`, `reconcile --dry-run` lists `created` for the four documents in `output/` and ends with `summary: created=4 fixed=0 missing=0 skipped=0 (dry run: nothing was written)`; `reconcile` writes them (as `published`) and prints `YouTube gate closed until 16:12 (reconcile; use --keep-gate to skip)`; a second `reconcile` prints `summary: created=0 fixed=0 missing=0 skipped=0`.
 
 ## The YouTube gate {#youtube-gate}
 
