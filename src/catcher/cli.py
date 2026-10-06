@@ -51,7 +51,7 @@ from catcher.modules.queue.reconcile import reconcile
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
-from catcher.modules.worker.runner import RunDatabaseError, run_command
+from catcher.modules.worker.runner import DatabaseNotUpgraded, RunDatabaseError, run_command
 from catcher.modules.youtube.access import build_access
 from catcher.modules.youtube.cache import FACTS_DIR
 from catcher.modules.youtube.facts import FactsUnavailable
@@ -294,13 +294,14 @@ def run_pipeline_cmd(
     It runs the worker path in this process: it takes the worker's lock in DATABASE_URL (also for --dry-run)
     and holds it until the run ends, queues a `pipeline.run` job with the options, runs the worker until no
     job is due, then queues and runs `pipeline.publish` (without --push it only commits: no pull, no push).
-    Ctrl-C or a `kill` puts the job it was running back in the queue and publishes nothing: `catcher worker`
-    finishes it.
+    Ctrl-C or a `kill` puts the job it was running back in the queue and publishes nothing: `catcher worker
+    --once` finishes it. It refuses to start while a `pipeline.run` or `pipeline.publish` job of an earlier
+    run is still queued (run `catcher worker --once` first).
 
     Exit codes: 0 done; 1 a document failed, a name was not found, a file was unreadable, the publish failed,
     the run was interrupted, or it lost its database lock (it stopped before the next job and committed
-    nothing); 2 a wrong path, DATABASE_URL is malformed, the database cannot be reached, or a worker or
-    another run is running (nothing was done)."""
+    nothing); 2 a wrong path, DATABASE_URL is malformed, the database cannot be reached or has no tables, a
+    worker or another run is running, or an earlier run's job is still queued (nothing was done)."""
     settings = Settings()
     signal.signal(signal.SIGTERM, _terminate)  # a `kill` ends the run like Ctrl-C: the job goes back
     ideas_repo, docs_repo = ideas or settings.ideas_repo, docs or settings.docs_repo
@@ -329,20 +330,32 @@ def run_pipeline_cmd(
             log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
             typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
             raise typer.Exit(2) from e
+        except DatabaseNotUpgraded as e:
+            log.error("%s", e)
+            typer.echo(f"{e}: nothing was done", err=True)
+            raise typer.Exit(2) from e
         except RunDatabaseError as e:
             typer.echo(RUN_DB_ERROR, err=True)
             raise typer.Exit(1) from e
+    if outcome.refused:
+        typer.echo(outcome.refused, err=True)
+        raise typer.Exit(outcome.exit_code)
     report = outcome.report
     _print_items(report)
     for line in outcome.blocked_lines:
         typer.echo(line)
-    if outcome.lock_lost:
+    if outcome.lock_lost and outcome.published:  # the publish committed (and pushed) before the lock went
+        typer.echo(f"summary: {report.counts()} committed={outcome.committed} pushed={outcome.pushed}")
+        log.error("%s", RUN_LOST_AFTER_PUBLISH)
+        typer.echo(RUN_LOST_AFTER_PUBLISH, err=True)
+    elif outcome.lock_lost:
         typer.echo(f"{_changed_by_the_run(report)} were finished and are NOT committed", err=True)
         log.error("%s", RUN_LOST)
         typer.echo(RUN_LOST, err=True)
     elif outcome.interrupted:
         typer.echo(
-            f"interrupted: {outcome.left_queued} job(s) left queued, run catcher worker to finish", err=True
+            f"interrupted: {outcome.left_queued} job(s) left queued, run catcher worker --once to finish",
+            err=True,
         )
     else:
         typer.echo(f"summary: {report.counts()} committed={outcome.committed} pushed={outcome.pushed}")
@@ -424,6 +437,10 @@ RUN_LOST = (
     "changed are not committed (see `git status` in both repos); the jobs it left are still queued. The next "
     "`pipeline.publish` job commits them: `catcher jobs add pipeline.publish`, then run the worker (the next "
     "`run pipeline` publishes too); or commit them by hand"
+)
+RUN_LOST_AFTER_PUBLISH = (
+    "the run lost its database lock after the publish: the publish is done (its commit, and its push with "
+    "--push, happened: see the summary); the run stopped there. Run catcher worker --once for any job left"
 )
 RUN_DB_ERROR = (
     "a database error stopped the run (see the log): documents may already have been moved and may not "

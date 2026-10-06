@@ -293,7 +293,7 @@ def test_ctrl_c_puts_the_running_job_back_to_queued_and_does_not_publish(
     commits = sh(repos.ideas, "log", "--oneline")
     result = CliRunner().invoke(app, _args(repos))
     assert result.exit_code == 1, result.output
-    assert "interrupted: 2 job(s) left queued, run catcher worker to finish" in result.output
+    assert "interrupted: 2 job(s) left queued, run catcher worker --once to finish" in result.output
     assert "summary:" not in result.output
     reasons = _jobs(pg_engine, "llm.reason")
     assert [(job.status, job.attempts) for job in reasons] == [("queued", 0), ("queued", 0)]  # no attempt
@@ -450,3 +450,97 @@ def test_the_command_line_marks_only_the_item_served_from_a_saved_reply(note_and
     [line] = [x for x in fresh.output.splitlines() if x.startswith("published")]
     assert SAVED not in line
     assert not any(x.startswith("requeued") and SAVED in x for x in saved.output.splitlines())
+
+
+# --- fix round 1: a publish that happened, an earlier run's jobs, a database without tables --------------
+
+
+def test_a_lock_lost_after_the_publish_says_the_commit_happened(
+    repos, use_services, pg_engine, monkeypatch: pytest.MonkeyPatch, sh
+) -> None:
+    from catcher.modules.worker import handlers_pipeline
+
+    real_commit = handlers_pipeline.commit_managed
+    calls: list[Path] = []
+
+    def commit_then_lose_the_lock(repo, *args, **kwargs):
+        committed = real_commit(repo, *args, **kwargs)
+        calls.append(repo)
+        if len(calls) == 2:  # both repos are committed; the publish job still finishes
+            [pid] = _advisory_lock_pids(pg_engine)
+            with pg_engine.connect() as admin:
+                assert admin.execute(text("select pg_terminate_backend(:pid, 5000)"), {"pid": pid}).scalar()
+        return committed
+
+    monkeypatch.setattr(handlers_pipeline, "commit_managed", commit_then_lose_the_lock)
+    result = CliRunner().invoke(app, _args(repos, "--push"))
+    assert result.exit_code == 1, result.output
+    [publish] = _jobs(pg_engine, "pipeline.publish")
+    assert publish.status == "succeeded" and publish.result == {
+        "committed": {"docs": True, "ideas": True},
+        "pushed": True,
+    }
+    assert "summary: {'published': 2} committed={'docs': True, 'ideas': True} pushed=True" in result.output
+    assert "lost its database lock after the publish" in result.output
+    assert "NOT committed" not in result.output and "committed nothing" not in result.output
+    assert sh(repos.ideas, "status", "--porcelain") == ""
+
+
+def _queue_old(engine: Engine, job_type: str, params: dict) -> None:
+    from catcher.core.db import utc_now
+    from catcher.modules.queue.queue import enqueue
+
+    with session_scope(engine) as session:
+        enqueue(session, type=job_type, now=utc_now(), params=params)
+
+
+EARLIER = (
+    "1 job(s) from an earlier run are still queued (pipeline.run/pipeline.publish): finish them with "
+    "catcher worker --once (see catcher jobs list), then run this again: nothing was done"
+)
+
+
+@pytest.mark.parametrize(
+    ("job_type", "params"),
+    [("pipeline.run", {"limit": 1}), ("pipeline.publish", {"push": True, "pull": True})],
+)
+def test_an_earlier_runs_queued_job_refuses_the_run_and_changes_nothing(
+    repos, use_services, pg_engine, sh, job_type: str, params: dict
+) -> None:
+    _queue_old(pg_engine, job_type, params)
+    before = (_inbox(repos.ideas), sh(repos.ideas, "log", "--oneline"), sh(repos.docs, "log", "--oneline"))
+    result = CliRunner().invoke(app, _args(repos, "--file", "first idea"))
+    assert result.exit_code == 2, result.output
+    assert EARLIER in " ".join(result.output.split())
+    assert "summary:" not in result.output
+    assert [(job.type, job.status) for job in _jobs(pg_engine)] == [(job_type, "queued")]  # nothing ran
+    assert (
+        _inbox(repos.ideas),
+        sh(repos.ideas, "log", "--oneline"),
+        sh(repos.docs, "log", "--oneline"),
+    ) == before
+    assert _items(pg_engine) == []
+    with WorkerLock(pg_engine):  # the lock was let go
+        pass
+
+
+def test_an_earlier_runs_document_jobs_do_not_stop_the_run(repos, use_services, pg_engine) -> None:
+    _queue_old(pg_engine, "llm.reason", {"calculated_name": "notes/20261001-abc123-gone.md"})
+    result = CliRunner().invoke(app, _args(repos))
+    assert result.exit_code == 0, result.output
+    assert "summary: {'published': 2}" in result.output
+    statuses = {job.params.get("calculated_name"): job.status for job in _jobs(pg_engine, "llm.reason")}
+    assert statuses["notes/20261001-abc123-gone.md"] == "failed"  # it ran too (its item is gone)
+
+
+def test_a_database_without_tables_says_to_upgrade_it(
+    repos, fresh_database_url: str, monkeypatch: pytest.MonkeyPatch, make_services, sh
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", fresh_database_url)
+    monkeypatch.setattr("catcher.cli.default_services", lambda settings: make_services())
+    before = (_inbox(repos.ideas), sh(repos.ideas, "log", "--oneline"))
+    result = CliRunner().invoke(app, _args(repos))
+    assert result.exit_code == 2, result.output
+    assert "the database has no tables yet: run catcher db upgrade" in result.output
+    assert "may already have been moved" not in result.output
+    assert (_inbox(repos.ideas), sh(repos.ideas, "log", "--oneline")) == before

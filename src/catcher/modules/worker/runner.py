@@ -10,7 +10,10 @@ builds the report from the database (`report_for_job`).
   job, no publish, nothing committed; the outcome says what was done (`lock_lost`, exit 1).
 - **Ctrl-C or SIGTERM** (KeyboardInterrupt): the jobs this command claimed and still runs are put back to
   `queued` with the queue's own fenced `defer` (the attempt is given back), and nothing is published. The
-  half-done document stays where it is (its item and job say so); the next worker run finishes it.
+  half-done document stays where it is (its item and job say so); `catcher worker --once` finishes it.
+- **An earlier run's `pipeline.run`/`pipeline.publish`** still queued or running (an interrupted run) would
+  run here with its own params, so the command refuses to start (exit 2, nothing done); an earlier document
+  job (`llm.reason`, `youtube.fetch`) is fine and runs too.
 - **`wait_youtube_s`**: after the drain, while a `youtube.fetch` job of this run is queued and becomes due
   within `wait_youtube_s` (the gap of the YouTube gate), sleep until then and drain again. A clip whose wait
   is longer stays queued for a later `catcher worker`.
@@ -28,8 +31,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select
-from sqlalchemy.exc import SQLAlchemyError
+from psycopg.errors import UndefinedTable
+from sqlalchemy import Engine, func, or_, select
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from catcher.core.config import Settings
@@ -55,6 +59,19 @@ class RunDatabaseError(RuntimeError):
     """A database error stopped the run after it started (documents may already have moved)."""
 
 
+class DatabaseNotUpgraded(RuntimeError):
+    """The database has no tables yet (`catcher db upgrade` was never run): nothing was done."""
+
+
+# The jobs that act on the whole inbox or on both repos: one left by an earlier run would run here with its
+# own params (the whole inbox, a paid LLM call per document, or a push), so the command refuses to start.
+RUN_WIDE_TYPES = ("pipeline.run", "pipeline.publish")
+EARLIER_RUN = (
+    "{n} job(s) from an earlier run are still queued (pipeline.run/pipeline.publish): finish them with "
+    "catcher worker --once (see catcher jobs list), then run this again: nothing was done"
+)
+
+
 @dataclass
 class RunOutcome:
     """What one `run pipeline` did. `blocked_lines` are the lines printed after the report: one per blocked
@@ -68,6 +85,8 @@ class RunOutcome:
     blocked_lines: list[str] = field(default_factory=list)
     exit_code: int = 0
     lock_lost: bool = False
+    published: bool = False  # the publish job succeeded (also when the lock was lost after it)
+    refused: str | None = None  # why the run did not start (exit 2, nothing was done)
 
 
 def _worker_id() -> str:
@@ -118,6 +137,10 @@ def run_command(
         lock_engine = make_worker_engine(settings.database_url)
         stack.callback(lock_engine.dispose)
         lock = stack.enter_context(WorkerLock(lock_engine))  # WorkerAlreadyRunning / OperationalError
+        earlier = _earlier_run_jobs(lock_engine)
+        if earlier:
+            log.error(EARLIER_RUN.format(n=earlier))
+            return RunOutcome(report=RunReport(), refused=EARLIER_RUN.format(n=earlier), exit_code=2)
         if services is None and services_factory is not None:
             services = services_factory(settings)
         ctx = build_context(settings, ideas=ideas, docs=docs, clock=clock, services=services)
@@ -136,6 +159,23 @@ def run_command(
             log.error("a database error stopped the run: %s", getattr(e, "orig", None) or type(e).__name__)
             raise RunDatabaseError(str(type(e).__name__)) from e
     raise AssertionError("unreachable")  # the with block returns or raises; ExitStack could swallow in theory
+
+
+def _earlier_run_jobs(engine: Engine) -> int:
+    """How many `pipeline.run`/`pipeline.publish` jobs are queued or running before this run queues its own.
+    Raises DatabaseNotUpgraded when the database has no tables."""
+    statement = (
+        select(func.count())
+        .select_from(Job)
+        .where(Job.type.in_(RUN_WIDE_TYPES), Job.status.in_(("queued", "running")))
+    )
+    try:
+        with session_scope(engine) as session:
+            return int(session.scalar(statement) or 0)
+    except ProgrammingError as e:
+        if isinstance(e.orig, UndefinedTable):
+            raise DatabaseNotUpgraded("the database has no tables yet: run catcher db upgrade") from e
+        raise
 
 
 def _run(
@@ -178,15 +218,15 @@ def _run(
             outcome.blocked_lines += _youtube_wait_line(session, names, now)
         publish = session.get(Job, publish_id) if publish_id is not None else None
         publish_failed = False
-        if publish is not None and not outcome.lock_lost and not outcome.interrupted:
-            if publish.status == "succeeded":
-                result = publish.result or {}
-                outcome.committed = dict(result.get("committed") or {})
-                outcome.pushed = bool(result.get("pushed", False))
-            else:
-                publish_failed = True
-                why = publish.error or f"pipeline.publish is {publish.status}"
-                outcome.report.problems.append(f"{why}: {PUBLISH_FAILED}")
+        if publish is not None and publish.status == "succeeded":  # it committed, even if the lock went after
+            result = publish.result or {}
+            outcome.published = True
+            outcome.committed = dict(result.get("committed") or {})
+            outcome.pushed = bool(result.get("pushed", False))
+        elif publish is not None and not outcome.lock_lost and not outcome.interrupted:
+            publish_failed = True
+            why = publish.error or f"pipeline.publish is {publish.status}"
+            outcome.report.problems.append(f"{why}: {PUBLISH_FAILED}")
     outcome.report.committed, outcome.report.pushed = outcome.committed, outcome.pushed
     report = outcome.report
     failed = (
