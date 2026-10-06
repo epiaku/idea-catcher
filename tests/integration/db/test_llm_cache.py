@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from run_on_worker import run_on_worker
+from sqlalchemy import Engine
 from typer.testing import CliRunner
 
 from catcher import cli
@@ -16,9 +18,18 @@ from catcher.core.config import Settings
 from catcher.core.frontmatter import load
 from catcher.modules.llm import service
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
-from catcher.modules.pipeline.run import RunOptions, RunReport, run_pipeline
+from catcher.modules.pipeline.report import RunReport
 from catcher.modules.pipeline.tags import TagList, load_tags
 from catcher.modules.worker.runner import RunOutcome
+
+pytestmark = pytest.mark.db
+
+
+@pytest.fixture(autouse=True)
+def _database(pg_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run_on_worker` runs the command's path (B5b) on the test database."""
+    monkeypatch.setenv("DATABASE_URL", pg_engine.url.render_as_string(hide_password=False))
+
 
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
 WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
@@ -99,14 +110,14 @@ def without_id(page: str) -> str:
 
 
 def test_a_second_run_reuses_the_saved_reply_and_never_calls_the_backend(repos, make_services, sh, caplog):
-    first = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    first = run_on_worker(repos, make_services())
     live = {doc: page_of(repos, *doc).read_text() for doc in DOCS}
     saved = {p: p.read_bytes() for p in traces(repos.ideas)}
     assert len(saved) == 2
 
     caplog.set_level(logging.DEBUG, logger="catcher")
-    requeue = RunOptions(requeue=["systeme", "YouTube walks"])
-    report = run_pipeline(repos.ideas, repos.docs, requeue, no_backend(make_services))
+    requeue = dict(requeue=["systeme", "YouTube walks"])
+    report = run_on_worker(repos, no_backend(make_services), **requeue)
     assert report.counts() == {"requeued": 2, "published": 2}
     assert {p: p.read_bytes() for p in traces(repos.ideas)} == saved  # untouched, no new file
     hits = [r for r in caplog.records if r.name == "catcher.process" and SAVED in r.getMessage()]
@@ -117,7 +128,7 @@ def test_a_second_run_reuses_the_saved_reply_and_never_calls_the_backend(repos, 
     assert page_of(repos, *DOCS[1]).read_text() == live[DOCS[1]]  # byte-identical
     assert without_id(page_of(repos, *DOCS[0]).read_text()) == without_id(live[DOCS[0]])
 
-    again = run_pipeline(repos.ideas, repos.docs, requeue, no_backend(make_services))
+    again = run_on_worker(repos, no_backend(make_services), **requeue)
     assert again.counts() == {"requeued": 2, "published": 2}
     assert page_of(repos, *DOCS[1]).read_text() == live[DOCS[1]]
     assert {p: p.read_bytes() for p in traces(repos.ideas)} == saved
@@ -133,14 +144,12 @@ def test_a_page_from_a_saved_reply_is_byte_identical_to_the_live_page(repos, mak
             reply.model = "gpt-test-2026-09-01"
             return reply
 
-    run_pipeline(
-        repos.ideas, repos.docs, RunOptions(only=["systeme"]), make_services(chat_backend=DatedModel())
-    )
+    run_on_worker(repos, make_services(chat_backend=DatedModel()), only=["systeme"])
     page = page_of(repos, "clippings", "systeme.md")
     live = page.read_text()
     assert "gpt-test-2026-09-01" in live
 
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), no_backend(make_services))
+    report = run_on_worker(repos, no_backend(make_services), requeue=["systeme"])
     assert report.counts() == {"requeued": 1, "published": 1}
     assert page.read_text() == live  # nothing dropped: backend, model and prompt version are as recorded
 
@@ -150,14 +159,12 @@ def v2_chat() -> FakeBackend:
 
 
 def test_requeue_alone_reuses_the_saved_reply(repos, make_services, sh):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     first = path.read_bytes()
 
     chats = v2_chat()
-    report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), make_services(chat_backend=chats)
-    )
+    report = run_on_worker(repos, make_services(chat_backend=chats), requeue=["systeme"])
     assert report.counts() == {"requeued": 1, "published": 1}
     assert chats.prompts == []  # nothing implicit: a requeue alone does not call the model
     assert path.read_bytes() == first
@@ -166,13 +173,13 @@ def test_requeue_alone_reuses_the_saved_reply(repos, make_services, sh):
 
 
 def test_refresh_llm_calls_the_model_again_and_overwrites_the_trace(repos, make_services, sh):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     first = path.read_bytes()
 
     chats = v2_chat()
-    opts = RunOptions(requeue=["systeme"], refresh_llm=True)
-    report = run_pipeline(repos.ideas, repos.docs, opts, make_services(chat_backend=chats))
+    opts = dict(requeue=["systeme"], refresh_llm=True)
+    report = run_on_worker(repos, make_services(chat_backend=chats), **opts)
     assert report.counts() == {"requeued": 1, "published": 1}
     assert len(chats.prompts) == 1
     assert path.read_bytes() != first and read(path)["output"]["title"] == "Bundles v2"
@@ -205,32 +212,28 @@ def test_requeue_with_refresh_llm_calls_the_model_again(repos, make_services, mo
     assert "--refresh-llm" in runner.invoke(cli.app, ["run", "pipeline", "--help"]).output
 
     # ... and the run then calls the model for the requeued document, not for the others
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     chats, notes = v2_chat(), FakeBackend()
-    opts = RunOptions(requeue=["systeme"], refresh_llm=True)
-    report = run_pipeline(
-        repos.ideas, repos.docs, opts, make_services(note_backend=notes, chat_backend=chats)
-    )
+    opts = dict(requeue=["systeme"], refresh_llm=True)
+    report = run_on_worker(repos, make_services(note_backend=notes, chat_backend=chats), **opts)
     assert report.counts() == {"requeued": 1, "published": 1}
     assert len(chats.prompts) == 1 and notes.prompts == []
 
 
 def test_deleting_the_trace_file_gives_a_fresh_call(repos, make_services, sh):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     path.unlink()
 
     chats = v2_chat()
-    report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), make_services(chat_backend=chats)
-    )
+    report = run_on_worker(repos, make_services(chat_backend=chats), requeue=["systeme"])
     assert report.counts() == {"requeued": 1, "published": 1}
     assert len(chats.prompts) == 1 and read(path)["output"]["title"] == "Bundles v2"
     assert sh(repos.ideas, "status", "--porcelain") == ""
 
 
 def test_a_prompt_version_change_is_a_miss(repos, make_services, monkeypatch):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     old_version = read(path)["prompt_version"]
 
@@ -238,9 +241,7 @@ def test_a_prompt_version_change_is_a_miss(repos, make_services, monkeypatch):
     real_render = service.render_prompt
     monkeypatch.setattr(service, "render_prompt", lambda task, v: (real_render(task, v)[0], "bumped-99"))
     chats = v2_chat()
-    report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), make_services(chat_backend=chats)
-    )
+    report = run_on_worker(repos, make_services(chat_backend=chats), requeue=["systeme"])
     assert report.counts() == {"requeued": 1, "published": 1}
     assert len(chats.prompts) == 1
     assert old_version != "bumped-99" and read(path)["prompt_version"] == "bumped-99"
@@ -248,13 +249,13 @@ def test_a_prompt_version_change_is_a_miss(repos, make_services, monkeypatch):
 
 
 def test_another_profile_is_a_miss(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["systeme"]), make_services())
+    run_on_worker(repos, make_services(), only=["systeme"])
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     assert read(path)["profile"] == "clippings"
 
     notes = FakeBackend([json.dumps({**CANNED["ai-chat"], "title": "Via fake"})])
-    opts = RunOptions(requeue=["systeme"], profile="fake")
-    report = run_pipeline(repos.ideas, repos.docs, opts, make_services(note_backend=notes))
+    opts = dict(requeue=["systeme"], profile="fake")
+    report = run_on_worker(repos, make_services(note_backend=notes), **opts)
     assert report.counts() == {"requeued": 1, "published": 1}
     assert len(notes.prompts) == 1
     assert read(path)["profile"] == "fake" and read(path)["output"]["title"] == "Via fake"
@@ -262,15 +263,13 @@ def test_another_profile_is_a_miss(repos, make_services):
 
 def test_an_invalid_output_trace_is_not_reused(repos, make_services, sh):
     bad = FakeBackend(["nope", "still nope"])
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=bad))
+    report = run_on_worker(repos, make_services(chat_backend=bad))
     assert report.counts() == {"published": 1, "failed": 1}
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     assert read(path)["outcome"] == "invalid_output"
 
     chats = FakeBackend()
-    report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), make_services(chat_backend=chats)
-    )
+    report = run_on_worker(repos, make_services(chat_backend=chats), requeue=["systeme"])
     assert report.counts() == {"requeued": 1, "published": 1}
     assert len(chats.prompts) == 1 and read(path)["outcome"] == "ok"
     assert page_of(repos, "clippings", "systeme.md").exists()
@@ -278,25 +277,25 @@ def test_an_invalid_output_trace_is_not_reused(repos, make_services, sh):
 
 
 def test_llm_cache_false_always_calls(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     path = trace_of(repos.ideas, "clippings", "systeme.md")
 
     chats = v2_chat()
     services = make_services(chat_backend=chats)
     services.settings = Settings(llm_cache=False)
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), services)
+    report = run_on_worker(repos, services, requeue=["systeme"])
     assert report.counts() == {"requeued": 1, "published": 1}
     assert len(chats.prompts) == 1 and read(path)["output"]["title"] == "Bundles v2"  # still written
 
 
 def test_a_dry_run_reads_saved_replies_and_writes_nothing(repos, make_services, sh, caplog):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     saved = {p: p.read_bytes() for p in traces(repos.ideas)}
     # the same text captured again under another name: its text matches a saved reply
     (repos.ideas / "inbox/notes/YouTube walks again.md").write_text(NOTE_BODY)
 
     caplog.set_level(logging.DEBUG, logger="catcher")
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), no_backend(make_services))
+    report = run_on_worker(repos, no_backend(make_services), dry_run=True)
     assert report.counts() == {"would_publish": 1}
     assert any(SAVED in r.getMessage() for r in caplog.records if r.name == "catcher.process")
     assert {p: p.read_bytes() for p in traces(repos.ideas)} == saved
@@ -306,7 +305,7 @@ def test_a_dry_run_reads_saved_replies_and_writes_nothing(repos, make_services, 
 
 
 def test_the_saved_reply_is_validated_again(repos, make_services, sh, caplog):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     edited = read(path)
     edited["attempts"][0]["reply"] = '{"title": "hand-edited and no longer valid"}'
@@ -315,9 +314,7 @@ def test_the_saved_reply_is_validated_again(repos, make_services, sh, caplog):
 
     caplog.set_level(logging.WARNING, logger="catcher")
     chats = v2_chat()
-    report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), make_services(chat_backend=chats)
-    )
+    report = run_on_worker(repos, make_services(chat_backend=chats), requeue=["systeme"])
     assert report.counts() == {"requeued": 1, "published": 1}
     assert len(chats.prompts) == 1  # the saved reply failed validation: the model is called instead
     warnings = [r.getMessage() for r in caplog.records if r.name == "catcher.llm"]
@@ -329,9 +326,7 @@ def test_the_saved_reply_is_validated_again(repos, make_services, sh, caplog):
 
 def test_a_new_tag_order_applies_to_a_saved_reply(repos, make_services):
     reply = json.dumps({**CANNED["note"], "tags": ["todo", "app-idea", "automation"]})
-    run_pipeline(
-        repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services(FakeBackend([reply]))
-    )
+    run_on_worker(repos, make_services(FakeBackend([reply])), only=["YouTube walks"])
     page = page_of(repos, "notes", "YouTube walks.md")
     assert load(page).fm["tags"][0] == "app-idea"  # app-idea ranks above todo today
 
@@ -339,7 +334,7 @@ def test_a_new_tag_order_applies_to_a_saved_reply(repos, make_services):
     reordered = TagList(("todo", *(t for t in tags.idea_types if t != "todo")), tags.topics, tags.projects)
     services = no_backend(make_services)
     services.tags = reordered
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"]), services)
+    report = run_on_worker(repos, services, requeue=["YouTube walks"])
     assert report.counts() == {"requeued": 1, "published": 1}
     assert load(page).fm["tags"][0] == "todo"  # the saved reply, the new order
     assert "app-idea" not in load(page).fm["tags"]
@@ -349,9 +344,7 @@ BAD_PAGE = json.dumps({**CANNED["note"], "body": "{{< nope >}}"})  # valid reply
 
 
 def test_a_reply_that_made_an_invalid_page_is_not_reused(repos, make_services, sh):
-    first = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(), make_services(note_backend=FakeBackend([BAD_PAGE]))
-    )
+    first = run_on_worker(repos, make_services(note_backend=FakeBackend([BAD_PAGE])))
     assert first.counts() == {"failed": 1, "published": 1}
     path = trace_of(repos.ideas, "notes", "YouTube walks.md")
     trace = read(path)
@@ -360,9 +353,7 @@ def test_a_reply_that_made_an_invalid_page_is_not_reused(repos, make_services, s
     assert sh(repos.ideas, "status", "--porcelain") == ""  # the marked trace is committed
 
     notes = FakeBackend()
-    again = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"]), make_services(note_backend=notes)
-    )
+    again = run_on_worker(repos, make_services(note_backend=notes), requeue=["YouTube walks"])
     assert again.counts() == {"requeued": 1, "published": 1}
     assert len(notes.prompts) == 1  # a plain requeue asks the model again
     assert read(path)["outcome"] == "ok" and read(path)["output"]["body"] == CANNED["note"]["body"]
@@ -370,16 +361,14 @@ def test_a_reply_that_made_an_invalid_page_is_not_reused(repos, make_services, s
 
 
 def test_a_plain_requeue_after_an_invalid_page_tries_the_model(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(note_backend=FakeBackend([BAD_PAGE])))
-    report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"]), no_backend(make_services)
-    )
+    run_on_worker(repos, make_services(note_backend=FakeBackend([BAD_PAGE])))
+    report = run_on_worker(repos, no_backend(make_services), requeue=["YouTube walks"])
     failed = [i for i in report.items if i.status == "failed"]
     assert len(failed) == 1 and "the backend must not be built" in failed[0].message  # a call was attempted
 
 
 def test_a_dry_run_marks_no_trace(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services())
+    run_on_worker(repos, make_services(), only=["YouTube walks"])
     path = trace_of(repos.ideas, "notes", "YouTube walks.md")
     edited = read(path)
     edited["attempts"][0]["reply"] = BAD_PAGE  # still a valid reply, so still reused, but the page is invalid
@@ -387,8 +376,8 @@ def test_a_dry_run_marks_no_trace(repos, make_services):
     before = path.read_bytes()
     (repos.ideas / "inbox/notes/YouTube walks again.md").write_text(NOTE_BODY)
 
-    opts = RunOptions(dry_run=True, only=["YouTube walks again"])
-    report = run_pipeline(repos.ideas, repos.docs, opts, no_backend(make_services))
+    opts = dict(dry_run=True, only=["YouTube walks again"])
+    report = run_on_worker(repos, no_backend(make_services), **opts)
     (item,) = report.items
     assert item.status == "failed" and "unknown shortcodes" in item.message  # the saved reply, no call
     assert path.read_bytes() == before and read(path)["outcome"] == "ok"
@@ -403,9 +392,7 @@ class PaidBackend(FakeBackend):
 def test_an_invalid_page_from_a_reply_saved_for_another_document_marks_that_file(repos, make_services, sh):
     # `a` holds an ok trace whose reply makes an invalid page (as if an older validator had accepted it)
     (repos.ideas / "inbox/notes/b.md").unlink(missing_ok=True)
-    run_pipeline(
-        repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services(FakeBackend([BAD_PAGE]))
-    )
+    run_on_worker(repos, make_services(FakeBackend([BAD_PAGE])), only=["YouTube walks"])
     source = trace_of(repos.ideas, "notes", "YouTube walks.md")
     data = read(source)
     assert data["outcome"] == "invalid_page"
@@ -416,65 +403,56 @@ def test_an_invalid_page_from_a_reply_saved_for_another_document_marks_that_file
     # `b`: the same text under another name, so the saved reply of `a` is used for it
     (repos.ideas / "inbox/notes/b.md").write_text(NOTE_BODY)
     notes = FakeBackend()
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(only=["b"]), make_services(note_backend=notes))
+    report = run_on_worker(repos, make_services(note_backend=notes), only=["b"])
     assert report.counts() == {"failed": 1} and notes.prompts == []
     assert read(source)["outcome"] == "invalid_page"  # the file the reply came from is marked
     assert not trace_of(repos.ideas, "notes", "b.md").exists()  # `b` has no trace of its own
     assert sh(repos.ideas, "status", "--porcelain") == ""  # the marked file is committed
 
-    again = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["b"]), make_services(note_backend=notes)
-    )
+    again = run_on_worker(repos, make_services(note_backend=notes), requeue=["b"])
     assert again.counts() == {"requeued": 1, "published": 1}
     assert len(notes.prompts) == 1  # a plain requeue asks the model again
     assert read(trace_of(repos.ideas, "notes", "b.md"))["outcome"] == "ok"
 
 
 def test_a_fake_run_never_marks_a_paid_trace(repos, make_services):
-    run_pipeline(
-        repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services(note_backend=PaidBackend())
-    )
+    run_on_worker(repos, make_services(note_backend=PaidBackend()), only=["YouTube walks"])
     path = trace_of(repos.ideas, "notes", "YouTube walks.md")
     paid = path.read_bytes()
     assert read(path)["backend"] == "openai" and read(path)["outcome"] == "ok"
 
-    opts = RunOptions(requeue=["YouTube walks"], refresh_llm=True)
-    report = run_pipeline(repos.ideas, repos.docs, opts, make_services(note_backend=FakeBackend([BAD_PAGE])))
+    opts = dict(requeue=["YouTube walks"], refresh_llm=True)
+    report = run_on_worker(repos, make_services(note_backend=FakeBackend([BAD_PAGE])), **opts)
     assert report.counts() == {"requeued": 1, "failed": 1}  # the fake reply made the invalid page
     assert path.read_bytes() == paid  # not overwritten (fake over real) and not marked
 
-    report = run_pipeline(
-        repos.ideas, repos.docs, RunOptions(requeue=["YouTube walks"]), no_backend(make_services)
-    )
+    report = run_on_worker(repos, no_backend(make_services), requeue=["YouTube walks"])
     assert report.counts() == {"requeued": 1, "published": 1}  # the paid reply is reused
 
 
 @pytest.mark.parametrize("fresh", [{"refresh_llm": True}, {"llm_cache": False}])
 def test_llm_trace_false_never_marks_a_trace(repos, make_services, fresh):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services())
+    run_on_worker(repos, make_services(), only=["YouTube walks"])
     path = trace_of(repos.ideas, "notes", "YouTube walks.md")
     before = path.read_bytes()
 
     services = make_services(note_backend=FakeBackend([BAD_PAGE]))
     services.settings = Settings(llm_trace=False, llm_cache=fresh.get("llm_cache", True))
-    opts = RunOptions(requeue=["YouTube walks"], refresh_llm=fresh.get("refresh_llm", False))
-    report = run_pipeline(repos.ideas, repos.docs, opts, services)
+    opts = dict(requeue=["YouTube walks"], refresh_llm=fresh.get("refresh_llm", False))
+    report = run_on_worker(repos, services, **opts)
     assert report.counts() == {"requeued": 1, "failed": 1}
     assert path.read_bytes() == before  # the live reply was not recorded, and llm/ is not written
 
 
 def test_an_edited_document_marks_only_its_new_trace(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["YouTube walks"]), make_services())
+    run_on_worker(repos, make_services(), only=["YouTube walks"])
     path = trace_of(repos.ideas, "notes", "YouTube walks.md")
     old_key = read(path)["content_key"]
     copy = archived(repos.ideas, "notes", "YouTube walks.md")
     copy.write_text(copy.read_text().replace("walking around", "walking around the lake"))
 
-    report = run_pipeline(
-        repos.ideas,
-        repos.docs,
-        RunOptions(requeue=["YouTube walks"]),
-        make_services(note_backend=FakeBackend([BAD_PAGE])),
+    report = run_on_worker(
+        repos, make_services(note_backend=FakeBackend([BAD_PAGE])), requeue=["YouTube walks"]
     )
     assert report.counts() == {"requeued": 1, "failed": 1}
     trace = read(path)
@@ -483,16 +461,14 @@ def test_an_edited_document_marks_only_its_new_trace(repos, make_services):
 
 
 def test_a_failed_refresh_keeps_the_good_paid_reply(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(only=["systeme"]), make_services())
+    run_on_worker(repos, make_services(), only=["systeme"])
     path = trace_of(repos.ideas, "clippings", "systeme.md")
     good = path.read_bytes()
 
-    opts = RunOptions(requeue=["systeme"], refresh_llm=True)
-    report = run_pipeline(
-        repos.ideas, repos.docs, opts, make_services(chat_backend=FakeBackend(["nope", "still nope"]))
-    )
+    opts = dict(requeue=["systeme"], refresh_llm=True)
+    report = run_on_worker(repos, make_services(chat_backend=FakeBackend(["nope", "still nope"])), **opts)
     assert report.counts() == {"requeued": 1, "failed": 1}
     assert path.read_bytes() == good  # an ok trace is never replaced by a failed one
 
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(requeue=["systeme"]), no_backend(make_services))
+    report = run_on_worker(repos, no_backend(make_services), requeue=["systeme"])
     assert report.counts() == {"requeued": 1, "published": 1}  # the next plain run reuses it
