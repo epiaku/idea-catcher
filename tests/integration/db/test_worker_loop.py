@@ -683,7 +683,7 @@ def test_a_handler_that_raises_after_the_page_fails_the_item_and_files_it(
     def broken_finish(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("a bug after write_page")
 
-    monkeypatch.setattr(handlers_pipeline, "finish", broken_finish)
+    monkeypatch.setattr(handlers_pipeline, "write_output", broken_finish)
 
     assert harness.drain(max_jobs=2) == ["failed"]
 

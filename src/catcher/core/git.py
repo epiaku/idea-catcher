@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 log = logging.getLogger("catcher.git")
@@ -199,26 +199,6 @@ def pull(repo: Path, *, author: tuple[str, str] | None = None, unattended: bool 
     if has_remote(repo, unattended=unattended):
         log.info("pull %s", repo.name)
         _pull_rebase(repo, author, unattended=unattended)
-
-
-def _relative(repo: Path, paths: Iterable[Path]) -> list[str]:
-    root = repo.resolve()
-    return sorted({p.resolve().relative_to(root).as_posix() for p in paths})
-
-
-def commit_paths(repo: Path, paths: Iterable[Path], message: str, *, author: tuple[str, str]) -> bool:
-    rels = _relative(repo, paths)
-    if not rels:
-        return False
-    existing = [rel for rel in rels if (repo / rel).exists()]
-    if existing:
-        git(repo, "add", "--", *existing)
-    in_index = [rel for rel in git(repo, "ls-files", "-z", "--", *rels).split("\0") if rel]
-    if not in_index or not git(repo, "status", "--porcelain", "--", *in_index).strip():
-        return False
-    log.info("commit %s: %s (%d file(s))", repo.name, message, len(in_index))
-    _commit(repo, message, in_index, author=author)
-    return True
 
 
 def _commit(

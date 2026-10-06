@@ -1,4 +1,4 @@
-"""`report_for_job`: the old `RunReport` of `run_pipeline`, built from the database after a worker run.
+"""`report_for_job`: the `RunReport` the old loop returned, built from the database after a worker run.
 
 The items are the `job_items` of the run's `pipeline.run` job (its `root_job_id`), plus the names its result
 holds for what leaves no item row: duplicates, artifacts, unreadable files, unmatched names, requeue moves and
@@ -12,7 +12,6 @@ from sqlalchemy import select
 from catcher.core.db import session_scope
 from catcher.modules.llm.backends.fake import FakeBackend
 from catcher.modules.pipeline.report import ItemReport, RunReport, report_for_job
-from catcher.modules.pipeline.run import RunOptions, run_pipeline
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.worker.handlers_pipeline import handle_pipeline_run
 
@@ -135,30 +134,23 @@ def test_report_shows_artifacts_requeue_skips_and_names_not_in_archive(harness):
     assert report.not_in_archive == ["never captured"]
 
 
-def test_report_counts_are_the_same_as_the_old_counts_for_the_same_inbox(
-    harness, make_services, yt_facts, tmp_path
-):
-    """The same inbox through the old loop (on a copy of both repos) and through the worker: the same
-    counts. A note, two chats of which one is an earlier snapshot, a clip without a transcript, an artifact
+def test_report_counts_are_the_old_counts_for_the_same_inbox(harness, yt_facts):
+    """The counts the old loop gave for this inbox (checked side by side until B5b Task 7 deleted that
+    loop): a note, two chats of which one is an earlier snapshot, a clip without a transcript, an artifact
     and an unreadable file."""
     add_snapshots(harness.ideas)
     (harness.ideas / "inbox/report.pdf").write_bytes(b"%PDF-1.7 binary \x00\x01")
     (harness.ideas / "inbox/notes/bad.md").write_text("---\ntitle: [oops\n---\nbody\n")
-    old_ideas, old_docs = tmp_path / "old-ideas", tmp_path / "old-docs"
-    shutil.copytree(harness.ideas, old_ideas)
-    shutil.copytree(harness.docs, old_docs)
 
     def no_transcript(video_id: str):
         return yt_facts.model_copy(update={"transcript": None})
 
     harness.fetcher = no_transcript
-    old = run_pipeline(old_ideas, old_docs, RunOptions(), make_services(facts=no_transcript))
 
     new = run_on_the_worker(harness)
 
-    assert old.counts() == {"published": 3, "deferred": 1, "duplicate": 1, "artifact": 1}
-    assert new.counts() == old.counts()
-    assert list(new.unreadable) == list(old.unreadable) == ["inbox/notes/bad.md"]
+    assert new.counts() == {"published": 3, "deferred": 1, "duplicate": 1, "artifact": 1}
+    assert list(new.unreadable) == ["inbox/notes/bad.md"]
 
 
 def test_report_of_a_failed_run_has_its_error_as_a_problem(harness):

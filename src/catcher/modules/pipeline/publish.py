@@ -1,9 +1,13 @@
+import logging
 from pathlib import Path
 
 from catcher.core.files import write_atomic
 from catcher.core.frontmatter import FrontmatterError, load
 from catcher.modules.pipeline.doctypes import destination_dir
-from catcher.modules.pipeline.inbox import Note
+from catcher.modules.pipeline.inbox import Note, ScanResult, copy_artifact
+from catcher.modules.pipeline.report import ItemReport, RunReport
+
+log = logging.getLogger("catcher.run")
 
 
 def find_pages_by_id(out_dir: Path, doc_id: str) -> list[Path]:
@@ -39,3 +43,26 @@ def write_output(ideas_repo: Path, note: Note, page: str) -> list[Path]:
     target = note.output_path(ideas_repo)
     write_atomic(target, page)
     return [target]
+
+
+def copy_artifacts(scan: ScanResult, ideas: Path, docs: Path, max_mb: int, report: RunReport) -> None:
+    """Files in `inbox/` that are not markdown: rename, archive, copy to epiaku-docs, one report line each
+    (`artifact` with its new name as the page, `skipped` over `max_mb`, or `failed` when the copy raised).
+    No LLM, so `limit` does not apply. The `pipeline.publish` job commits the copies."""
+    for artifact in scan.artifacts:
+        item = ItemReport(artifact.original_name, "artifact", "skipped")
+        report.items.append(item)
+        size_mb = artifact.size / (1024 * 1024)
+        if size_mb > max_mb:
+            item.message = f"{size_mb:.1f} MB is over the {max_mb} MB limit (ARTIFACT_MAX_MB)"
+            log.warning(
+                'artifact "%s": skipped, %s; it stays in inbox/', artifact.original_name, item.message
+            )
+            continue
+        try:
+            copy_artifact(ideas, docs, artifact)
+        except OSError as e:
+            item.status, item.message = "failed", f"could not copy: {e}"
+            log.error('artifact "%s": %s; it stays in inbox/', artifact.original_name, item.message)
+            continue
+        item.status, item.page = "artifact", artifact.name

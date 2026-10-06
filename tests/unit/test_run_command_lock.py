@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 from typer.testing import CliRunner
 
 import catcher.cli as cli
-from catcher.modules.pipeline.run import ItemReport, RunReport
+from catcher.modules.pipeline.report import ItemReport, RunReport
 from catcher.modules.worker.runner import RunDatabaseError, RunOutcome
 
 

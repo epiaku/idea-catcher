@@ -43,7 +43,7 @@ from catcher.modules.pipeline.inputs import prompt_input
 from catcher.modules.pipeline.preview import preview
 from catcher.modules.pipeline.process import ProcessOptions, Services, default_services, process_note
 from catcher.modules.pipeline.publish import write_page
-from catcher.modules.pipeline.run import NOT_STARTED, RunReport
+from catcher.modules.pipeline.report import NOT_STARTED, RunReport
 from catcher.modules.pipeline.scan_state import scan_item_files
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue

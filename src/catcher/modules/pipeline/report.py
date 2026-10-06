@@ -1,9 +1,9 @@
 """The report of one run: one line per document, the counts, and what was not found or could not be read.
 
-`RunReport` and `ItemReport` are the shape `catcher run pipeline` prints (`_print_items` in cli.py). The old
-loop (`run_pipeline`) fills them as it goes; `report_for_job` builds the same shape from the database after a
-worker run: the `job_items` of the run's `pipeline.run` job (`root_job_id`, plus the items it adopted), and
-the names in that job's result for what leaves no item row (duplicates, artifacts, unreadable files, names
+`RunReport` and `ItemReport` are the shape `catcher run pipeline` prints (`_print_items` in cli.py) and
+`--dry-run` fills (`preview`). `report_for_job` builds that shape from the database after a worker run:
+the `job_items` of the run's `pipeline.run` job (`root_job_id`, plus the items it adopted), and the names in
+that job's result for what leaves no item row (duplicates, artifacts, unreadable files, names
 that matched nothing, requeue moves and skips, the documents `limit` left in `inbox/`, and the captures left
 there because their item is still active)."""
 
@@ -69,6 +69,8 @@ class RunReport:
 # The message of a later document with the id of one staged earlier in the same run (Stage A's wording).
 SAME_ID = "same id as an earlier document in this run: this page replaces the earlier one"
 LIMIT_REACHED = "run limit reached"
+# The reason of a document whose file move failed: it went back to inbox/ before anything changed.
+NOT_STARTED = "could not start work"
 # An item status that is not final: the document still waits for YouTube or the LLM (a later worker run
 # finishes it). Its report line is `waiting`.
 _WAITING_DEFAULT = {

@@ -19,7 +19,7 @@ builds the run's report from it.
 YouTube), the saved LLM reply before the model, then the file effects of Stage A, then the item status (and
 a new fetch job) in one commit. The model call runs outside any transaction. It is safe to run twice: a
 committed outcome is not redone, and a final page already in `output/` (a crash before the commit) is only
-recorded as published; a crash before `finish` reruns from the saved reply, so the model is paid once.
+recorded as published; a crash before `write_output` reruns from the saved reply, so the model is paid once.
 The published outcome commits the LLM metrics with it (profile, backend, model, prompt version, tokens, the
 warnings, the page's path in the docs repo, and whether the reply was a saved one); a deferred or failed
 model call records the profile and backend it tried.
@@ -82,7 +82,7 @@ from catcher.modules.pipeline.inbox import (
     start_work,
     with_filename_fields,
 )
-from catcher.modules.pipeline.outcome import classify
+from catcher.modules.pipeline.outcome import RunState, apply_outcome, classify, log_outcome
 from catcher.modules.pipeline.process import (
     ProcessedPage,
     ProcessOptions,
@@ -90,16 +90,8 @@ from catcher.modules.pipeline.process import (
     process_note,
     reject_invalid_page,
 )
-from catcher.modules.pipeline.publish import write_page
-from catcher.modules.pipeline.report import SAME_ID, ItemReport, RunReport
-from catcher.modules.pipeline.run import (
-    RunOptions,
-    RunState,
-    apply_outcome,
-    copy_artifacts,
-    finish,
-    log_outcome,
-)
+from catcher.modules.pipeline.publish import copy_artifacts, write_output, write_page
+from catcher.modules.pipeline.report import NOT_STARTED, SAME_ID, ItemReport, RunReport
 from catcher.modules.pipeline.steps import order_notes, split_duplicates
 from catcher.modules.queue.items import (
     ACTIVE_STATUSES,
@@ -281,7 +273,7 @@ def _start(ctx: HandlerContext, name: str, note: Note, job_id: uuid.UUID | None)
         start_work(ctx.ideas, note, ctx.clock())
         return True
     except OSError as e:
-        message = f"could not start work: {e}"
+        message = f"{NOT_STARTED}: {e}"
     log.error("%s: %s", note_label(note), message)
     try:
         return_to_inbox(ctx.ideas, note)
@@ -567,7 +559,7 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         log.info("limit of %d reached: %d document(s) stay in inbox/", params.limit, len(left_by_limit))
 
     report = RunReport()
-    copy_artifacts(scan, ideas, ctx.docs, RunOptions(), ctx.services, report, [], [])
+    copy_artifacts(scan, ideas, ctx.docs, ctx.services.settings.artifact_max_mb, report)
     counts["artifacts"] = report.counts().get("artifact", 0)
     log.info("pipeline.run: %s", counts)
     names: dict[str, Any] = {
@@ -797,7 +789,7 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.U
         return _item_outcome(ctx, name, "failed", reason, job_id=job_id)
     note.name = Path(name).name
     if note.doc.fm.get("stage") not in WORKING_STAGES:
-        # the final page is already in output/: a crash came after `finish`, before the status commit
+        # the final page is already in output/: a crash came after `write_output`, before the status commit
         log.info("%s: the page was already made, marking it published", note_label(note))
         return _item_outcome(ctx, name, "published", job_id=job_id)
 
@@ -837,7 +829,7 @@ def _reason(ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.U
         tried = _record_tried(name, processed.llm.profile, processed.llm.backend)
         return _item_outcome(ctx, name, "failed", reason, job_id=job_id, record=tried)
     [page, *_] = write_page(ctx.docs, note.destination, note.doc_id, processed.filename, processed.page)
-    finish(ideas, note, processed)
+    write_output(ideas, note, processed.page)
     log.info("%s: published %s", who, processed.filename)
     metrics = _metrics(processed, page.relative_to(ctx.docs).as_posix())
 

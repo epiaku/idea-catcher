@@ -59,7 +59,7 @@ def test_the_run_command_has_the_youtube_flags(monkeypatch, no_run_lock):
 
     import catcher.cli as cli
     from catcher.core.config import Settings
-    from catcher.modules.pipeline.run import RunReport
+    from catcher.modules.pipeline.report import RunReport
     from catcher.modules.worker.runner import RunOutcome
 
     seen: dict = {}

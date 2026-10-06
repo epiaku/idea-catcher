@@ -8,8 +8,8 @@ import pytest
 from catcher.core.frontmatter import load
 from catcher.modules.llm.service import BudgetExhausted, UsageLimitReached
 from catcher.modules.pipeline.inbox import Note, scan_inbox, start_work
-from catcher.modules.pipeline.outcome import Outcome, OutcomeKind, classify
-from catcher.modules.pipeline.run import ItemReport, RunState, apply_outcome
+from catcher.modules.pipeline.outcome import Outcome, OutcomeKind, RunState, apply_outcome, classify
+from catcher.modules.pipeline.report import ItemReport
 
 NOW = datetime(2026, 9, 27, 18, 0, 0, tzinfo=UTC)
 
