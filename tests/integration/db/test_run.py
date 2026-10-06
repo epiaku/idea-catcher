@@ -1089,3 +1089,19 @@ def test_a_lock_lost_after_the_artifacts_stops_the_run_before_the_commit(
     assert outcome.report.counts() == {"published": 2, "artifact": 1} and not src.exists()
     assert commits(repos, sh) == before  # no commit after the lock was lost
     assert sh(repos.docs, "status", "--porcelain") != ""  # the pages are written, not committed
+
+
+# ---- moved from tests/unit/test_missing_paths.py (B31): a real run needs the database now ------------------
+
+
+def test_a_named_file_that_does_not_exist_is_a_warning_not_a_crash(tmp_path, make_services, caplog):
+    (tmp_path / "ideas/inbox/notes").mkdir(parents=True)
+    (tmp_path / "docs").mkdir()
+    report = run_on_worker(
+        SimpleNamespace(ideas=tmp_path / "ideas", docs=tmp_path / "docs"),
+        make_services(),
+        only=["not a real note.md"],
+        requeue=["nor this one"],
+    )
+    assert report.not_found == ["not a real note.md"] and report.not_in_archive == ["nor this one"]
+    assert report.items == []
