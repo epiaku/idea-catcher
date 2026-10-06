@@ -948,10 +948,6 @@ def test_a_failed_pull_is_a_reported_problem_and_nothing_is_changed(repos, make_
     assert len(in_inbox(repos.ideas)) == 0
 
 
-@pytest.mark.skip(
-    reason="B5b ruling pending: B6 (publish pushes idea-bucket before it commits epiaku-docs, so a failed "
-    "push leaves the pages uncommitted, and a failed publish job reports committed == {})"
-)
 def test_a_failed_push_is_a_reported_problem_after_the_work_is_committed(repos, make_services, monkeypatch):
     from catcher.core.git import GitError
 

@@ -1,4 +1,4 @@
-"""The `pipeline.publish` handler: pull both repos, commit the managed folders, push right after each commit.
+"""The `pipeline.publish` handler: commit the managed folders of both repos, then pull and push each.
 
 Only the harness's local bare remotes in tmp folders are used: no real remote, no network. A test on the
 frozen harness (no remote) passes `push=False` or expects the clear "no remote" failure."""
@@ -180,7 +180,9 @@ def test_a_rerun_pushes_a_commit_that_a_failed_push_left_behind(harness, sh, tmp
 
     failed = publish(harness, pull=False)
 
-    assert isinstance(failed, Fail) and "missing.git" in failed.error
+    # B5b ruling (B6): a failed push is a problem in the result, the job succeeds and the work is committed
+    assert isinstance(failed, Done) and failed.result is not None
+    assert failed.result["pushed"] is False and "missing.git" in failed.result["problems"][0]
     assert head_count(sh, harness.ideas) == 2  # the commit stays local
     assert remote_log(sh, harness.ideas) == ["seed"]
 
@@ -310,7 +312,10 @@ def test_a_branch_without_an_upstream_fails_clearly(harness, sh):
 
     result = publish(harness, pull=False)
 
-    assert isinstance(result, Fail) and "no upstream" in result.error
+    # B5b ruling (B6): it cannot push, so the push is a problem in the result; the commit is made
+    assert isinstance(result, Done) and result.result is not None
+    assert result.result["committed"]["ideas"] is True and result.result["pushed"] is False
+    assert "no upstream" in result.result["problems"][0]
 
 
 def test_a_rejected_push_whose_rebase_conflicts_is_aborted(harness, sh, tmp_path):
@@ -321,7 +326,9 @@ def test_a_rejected_push_whose_rebase_conflicts_is_aborted(harness, sh, tmp_path
 
     result = publish(harness, pull=False)  # the push is rejected; its retry rebases and conflicts
 
-    assert isinstance(result, Fail) and "rebase" in result.error
+    # B5b ruling (B6): the failed push is a problem in the result, not a failed job
+    assert isinstance(result, Done) and result.result is not None
+    assert result.result["pushed"] is False and "rebase" in result.result["problems"][0]
     assert_clean_branch(sh, harness.ideas)
     assert (harness.ideas / rel).read_text() == "edited by the worker\n"
 
@@ -357,3 +364,25 @@ def test_every_git_call_of_publish_runs_unattended(harness, monkeypatch):
 
     assert publish(harness) == Done({"committed": {"docs": False, "ideas": True}, "pushed": True})
     assert seen and all(seen)
+
+
+def test_a_failed_push_still_commits_both_repos_and_pushes_the_other(harness, sh, tmp_path):
+    """B5b ruling (B6): both repos are committed before any push; a push that fails is a problem in the
+    result, the other repo is still pushed, and the job succeeds."""
+    (harness.ideas / "facts").mkdir()
+    (harness.ideas / "facts/v.json").write_text("{}\n")
+    (harness.docs / NOTES / "page.md").write_text("---\ntitle: P\n---\n")
+    sh(harness.ideas, "remote", "set-url", "--push", "origin", str(tmp_path / "missing.git"))
+
+    result = publish(harness, pull=False)
+
+    assert isinstance(result, Done) and result.result is not None
+    assert result.result["committed"] == {"docs": True, "ideas": True}
+    assert result.result["pushed"] is False
+    [problem] = result.result["problems"]
+    assert "missing.git" in problem
+    assert head_count(sh, harness.ideas) == 2 and remote_log(sh, harness.ideas) == ["seed"]
+    assert sh(harness.docs, "rev-parse", "HEAD") == sh(bare(harness.docs), "rev-parse", "main")  # pushed
+    assert (
+        sh(harness.ideas, "status", "--porcelain") == "" and sh(harness.docs, "status", "--porcelain") == ""
+    )

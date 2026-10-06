@@ -1054,12 +1054,14 @@ def parse_publish_params(params: dict[str, Any]) -> tuple[bool, bool]:
 
 
 def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
-    """Per repo (idea-bucket first): commit the managed folders, pull (rebase), push right after.
+    """Commit the managed folders of both repos (idea-bucket first), then per repo pull (rebase) and push.
 
-    A repo is pushed when it is ahead of its upstream, so a rerun pushes a commit a failed pull or push left
-    behind. A git error fails the job with git's message and stops it there; a commit already made stays
-    local, and a failed rebase is aborted first. `push=true` on a repo without a remote fails before any
-    git change."""
+    Both commits come first, so the work is committed even when the network step fails. A repo is pushed
+    when it is ahead of its upstream, so a later publish pushes a commit a failed pull or push left behind.
+    A failed pull (or a commit error) fails the job with git's message and stops it there; a commit already
+    made stays local, and a failed rebase is aborted first. A failed push does not fail the job: the job
+    succeeds with `pushed` false and git's message in the result's `problems`, and the other repo is still
+    pulled and pushed. `push=true` on a repo without a remote fails before any git change."""
     try:
         do_pull, do_push = parse_publish_params(dict(job.params or {}))
     except ValueError as e:
@@ -1071,6 +1073,7 @@ def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
     author = (ctx.settings.git_author_name, ctx.settings.git_author_email)
     committed = {"docs": False, "ideas": False}
     pushed = False
+    problems: list[str] = []
     with GIT_LOCK:
         try:
             if do_push:
@@ -1082,13 +1085,22 @@ def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
                     )
             for key, repo, managed, message in repos:
                 committed[key] = commit_managed(repo, managed, message, author=author, unattended=True)
+            for _, repo, _, _ in repos:
                 if do_pull:  # after the commit: the autostash only ever holds changes outside the managed set
                     pull(repo, author=author, unattended=True)
-                if do_push and ahead_of_upstream(repo, unattended=True):
-                    push(repo, author=author, unattended=True)
-                    pushed = True
+                if do_push:
+                    try:
+                        if ahead_of_upstream(repo, unattended=True):
+                            push(repo, author=author, unattended=True)
+                            pushed = True
+                    except GitError as e:  # the work is committed: a later publish pushes it
+                        log.error("publish: the push failed, the commit stays local: %s", e)
+                        problems.append(str(e))
         except GitError as e:
             log.error("publish failed (committed so far: %s): %s", committed, e)
             return Fail(str(e))
-    log.info("publish: committed=%s pushed=%s", committed, pushed)
-    return Done({"committed": committed, "pushed": pushed})
+    log.info("publish: committed=%s pushed=%s", committed, pushed and not problems)
+    result: dict[str, Any] = {"committed": committed, "pushed": pushed and not problems}
+    if problems:
+        result["problems"] = problems
+    return Done(result)

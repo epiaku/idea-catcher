@@ -53,6 +53,7 @@ log = logging.getLogger("catcher.worker.runner")
 LEASE_S = 120.0
 INTERRUPTED = "interrupted: put back by catcher run pipeline (Ctrl-C or SIGTERM)"
 PUBLISH_FAILED = "the changes are in the files but not (fully) committed or pushed"
+PUSH_FAILED = "the changes are committed but not pushed: the next publish pushes them"
 
 
 class RunDatabaseError(RuntimeError):
@@ -223,6 +224,8 @@ def _run(
             outcome.published = True
             outcome.committed = dict(result.get("committed") or {})
             outcome.pushed = bool(result.get("pushed", False))
+            for problem in result.get("problems") or []:  # a failed push: committed, not pushed
+                outcome.report.problems.append(f"{problem}: {PUSH_FAILED}")
         elif publish is not None and not outcome.lock_lost and not outcome.interrupted:
             publish_failed = True
             why = publish.error or f"pipeline.publish is {publish.status}"
