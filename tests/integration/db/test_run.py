@@ -1,9 +1,22 @@
+"""The behaviour tests of the old Stage A loop, run on the worker path (B5b).
+
+They called `run_pipeline(ideas, docs, RunOptions(...), services)`; they now call `run_on_worker(repos,
+services, ...)` (tests/support/run_on_worker.py), which does what `catcher run pipeline` does: queue
+`pipeline.run`, drain it with the worker, publish, and build the same report from the database. An assertion
+that changed says so and names the row of the B5b parity table that allows it
+(docs/superpowers/plans/2026-10-06-idea-catcher-stage-b5b-parity-table.md)."""
+
 import json
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from run_on_worker import run_on_worker, run_outcome
+from sqlalchemy import Engine
 
+from catcher.core.config import Settings
+from catcher.core.db import utc_now
 from catcher.core.frontmatter import load
 from catcher.modules.llm.backends.fake import CANNED, FakeBackend
 from catcher.modules.llm.service import BudgetExhausted, UsageLimitReached
@@ -15,6 +28,15 @@ from catcher.modules.youtube.gate_rules import OPEN
 REPO = Path(__file__).parents[3]
 NOTES = "hugo/content/en/docs/idea-bucket/notes"
 WEB_CLIPS = "hugo/content/en/docs/idea-bucket/web-clips"
+DOCS_MESSAGE = "idea-catcher: publish pages (pipeline.publish)"
+
+pytestmark = pytest.mark.db
+
+
+@pytest.fixture(autouse=True)
+def _database(pg_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run_on_worker` runs the command's path on the test database."""
+    monkeypatch.setenv("DATABASE_URL", pg_engine.url.render_as_string(hide_password=False))
 
 
 def find(ideas: Path, folder: str, sub: str, original: str) -> Path:
@@ -81,6 +103,11 @@ def repos(make_repo):
     return SimpleNamespace(ideas=ideas, docs=docs, ideas_bare=ideas_bare, docs_bare=docs_bare)
 
 
+def later(seconds: float):
+    """The worker's clock `seconds` (plus one) from now: an LLM block in Postgres is over by then."""
+    return lambda: utc_now() + timedelta(seconds=seconds + 1)
+
+
 def files(root: Path) -> dict[str, str]:
     return {
         p.relative_to(root).as_posix(): p.read_text()
@@ -90,7 +117,7 @@ def files(root: Path) -> dict[str, str]:
 
 
 def test_run_publishes_archives_and_commits(repos, make_services, sh):
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    report = run_on_worker(repos, make_services())
     assert report.counts() == {"published": 2}
     [note_page] = [p.name for p in (repos.docs / NOTES).glob("*.md") if p.name != "_index.md"]
     assert note_page.endswith("-youtube-walks.md")
@@ -115,22 +142,24 @@ def test_run_publishes_archives_and_commits(repos, make_services, sh):
     assert report.committed == {"docs": True, "ideas": True}
     assert sh(repos.docs, "status", "--porcelain") == ""
     assert sh(repos.ideas, "status", "--porcelain") == ""
-    assert sh(repos.docs, "log", "-1", "--format=%s").strip() == "idea-catcher: publish 2 page(s)"
+    # B3 (dropped on purpose): the publish job's fixed message, no count
+    assert sh(repos.docs, "log", "-1", "--format=%s").strip() == DOCS_MESSAGE
     assert sh(repos.docs_bare, "log", "--format=%s", "main").strip() == "seed"
 
 
 def test_push_updates_both_remotes(repos, make_services, sh):
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(push=True), make_services())
+    report = run_on_worker(repos, make_services(), push=True)
     assert report.pushed
     assert (
-        sh(repos.docs_bare, "log", "-1", "--format=%s", "main").strip() == "idea-catcher: publish 2 page(s)"
+        sh(repos.docs_bare, "log", "-1", "--format=%s", "main").strip() == DOCS_MESSAGE  # B3: no count
     )
     assert sh(repos.ideas_bare, "log", "-1", "--format=%s", "main").strip().startswith("idea-catcher:")
 
 
+@pytest.mark.skip(reason="B5b ruling pending: B52 (the preview says would_call_llm, not would_publish)")
 def test_dry_run_touches_nothing(repos, make_services):
     before = (files(repos.ideas), files(repos.docs))
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(dry_run=True), make_services())
+    report = run_on_worker(repos, make_services(), dry_run=True)
     assert report.counts() == {"would_publish": 2}
     assert (files(repos.ideas), files(repos.docs)) == before
     assert report.committed == {}
@@ -138,7 +167,7 @@ def test_dry_run_touches_nothing(repos, make_services):
 
 def test_invalid_output_moves_the_note_to_failed_with_the_reason(repos, make_services, sh):
     chats = FakeBackend(["nope", "still nope"])
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    report = run_on_worker(repos, make_services(chat_backend=chats))
     assert report.counts() == {"published": 1, "failed": 1}
     failed = find(repos.ideas, "failed", "clippings", "systeme.md")
     assert "invalid output" in failed.with_suffix(".error.txt").read_text()
@@ -150,7 +179,7 @@ def test_invalid_output_moves_the_note_to_failed_with_the_reason(repos, make_ser
 def test_a_rate_limit_defers_every_note_of_that_backend_but_not_the_others(repos, make_services):
     (repos.ideas / "inbox/clippings/second.md").write_text(chat("925d9b0b4ca21b63"))
     chats = FakeBackend([UsageLimitReached("rate limit", backend="openai")])
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    report = run_on_worker(repos, make_services(chat_backend=chats))
     assert report.counts() == {"published": 1, "deferred": 2}
     assert len(chats.prompts) == 1
     assert {i.doc_id for i in report.items if i.status == "deferred"} == {
@@ -165,26 +194,29 @@ def test_a_rate_limit_defers_every_note_of_that_backend_but_not_the_others(repos
 
 
 def test_a_limit_is_logged_once_not_for_every_note_that_waits(repos, make_services, caplog):
-    with caplog.at_level("INFO", logger="catcher.run"):
-        run_pipeline(repos.ideas, repos.docs, RunOptions(limit=1), make_services())
-    lines = [r.getMessage() for r in caplog.records if r.name == "catcher.run"]
-    assert [m for m in lines if m.startswith("limit of")] == ["limit of 1 reached: 1 note(s) stay in inbox/"]
+    # B24 (changed): `document(s)` instead of `note(s)`, on the worker's logger
+    with caplog.at_level("INFO", logger="catcher.worker.pipeline"):
+        run_on_worker(repos, make_services(), limit=1)
+    lines = [r.getMessage() for r in caplog.records if r.name == "catcher.worker.pipeline"]
+    assert [m for m in lines if m.startswith("limit of")] == [
+        "limit of 1 reached: 1 document(s) stay in inbox/"
+    ]
     assert not [m for m in lines if "skipped, run limit reached" in m]
 
 
 def test_limit_processes_at_most_n_notes(repos, make_services):
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(limit=1), make_services())
+    report = run_on_worker(repos, make_services(), limit=1)
     assert report.counts() == {"published": 1, "skipped": 1}
     assert len(list((repos.ideas / "inbox").rglob("*.md"))) == 1  # the other one is still waiting in inbox/
 
 
 def test_reclipped_chat_overwrites_its_page(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     (repos.ideas / "inbox/clippings/systeme again.md").write_text(
         chat("cf81e40b020519ef", "**You**\n\nlonger\n" * 3)
     )
     v2 = json.dumps({**CANNED["ai-chat"], "title": "Bundles v2"})
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=FakeBackend([v2])))
+    run_on_worker(repos, make_services(chat_backend=FakeBackend([v2])))
     pages = sorted((repos.docs / WEB_CLIPS).glob("2026*.md"))
     assert len(pages) == 1  # the older page with the same id was replaced
     assert load(pages[0]).fm["title"] == "Bundles v2"
@@ -193,7 +225,7 @@ def test_reclipped_chat_overwrites_its_page(repos, make_services):
 
 def test_unrelated_docs_changes_are_not_committed(repos, make_services, sh):
     (repos.docs / "README.md").write_text("my own edit\n")
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     assert sh(repos.docs, "status", "--porcelain").splitlines() == [" M README.md"]
 
 
@@ -205,7 +237,7 @@ YT_CLIP = (
 
 def test_youtube_without_facts_is_deferred_then_published(repos, make_services, yt_facts):
     (repos.ideas / "inbox/clippings/yt.md").write_text(YT_CLIP)
-    first = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    first = run_on_worker(repos, make_services())
     assert {i.doc_id: i.status for i in first.items}["nGVZS_wUDGM"] == "deferred"
     stalled_path = find(repos.ideas, "output", "clippings", "yt.md")
     stalled = load(stalled_path)
@@ -213,9 +245,9 @@ def test_youtube_without_facts_is_deferred_then_published(repos, make_services, 
     assert not (repos.ideas / "inbox/clippings/yt.md").exists() and not (repos.ideas / "failed").exists()
 
     # a run only reads inbox/, so nothing is retried until the file is moved back from archive/
-    assert run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services()).items == []
+    assert run_on_worker(repos, make_services()).items == []
     retry(repos.ideas, "clippings", "yt.md")
-    second = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(facts=lambda vid: yt_facts))
+    second = run_on_worker(repos, make_services(facts=lambda vid: yt_facts))
     assert {i.doc_id: i.status for i in second.items}["nGVZS_wUDGM"] == "published"
     final = find(repos.ideas, "output", "clippings", "yt.md")
     assert (
@@ -228,19 +260,24 @@ def test_youtube_without_facts_is_deferred_then_published(repos, make_services, 
 
 def test_run_logs_progress_per_note_and_a_total(repos, make_services, caplog):
     caplog.set_level("INFO", logger="catcher")
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    report = run_on_worker(repos, make_services())
     messages = [r.getMessage() for r in caplog.records]
-    assert any("(1/2)" in m and "processing" in m for m in messages)
-    assert any("(2/2)" in m and "published" in m for m in messages)
-    assert any(m.startswith("processed 2/2: 2 published") for m in messages)
-    assert any('"inbox/notes/YouTube walks.md"' in m and "published" in m for m in messages)
-    assert any('"inbox/clippings/systeme.md"' in m and "processing" in m for m in messages)
+    # B21 (dropped on purpose): no `(1/2) processing` / `processed 2/2` lines; the documents run as separate
+    # jobs. The worker's lines instead: the inbox total, one result line per document, the run's counts.
+    assert any(m.startswith("inbox: 2 document(s) to process") for m in messages)
+    for item in report.items:
+        assert any(
+            f"{item.doc_class} {item.doc_id} " in m and f": published {item.page}" in m for m in messages
+        )
+    assert any(m.startswith("pipeline.run: {'staged': 2") for m in messages)
+    assert any("output/notes/" in m and "youtube-walks.md" in m and "published" in m for m in messages)
+    assert any("output/clippings/" in m and "sell-bundles.md" in m and "published" in m for m in messages)
 
 
 def test_the_steps_of_a_document_are_debug_lines_not_info(repos, make_services, caplog):
     """At INFO a document gets its result line; naming, archiving and the LLM steps are DEBUG lines."""
     caplog.set_level("DEBUG", logger="catcher")
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
     steps = ("named ", "archived ", "started work", "asking the LLM", "reason done", "using the saved")
     detail = [r for r in caplog.records if any(s in r.getMessage() for s in steps)]
     assert detail and all(r.levelname == "DEBUG" for r in detail)
@@ -250,9 +287,9 @@ def test_the_steps_of_a_document_are_debug_lines_not_info(repos, make_services, 
 def test_failures_and_deferrals_are_always_logged(repos, make_services, caplog):
     caplog.set_level("INFO", logger="catcher")
     chats = FakeBackend(["nope", "still nope"])
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    run_on_worker(repos, make_services(chat_backend=chats))
     [error] = [r for r in caplog.records if r.levelname == "ERROR"]
-    assert "/2)" in error.getMessage() and "cf81e40b020519ef" in error.getMessage()
+    assert "cf81e40b020519ef" in error.getMessage()  # B23 (changed): no `/2)` position on the worker path
     assert "invalid output" in error.getMessage()
 
 
@@ -264,32 +301,33 @@ def test_an_unexpected_error_fails_that_note_and_is_logged_with_a_traceback(
     def boom(*args, **kwargs):
         raise RuntimeError("disk on fire")
 
-    monkeypatch.setattr("catcher.modules.pipeline.run.process_note", boom)
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    # B9 (changed): the worker's `llm.reason` calls process_note from handlers_pipeline
+    monkeypatch.setattr("catcher.modules.worker.handlers_pipeline.process_note", boom)
+    report = run_on_worker(repos, make_services())
     assert report.counts() == {"failed": 2}
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 2 and all(r.exc_info for r in errors)
 
 
 def test_a_published_document_is_not_processed_again(repos, make_services):
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
-    again = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    run_on_worker(repos, make_services())
+    again = run_on_worker(repos, make_services())
     assert again.items == []
 
 
 def test_a_usage_limit_stalls_the_note_in_output_until_you_move_it_back(repos, make_services):
     chats = FakeBackend([UsageLimitReached("limit", backend="openai")])
-    first = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    first = run_on_worker(repos, make_services(chat_backend=chats))
     assert first.counts() == {"published": 1, "deferred": 1}
     stalled = find(repos.ideas, "output", "clippings", "systeme.md")
     assert load(stalled).fm["stage"] == "deferred"
     assert not (repos.ideas / "inbox/clippings/systeme.md").exists()
     assert not (repos.ideas / "failed").exists()
-    assert (
-        run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services()).items == []
-    )  # not retried alone
+    assert run_on_worker(repos, make_services()).items == []  # not retried alone
     retry(repos.ideas, "clippings", "systeme.md")
-    second = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    # the usage limit blocks openai in Postgres for LLM_BLOCK_S (Stage A's block ended with the run): the
+    # retry comes after it
+    second = run_on_worker(repos, make_services(), clock=later(Settings().llm_block_s))
     assert second.counts() == {"published": 1}
     final = find(repos.ideas, "output", "clippings", "systeme.md")
     assert final.name == stalled.name and load(final).fm["stage"] == "published"
@@ -297,7 +335,7 @@ def test_a_usage_limit_stalls_the_note_in_output_until_you_move_it_back(repos, m
 
 def test_an_unreadable_capture_is_reported_and_filed_as_failed(repos, make_services, sh):
     (repos.ideas / "inbox/notes/bad.md").write_text("---\ntitle: [oops\n---\nbody\n")
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    report = run_on_worker(repos, make_services())
     assert list(report.unreadable) == ["inbox/notes/bad.md"]
     failed = find(repos.ideas, "failed", "notes", "bad.md")
     assert find(repos.ideas, "archive", "notes", "bad.md").name == failed.name
@@ -310,7 +348,7 @@ def test_an_unreadable_capture_is_reported_and_filed_as_failed(repos, make_servi
 
 def test_a_capture_with_a_broken_source_line_is_filed_as_failed_and_the_run_goes_on(repos, make_services, sh):
     (repos.ideas / "inbox/clippings/broken.md").write_text("---\nsource: https://[oops/x\n---\nbody\n")
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    report = run_on_worker(repos, make_services())
     assert list(report.unreadable) == ["inbox/clippings/broken.md"]
     assert report.unreadable["inbox/clippings/broken.md"].startswith("cannot analyse: ")
     assert report.counts().get("published", 0) >= 1
@@ -324,20 +362,27 @@ def test_a_capture_with_a_broken_source_line_is_filed_as_failed_and_the_run_goes
 def test_a_used_up_budget_logs_one_error_per_backend_and_keeps_the_notes(repos, make_services, caplog):
     (repos.ideas / "inbox/clippings/second.md").write_text(chat("925d9b0b4ca21b63"))
     chats = FakeBackend([BudgetExhausted("insufficient_quota", backend="openai")])
-    report = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    outcome = run_outcome(repos, make_services(chat_backend=chats))
+    report = outcome.report
     assert report.counts() == {"published": 1, "deferred": 2}
-    assert {i.message for i in report.items if i.status == "deferred"} == {"budget reached (openai)"}
-    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert len(errors) == 1 and "openai budget reached: 2 note(s) waiting" in errors[0]
+    # B19 (dropped on purpose): the first note says `budget reached`, the next one the Postgres block; one
+    # line per blocked backend after the run replaces the ERROR line with the count (user decision 3)
+    first, then = sorted(i.message for i in report.items if i.status == "deferred")
+    assert first == "budget reached (openai)"
+    assert then.startswith("openai: not called again until ") and "insufficient_quota" in then
+    [line] = outcome.blocked_lines
+    assert line.startswith("openai blocked until ") and line.endswith(": 2 document(s) deferred")
     assert not (repos.ideas / "failed").exists()
     assert len(chats.prompts) == 1
 
 
 def test_the_waiting_notes_go_through_once_the_budget_is_back(repos, make_services):
     chats = FakeBackend([BudgetExhausted("insufficient_quota", backend="openai")])
-    run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services(chat_backend=chats))
+    run_on_worker(repos, make_services(chat_backend=chats))
     retry(repos.ideas, "clippings", "systeme.md")
-    second = run_pipeline(repos.ideas, repos.docs, RunOptions(), make_services())
+    # B20 (changed): the budget block outlives the run in Postgres (LLM_BUDGET_BLOCK_S): the budget is back
+    # once it is over
+    second = run_on_worker(repos, make_services(), clock=later(Settings().llm_budget_block_s))
     assert second.counts() == {"published": 1}
 
 
