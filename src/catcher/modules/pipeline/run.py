@@ -1,10 +1,8 @@
 import logging
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 from catcher import __version__
 from catcher.core.git import GitError, commit_paths, pull, push
@@ -33,39 +31,14 @@ from catcher.modules.pipeline.process import (
     reject_invalid_page,
 )
 from catcher.modules.pipeline.publish import write_output, write_page
+from catcher.modules.pipeline.report import ItemReport as ItemReport  # re-exported while this loop exists
+from catcher.modules.pipeline.report import RunReport as RunReport
+from catcher.modules.pipeline.report import Status
 from catcher.modules.pipeline.steps import order_notes, split_duplicates
 from catcher.modules.youtube.cache import FACTS_DIR, FactsCache
 from catcher.modules.youtube.urls import video_id
 
 log = logging.getLogger("catcher.run")
-
-Status = Literal[
-    "published",
-    "would_publish",
-    "deferred",
-    "failed",
-    "skipped",
-    "duplicate",
-    "artifact",
-    "would_copy",
-    "requeued",
-    "would_requeue",
-    "waiting",
-    "would_fetch",
-    "interrupted",
-]
-
-
-@dataclass
-class ItemReport:
-    doc_id: str
-    doc_class: str
-    status: Status
-    message: str = ""
-    page: str | None = None
-    tokens_in: int | None = None
-    tokens_out: int | None = None
-    llm_saved: bool = False  # the page was made from a saved LLM reply: the tokens are recorded, not spent
 
 
 @dataclass
@@ -86,22 +59,6 @@ class RunOptions:
     # the artifacts and before the commit; when it raises, the run stops there with RunLockLost and commits
     # nothing. None: no check (tests).
     lock_check: Callable[[], None] | None = field(default=None, repr=False, compare=False)
-
-
-@dataclass
-class RunReport:
-    items: list[ItemReport] = field(default_factory=list)
-    unreadable: dict[str, str] = field(default_factory=dict)  # files that could not be read, now in failed/
-    not_found: list[str] = field(default_factory=list)  # `--file` names that matched no inbox document
-    problems: list[str] = field(default_factory=list)  # a setup problem that stopped the run (a wrong path)
-    not_in_archive: list[str] = field(
-        default_factory=list
-    )  # `--requeue` names that matched no archive document
-    committed: dict[str, bool] = field(default_factory=dict)
-    pushed: bool = False
-
-    def counts(self) -> dict[str, int]:
-        return dict(Counter(item.status for item in self.items))
 
 
 # The message of a failure whose document went back to inbox/ before anything changed.

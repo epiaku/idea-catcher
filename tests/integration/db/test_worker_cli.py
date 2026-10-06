@@ -139,6 +139,8 @@ def test_jobs_add_refuses_an_unknown_job_type(runner: CliRunner, engine) -> None
         ("pipeline.run", ["colour=blue"], "colour"),
         ("pipeline.run", ["only=../x"], "only"),
         ("pipeline.run", ["profile="], "profile"),
+        ("pipeline.run", ["refresh_facts=maybe"], "refresh_facts"),
+        ("youtube.fetch", ["calculated_name=clippings/x.md", "refresh_facts=7"], "refresh_facts"),
         ("llm.reason", [], "calculated_name"),
         ("llm.reason", ["calculated_name=../x.md"], "calculated_name"),
         ("llm.reason", ["calculated_name=notes/x.md", "refresh_llm=maybe"], "refresh_llm"),
@@ -168,6 +170,16 @@ def test_jobs_add_accepts_good_params_for_every_handler(runner: CliRunner, engin
         result = runner.invoke(app, ["jobs", "add", *args])
         assert result.exit_code == 0, (args, result.output)
     assert len(_jobs(engine)) == 4
+
+
+def test_refresh_facts_is_validated_by_jobs_add(runner: CliRunner, engine) -> None:
+    bad = runner.invoke(app, ["jobs", "add", "pipeline.run", "--param", "refresh_facts=yes"])
+    assert bad.exit_code == 2 and "refresh_facts must be true or false" in bad.output
+    assert _jobs(engine) == []
+    good = runner.invoke(app, ["jobs", "add", "pipeline.run", "--param", "refresh_facts=true"])
+    assert good.exit_code == 0, good.output
+    [job] = _jobs(engine)
+    assert job.params == {"refresh_facts": True}
 
 
 def test_jobs_list_filters_by_status(runner: CliRunner, engine) -> None:

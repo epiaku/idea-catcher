@@ -10,6 +10,9 @@ Per note: (1) its calculated name and a `staging` item row, committed; (2) `star
 copy in `output/`, out of `inbox/`); (3) the item waits for YouTube or the LLM and its next job is queued, in
 one commit. A crash between those steps leaves a `staging` row, which the next run adopts under the same
 name. The handler runs no git command (publishing is `pipeline.publish`) and holds no long transaction.
+Its job result is the counts plus, under `names`, what leaves no item row (duplicates, artifacts, unreadable
+files, names that matched nothing, requeue moves and skips, the documents `limit` left): `report_for_job`
+builds the run's report from it.
 
 `llm.reason` turns one staged working copy in `output/` into its page: saved facts only (it never calls
 YouTube), the saved LLM reply before the model, then the file effects of Stage A, then the item status (and
@@ -38,7 +41,7 @@ pushes it."""
 import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -66,6 +69,7 @@ from catcher.modules.pipeline.inbox import (
     STAGE_DEFERRED,
     STAGE_PUBLISHED,
     Note,
+    Requeued,
     assign_name,
     load_staged_note,
     move_to_duplicates,
@@ -86,10 +90,9 @@ from catcher.modules.pipeline.process import (
     reject_invalid_page,
 )
 from catcher.modules.pipeline.publish import write_page
+from catcher.modules.pipeline.report import SAME_ID, ItemReport, RunReport
 from catcher.modules.pipeline.run import (
-    ItemReport,
     RunOptions,
-    RunReport,
     RunState,
     apply_outcome,
     copy_artifacts,
@@ -164,6 +167,7 @@ class RunParams:
     limit: int | None = None
     profile: str | None = None
     refresh_llm: bool = False
+    refresh_facts: bool = False  # fetch the YouTube facts again even when they are saved (`--refresh-facts`)
 
 
 def _plain_query(query: str) -> bool:
@@ -188,7 +192,7 @@ def parse_params(params: dict[str, Any]) -> RunParams:
         for query in value or []:
             if not _plain_query(query):
                 raise ValueError(f"{key}: {query!r} is not a document name inside the ideas folder")
-    for key in ("retry_deferred", "refresh_llm"):
+    for key in ("retry_deferred", "refresh_llm", "refresh_facts"):
         if not isinstance(params.get(key, False), bool):
             raise ValueError(f"{key} must be true or false, not {params[key]!r}")
     limit = params.get("limit")
@@ -213,14 +217,19 @@ def _queue_next(
 ) -> None:
     """Step 3: the item waits for YouTube (a clip without saved facts) or for the LLM, and its next job is
     queued, in one commit. The dedupe key makes a second call a no-op while that job is active. Both jobs
-    carry `profile` and `refresh_llm` when set: the fetch handler passes them on to its `llm.reason` job."""
+    carry `profile` and `refresh_llm` when set: the fetch handler passes them on to its `llm.reason` job.
+    With `refresh_facts` a clip is fetched again even when its facts are saved: its fetch job carries
+    `refresh_facts` (the `llm.reason` after it reads the new saved facts)."""
     vid = video_id(str(note.doc.fm.get("source") or "")) if note.doctype.name == "youtube" else None
-    fetch = vid is not None and not _facts_saved(ctx, vid)  # file IO before the transaction
+    # file IO before the transaction
+    fetch = vid is not None and (params.refresh_facts or not _facts_saved(ctx, vid))
     job_params: dict[str, Any] = {"calculated_name": name}
     if params.profile is not None:
         job_params["profile"] = params.profile
     if params.refresh_llm:
         job_params["refresh_llm"] = True
+    if fetch and params.refresh_facts:
+        job_params["refresh_facts"] = True
     status, job_type, key = (
         ("waiting_youtube", "youtube.fetch", f"fetch:{name}")
         if fetch
@@ -332,29 +341,53 @@ def _adopt(
     return "failed", None
 
 
-def _requeue(ctx: HandlerContext, queries: list[str], job_id: uuid.UUID | None) -> None:
+@dataclass
+class Requeue:
+    """What `_requeue` did: the documents moved back into `inbox/`, those it left where they are (with
+    why), and the names that matched nothing in `archive/`. Plain values for the job result."""
+
+    moved: list[dict[str, str]] = field(default_factory=list)
+    skipped: list[dict[str, str]] = field(default_factory=list)
+    not_found: list[str] = field(default_factory=list)
+
+
+def _named(item: Requeued, row: JobItem | None, **extra: str) -> dict[str, str]:
+    """A requeued document in the job result: its calculated name, and its id and class from its item row
+    (the archive copy is the raw capture: it often holds neither)."""
+    doc_id, doc_class = (row.doc_id, row.doc_class) if row is not None else (item.doc_id, item.doc_class)
+    return {"name": item.rel.as_posix(), "doc_id": doc_id, "doc_class": doc_class, **extra}
+
+
+def _requeue(ctx: HandlerContext, queries: list[str], job_id: uuid.UUID | None) -> Requeue:
     """Move the named archived documents back into `inbox/` (Stage A's requeue), except those a queued or
     running job carries (`live_job_carries`): their files are in use and stay where they are. An item
     still `staging` belongs to this run's adoption and is left alone too. Any other active item is a
     leftover that nothing will move on (its job ended without moving it): it is marked `stuck`, so the
     scan stages it again under its name. An item in a final status, `stuck` included (like `deferred`),
-    is requeued, never refused. This is the one place that moves files for a requeue or a retry."""
+    is requeued, never refused. A name `inbox/` already holds is never overwritten (the inbox file is
+    used). This is the one place that moves files for a requeue or a retry."""
+    done = Requeue()
     if not queries:
-        return
-    found, not_found = requeue_from_archive(ctx.ideas, queries, dry_run=True)
-    for query in not_found:
+        return done
+    found, done.not_found = requeue_from_archive(ctx.ideas, queries, dry_run=True)
+    for query in done.not_found:
         log.warning('no document named "%s" found in archive/: nothing to requeue', query)
     keep: list[str] = []
     stuck: list[JobItem | None] = []
+    rows: dict[str, JobItem | None] = {}
     with session_scope(ctx.engine) as session:
         for item in found:
             rel = item.rel.as_posix()
-            row = get_item(session, rel)
+            row = rows[rel] = get_item(session, rel)
             if live_job_carries(session, rel):
                 status = row.status if row is not None else "no item"
                 log.warning("not requeued: %s is still being processed by a job (status %s)", rel, status)
+                reason = f"still being processed by a job (status {status})"
+                done.skipped.append(_named(item, row, reason=reason))
             elif row is not None and row.status == "staging":
                 log.warning("not requeued: %s is still staging; the next pipeline.run adopts it", rel)
+                reason = "still staging; the next pipeline.run adopts it"
+                done.skipped.append(_named(item, row, reason=reason))
             else:
                 if row is not None and row.status in ACTIVE_STATUSES:
                     log.warning("%s was left %s with no job to move it: requeued", rel, row.status)
@@ -362,7 +395,15 @@ def _requeue(ctx: HandlerContext, queries: list[str], job_id: uuid.UUID | None) 
                 keep.append(rel)
     _mirror(ctx, *stuck)
     if keep:
-        requeue_from_archive(ctx.ideas, keep)
+        moved, _ = requeue_from_archive(ctx.ideas, keep)
+        for item in moved:
+            row = rows.get(item.rel.as_posix())
+            if item.copied:
+                done.moved.append(_named(item, row))
+            else:  # `requeue_from_archive` logged it
+                reason = f"inbox/{item.rel.as_posix()} already exists, not overwritten"
+                done.skipped.append(_named(item, row, reason=reason))
+    return done
 
 
 NO_JOB = "no job: re-queued from the working copy"
@@ -403,9 +444,9 @@ def _from_working_copy(
     return True
 
 
-def _retry(ctx: HandlerContext, params: RunParams, job_id: uuid.UUID | None) -> tuple[list[str], int]:
-    """`retry_deferred`: the calculated names to requeue from `archive/` (for `_requeue`), and how many items
-    were re-queued from their working copy instead. The items are those whose status is `deferred` or
+def _retry(ctx: HandlerContext, params: RunParams, job_id: uuid.UUID | None) -> tuple[list[str], list[str]]:
+    """`retry_deferred`: the calculated names to requeue from `archive/` (for `_requeue`), and the names of
+    the items re-queued from their working copy instead. The items are those whose status is `deferred` or
     `stuck`, and those left `waiting_youtube`, `waiting_llm` or `ready` that no queued or running job carries
     (`live_job_carries`; e.g. rows `reconcile` made: `_requeue` marks them `stuck` leftovers). The database is
     the truth, not the frontmatter in `output/`. An item with no archive copy is re-queued from its working
@@ -418,7 +459,7 @@ def _retry(ctx: HandlerContext, params: RunParams, job_id: uuid.UUID | None) -> 
             if not live_job_carries(session, i.calculated_name)
         ]
     archived: list[str] = []
-    recovered = 0
+    recovered: list[str] = []
     for name, status in rows:
         if (ctx.ideas / "archive" / name).is_file():
             archived.append(name)
@@ -428,7 +469,7 @@ def _retry(ctx: HandlerContext, params: RunParams, job_id: uuid.UUID | None) -> 
         if live:
             log.warning("not retried: %s is still being processed by a job (status %s)", name, status)
         elif _from_working_copy(ctx, name, status, params, job_id):
-            recovered += 1
+            recovered.append(name)
     return archived, recovered
 
 
@@ -443,6 +484,7 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         if not folder.is_dir():
             return Fail(f"{what} not found at {folder}")
     counts = {"staged": 0, "adopted": 0, "duplicates": 0, "artifacts": 0, "unreadable": 0, "errors": 0}
+    adopted: list[str] = []
 
     with session_scope(ctx.engine) as session:  # a single worker: every staging row is a crash leftover
         leftovers = [
@@ -459,13 +501,15 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
             tried.add(used)
         if outcome == "adopted":
             counts["adopted"] += 1
+            adopted.append(row.name)
         elif outcome == "error":
             counts["errors"] += 1
 
     explicit = params.requeue or []
-    retried, recovered = _retry(ctx, params, job.id) if params.retry_deferred else ([], 0)
-    counts["adopted"] += recovered  # re-queued from the working copy, as a crash leftover is adopted
-    _requeue(ctx, [*explicit, *retried], job.id)
+    retried, recovered = _retry(ctx, params, job.id) if params.retry_deferred else ([], [])
+    counts["adopted"] += len(recovered)  # re-queued from the working copy, as a crash leftover is adopted
+    adopted += recovered
+    requeue = _requeue(ctx, [*explicit, *retried], job.id)
 
     # `requeue` runs only the requeued documents, like `only` does for the ones it names (as in Stage A)
     only = None if params.only is None and not explicit else [*(params.only or []), *explicit]
@@ -474,6 +518,15 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
     for rel, reason in scan.errors.items():
         move_to_failed(ideas, ideas / rel, f"cannot read the capture: {reason}", now=now)
         counts["unreadable"] += 1
+    not_found = [query for query in params.only or [] if query not in scan.matched]
+    for query in not_found:
+        log.warning(
+            'no document named "%s" found in inbox/. Only inbox/ is searched: '
+            "to run a document from archive/ again, use --requeue (the requeue param); from failed/ or "
+            "duplicates/, "
+            "move it into inbox/",
+            query,
+        )
     to_process, duplicates = split_duplicates(order_notes(scan.notes))
     for note, winner in duplicates:
         move_to_duplicates(ideas, note, winner)
@@ -486,29 +539,76 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         f", at most {params.limit} now" if params.limit is not None else "",
         __version__,
     )
-    left_in_inbox = 0
+    left_by_limit: list[dict[str, str]] = []
+    same_id: list[str] = []
+    seen_ids: set[str] = set()  # the ids staged so far: a later page with one of them replaces the earlier
     for note in to_process:
         if note.inbox_rel in tried:
             continue
         if params.limit is not None and counts["staged"] >= params.limit:
-            left_in_inbox += 1  # one line for all of them below: an inbox can hold hundreds
+            left_by_limit.append(_doc(note))  # one line for all of them below: an inbox can hold hundreds
             continue
         name = _stage(ctx, job, note)
         if name is None:
             continue
+        if note.doc_id in seen_ids:
+            log.warning("%s: %s", note_label(note), SAME_ID)
+            same_id.append(name)
+        seen_ids.add(note.doc_id)
         if not _start(ctx, name, note, job.id):
             counts["errors"] += 1
             continue
         _queue_next(ctx, name, note, params, job.id)
         counts["staged"] += 1
-    if left_in_inbox:
-        log.info("limit of %d reached: %d document(s) stay in inbox/", params.limit, left_in_inbox)
+    if left_by_limit:
+        log.info("limit of %d reached: %d document(s) stay in inbox/", params.limit, len(left_by_limit))
 
     report = RunReport()
     copy_artifacts(scan, ideas, ctx.docs, RunOptions(), ctx.services, report, [], [])
     counts["artifacts"] = report.counts().get("artifact", 0)
     log.info("pipeline.run: %s", counts)
-    return Done(counts)
+    names: dict[str, Any] = {
+        "adopted": adopted,
+        "requeued": requeue.moved,
+        "requeue_skipped": requeue.skipped,
+        "not_in_archive": [query for query in requeue.not_found if query in explicit],
+        "unreadable": dict(scan.errors),
+        "not_found": not_found,
+        "duplicates": [{**_doc(note), "winner": winner.rel.as_posix()} for note, winner in duplicates],
+        "left_by_limit": left_by_limit,
+        "same_id": same_id,
+        "artifacts": [_artifact(item) for item in report.items],
+    }
+    return Done({**counts, "names": _bounded(names)})
+
+
+# The most names one list (or dict) of the `pipeline.run` result holds: the result is one JSON value on the
+# job row, and an inbox can hold thousands. A cut list is marked `"truncated": true`; the counts stay whole.
+NAMES_MAX = 500
+
+
+def _bounded(names: dict[str, Any]) -> dict[str, Any]:
+    """`names` with every list and dict cut to its first NAMES_MAX entries, and `truncated: true` when one
+    was cut."""
+    bounded: dict[str, Any] = {}
+    truncated = False
+    for key, value in names.items():
+        truncated = truncated or len(value) > NAMES_MAX
+        bounded[key] = dict(list(value.items())[:NAMES_MAX]) if isinstance(value, dict) else value[:NAMES_MAX]
+    if truncated:
+        bounded["truncated"] = True
+    return bounded
+
+
+def _doc(note: Note) -> dict[str, str]:
+    """A document of the inbox in the job result: its path under `inbox/`, its id and its class."""
+    return {"name": note.rel.as_posix(), "doc_id": note.doc_id, "doc_class": note.doctype.name}
+
+
+def _artifact(item: ItemReport) -> dict[str, Any]:
+    """One artifact line of `copy_artifacts` in the job result: copied (`artifact`, with its new name as the
+    page), `skipped` (over ARTIFACT_MAX_MB, it stays in inbox/) or `failed` (the copy raised)."""
+    return {"name": item.doc_id, "status": item.status, "page": item.page, "message": item.message}
 
 
 def _stage(ctx: HandlerContext, job: Job, note: Note) -> str | None:
@@ -551,17 +651,22 @@ class ReasonParams:
     calculated_name: str
     profile: str | None = None
     refresh_llm: bool = False
+    refresh_facts: bool = False  # `youtube.fetch` only: fetch again even when the facts are saved
 
 
 def parse_reason_params(params: dict[str, Any], job_type: str = "llm.reason") -> ReasonParams:
-    """The params of an `llm.reason` or `youtube.fetch` job (the same three), checked. Raises ValueError
-    with a message that names the bad one."""
-    unknown = sorted(set(params) - set(ReasonParams.__dataclass_fields__))
+    """The params of an `llm.reason` or `youtube.fetch` job (the same three, plus `refresh_facts` for a
+    fetch), checked. Raises ValueError with a message that names the bad one."""
+    known = set(ReasonParams.__dataclass_fields__)
+    if job_type != "youtube.fetch":
+        known.discard("refresh_facts")
+    unknown = sorted(set(params) - known)
     if unknown:
         raise ValueError(f"unknown parameter(s) for {job_type}: {', '.join(unknown)}")
     check_calculated_name(params.get("calculated_name"))
-    if not isinstance(params.get("refresh_llm", False), bool):
-        raise ValueError(f"refresh_llm must be true or false, not {params['refresh_llm']!r}")
+    for key in ("refresh_llm", "refresh_facts"):
+        if not isinstance(params.get(key, False), bool):
+            raise ValueError(f"{key} must be true or false, not {params[key]!r}")
     profile = params.get("profile")
     if profile is not None and not (isinstance(profile, str) and profile.strip()):
         raise ValueError(f"profile must be a profile name, not {profile!r}")
@@ -597,7 +702,8 @@ def _item_outcome(
 
 
 def _next_params(name: str, params: ReasonParams) -> dict[str, Any]:
-    """The params of the item's next job: its name, plus `profile` and `refresh_llm` when set."""
+    """The params of the item's next job: its name, plus `profile` and `refresh_llm` when set. Never
+    `refresh_facts`: the facts are fetched once per request, the `llm.reason` reads the saved ones."""
     job_params: dict[str, Any] = {"calculated_name": name}
     if params.profile is not None:
         job_params["profile"] = params.profile
@@ -888,8 +994,14 @@ def _fetch(ctx: HandlerContext, name: str, params: ReasonParams, job_id: uuid.UU
         return _item_outcome(ctx, name, "failed", reason, job_id=job_id)
     note.name = Path(name).name
 
-    # saved facts first (no call), then the gate, then YouTube; never a sleep: a closed gate defers the job
-    opts = ProcessOptions(profile=params.profile, facts_dir=ideas / FACTS_DIR, wait_youtube=False)
+    # saved facts first (no call; not with `refresh_facts`: then the new facts replace them), then the gate,
+    # then YouTube; never a sleep: a closed gate defers the job
+    opts = ProcessOptions(
+        profile=params.profile,
+        facts_dir=ideas / FACTS_DIR,
+        refresh_facts=params.refresh_facts,
+        wait_youtube=False,
+    )
     who = note_label(note)
     try:
         get_facts(note, ctx.services, opts)

@@ -431,3 +431,45 @@ def test_a_clip_in_a_nested_folder_is_fetched_and_handed_to_llm_reason(harness, 
 
     assert harness.fetch_calls == [VID]
     assert item_of(harness, "yt.md").status == "published"
+
+
+def test_refresh_facts_fetches_even_when_facts_are_saved(harness, yt_facts):
+    """B49 (`--refresh-facts`): the clip is fetched again through the gate and the saved facts replaced."""
+    cache = harness.ctx.services.youtube.cache(harness.ideas / "facts")
+    cache.put(yt_facts.model_copy(update={"views": 1}))  # stale facts
+    harness.fetcher = lambda video_id: yt_facts.model_copy(update={"views": 12345})
+    harness.add_job("pipeline.run", only=["yt"], refresh_facts=True)
+
+    assert harness.drain(max_jobs=4) == ["succeeded", "succeeded", "succeeded"]
+
+    assert harness.fetch_calls == [VID]
+    assert cache.get(VID).views == 12345  # replaced by the new fetch
+    assert item_of(harness, "yt.md").status == "published"
+    [reason] = jobs_of(harness, "llm.reason")
+    assert "refresh_facts" not in reason.params  # the model reads the saved facts; nothing to refresh there
+
+
+def test_without_refresh_facts_saved_facts_are_not_fetched_again(harness, yt_facts):
+    cache = harness.ctx.services.youtube.cache(harness.ideas / "facts")
+    cache.put(yt_facts)
+    name = staged_clip_with_saved_facts(harness)
+    job_id = harness.add_job("youtube.fetch", calculated_name=name)  # a fetch job added by hand
+    with session_scope(harness.ctx.engine) as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert handle_youtube_fetch(harness.ctx, job) == Done({"item": "waiting_llm"})
+    assert harness.fetch_calls == []
+
+
+def staged_clip_with_saved_facts(harness) -> str:
+    """Stage the clip while its facts are saved, then make it wait for YouTube (as a fetch job left it)."""
+    stage(harness, only=["yt"])
+    name = item_of(harness, "yt.md").calculated_name
+    with session_scope(harness.ctx.engine) as session:
+        set_item_status(session, name, "waiting_youtube", now=harness.clock())
+    return name
+
+
+def test_refresh_facts_is_refused_on_llm_reason():
+    with pytest.raises(ValueError, match="refresh_facts"):
+        handlers_pipeline.parse_reason_params({"calculated_name": "notes/x.md", "refresh_facts": True})

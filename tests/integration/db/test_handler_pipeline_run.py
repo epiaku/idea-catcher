@@ -1,5 +1,6 @@
 """The `pipeline.run` handler: the database row first, then the file move, and a crash leftover is adopted."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -41,6 +42,13 @@ def counts(**changed: int) -> dict[str, int]:
     return {**zero, **changed}
 
 
+def without_names(result):
+    """The result with its counts only: the names behind them (`names`) are pinned by their own tests."""
+    if isinstance(result, Done) and result.result is not None:
+        return Done({key: value for key, value in result.result.items() if key != "names"})
+    return result
+
+
 def items(harness) -> dict[str, JobItem]:
     with session_scope(harness.ctx.engine) as session:
         return {i.calculated_name: i for i in session.scalars(select(JobItem))}
@@ -79,7 +87,7 @@ def test_the_handler_is_registered():
 def test_run_stages_a_note_and_enqueues_llm_reason(harness, sh):
     result = run(harness, only=["YouTube walks"])
 
-    assert result == Done(counts(staged=1))
+    assert without_names(result) == Done(counts(staged=1))
     assert not (harness.ideas / "inbox/notes/YouTube walks.md").exists()
     item = item_named(harness, "notes", "YouTube walks.md")
     assert (item.status, item.doc_class, item.inbox_path) == (
@@ -118,7 +126,7 @@ def test_profile_and_refresh_llm_are_copied_into_the_llm_reason_and_fetch_params
 def test_a_youtube_clip_is_staged_waiting_youtube_with_a_fetch_job(harness):
     result = run(harness, only=["yt"], profile="fake")
 
-    assert result == Done(counts(staged=1))
+    assert without_names(result) == Done(counts(staged=1))
     item = item_named(harness, "clippings", "yt.md")
     assert (item.status, item.doc_class, item.doc_id) == ("waiting_youtube", "youtube", VIDEO)
     [out] = in_folder(harness.ideas, "output", "yt.md")
@@ -137,7 +145,7 @@ def test_a_youtube_clip_with_saved_facts_goes_straight_to_llm_reason(harness, yt
     cache = youtube.cache(harness.ideas / "facts")
     cache.put(yt_facts)
 
-    assert run(harness, only=["yt"]) == Done(counts(staged=1))
+    assert without_names(run(harness, only=["yt"])) == Done(counts(staged=1))
 
     item = item_named(harness, "clippings", "yt.md")
     assert item.status == "waiting_llm"
@@ -147,10 +155,10 @@ def test_a_youtube_clip_with_saved_facts_goes_straight_to_llm_reason(harness, yt
 
 
 def test_running_twice_stages_nothing_twice(harness):
-    assert run(harness) == Done(counts(staged=3))
+    assert without_names(run(harness)) == Done(counts(staged=3))
     first_items, first_jobs = items(harness), next_jobs(harness)
 
-    assert run(harness) == Done(counts())  # the inbox is empty
+    assert without_names(run(harness)) == Done(counts())  # the inbox is empty
 
     assert items(harness).keys() == first_items.keys() and len(first_items) == 3
     assert [j.id for j in next_jobs(harness)] == [j.id for j in first_jobs]
@@ -180,7 +188,7 @@ def test_duplicates_unreadable_and_artifacts_are_handled_like_stage_a(harness, s
 
     result = run(harness)
 
-    assert result == Done(counts(staged=4, duplicates=1, unreadable=1, artifacts=1))
+    assert without_names(result) == Done(counts(staged=4, duplicates=1, unreadable=1, artifacts=1))
     # the earlier snapshot: archived and moved to duplicates/, no working copy, no item
     [dup] = in_folder(ideas, "duplicates", "chat short.md")
     [archived] = in_folder(ideas, "archive", "chat short.md")
@@ -210,7 +218,7 @@ def test_a_capture_with_a_broken_source_line_goes_to_failed_and_the_others_are_s
 
     result = run(harness, only=["YouTube walks", "broken.md"])
 
-    assert result == Done(counts(staged=1, unreadable=1))
+    assert without_names(result) == Done(counts(staged=1, unreadable=1))
     [failed] = (ideas / "failed/clippings").glob("*-broken.md")
     assert failed.read_text() == broken
     assert "cannot analyse: " in failed.with_suffix(".error.txt").read_text()
@@ -240,7 +248,7 @@ def test_a_crash_after_the_staging_row_is_adopted_with_the_same_name(harness, mo
     assert (harness.ideas / "inbox/clippings/systeme.md").exists()
     assert next_jobs(harness) == []
 
-    assert run(harness) == Done(counts(staged=2, adopted=1))
+    assert without_names(run(harness)) == Done(counts(staged=2, adopted=1))
 
     item = items(harness)[leftover.calculated_name]  # the same calculated name
     assert item.status == "waiting_llm" and item.id == leftover.id
@@ -273,7 +281,7 @@ def test_a_crash_after_the_move_before_the_job_is_adopted(harness, monkeypatch):
     assert not (harness.ideas / "inbox/clippings/systeme.md").exists()
     assert next_jobs(harness) == []
 
-    assert run(harness) == Done(counts(staged=2, adopted=1))
+    assert without_names(run(harness)) == Done(counts(staged=2, adopted=1))
 
     item = items(harness)[leftover.calculated_name]
     assert item.status == "waiting_llm"
@@ -295,7 +303,7 @@ def test_a_staging_row_without_a_document_is_failed(harness):
             original_filename="gone.md",
         )
 
-    assert run(harness, only=["nothing"]) == Done(counts())
+    assert without_names(run(harness, only=["nothing"])) == Done(counts())
 
     gone = items(harness)["notes/20261002-abcdef-gone.md"]
     assert (gone.status, gone.error) == ("failed", "staging row without a document")
@@ -317,7 +325,7 @@ def test_requeue_resets_the_existing_item(harness):
     harness.clock.advance(60)
     result = run(harness, requeue=["YouTube walks"])
 
-    assert result == Done(counts(staged=1))  # only the requeued document ran
+    assert without_names(result) == Done(counts(staged=1))  # only the requeued document ran
     again = item_named(harness, "notes", "YouTube walks.md")
     assert (again.id, again.calculated_name, again.status) == (first.id, first.calculated_name, "waiting_llm")
     assert again.updated_at > first.updated_at
@@ -335,7 +343,7 @@ def test_requeue_leaves_an_active_item_alone(harness):
     run(harness, only=["YouTube walks"])
     item = item_named(harness, "notes", "YouTube walks.md")
 
-    assert run(harness, requeue=["YouTube walks"]) == Done(counts())
+    assert without_names(run(harness, requeue=["YouTube walks"])) == Done(counts())
 
     assert item_named(harness, "notes", "YouTube walks.md").status == "waiting_llm"
     assert (harness.ideas / "output" / item.calculated_name).exists()
@@ -350,7 +358,7 @@ def test_requeue_resets_a_stuck_active_item_that_no_job_carries(harness):
     assert stuck.status == "waiting_llm"
 
     harness.clock.advance(60)
-    assert run(harness, requeue=["YouTube walks"]) == Done(counts(staged=1))
+    assert without_names(run(harness, requeue=["YouTube walks"])) == Done(counts(staged=1))
 
     again = item_named(harness, "notes", "YouTube walks.md")
     assert (again.id, again.calculated_name, again.status) == (stuck.id, stuck.calculated_name, "waiting_llm")
@@ -369,7 +377,7 @@ def test_requeue_leaves_an_item_a_live_job_carries_alone(harness, status):
     with session_scope(harness.ctx.engine) as session:
         set_item_status(session, item.calculated_name, "published", now=harness.clock())  # even if final
 
-    assert run(harness, requeue=["YouTube walks"]) == Done(counts())
+    assert without_names(run(harness, requeue=["YouTube walks"])) == Done(counts())
 
     assert item_named(harness, "notes", "YouTube walks.md").status == "published"
     assert (harness.ideas / "output" / item.calculated_name).exists()
@@ -389,7 +397,7 @@ def test_retry_deferred_requeues_stalled_items(harness):
 
     result = run(harness, retry_deferred=True, only=["systeme"])  # `only` limits the scan, as in Stage A
 
-    assert result == Done(counts(staged=1))
+    assert without_names(result) == Done(counts(staged=1))
     again = item_named(harness, "clippings", "systeme.md")
     assert (again.id, again.status, again.error) == (stalled.id, "waiting_llm", None)
     assert load(out).fm["stage"] == "waiting_llm"  # no longer deferred, mirrored
@@ -402,7 +410,7 @@ def test_retry_deferred_requeues_stalled_items(harness):
 
 
 def test_limit_counts_the_staged_notes(harness):
-    assert run(harness, limit=1) == Done(counts(staged=1))
+    assert without_names(run(harness, limit=1)) == Done(counts(staged=1))
     assert len(items(harness)) == 1
     assert len([p for p in (harness.ideas / "inbox").rglob("*.md")]) == 2
 
@@ -498,7 +506,7 @@ def test_a_crash_between_the_output_copy_and_the_unlink_is_adopted_once(harness,
     assert (harness.ideas / "inbox/notes/YouTube walks.md").exists()
     assert (harness.ideas / "output" / crashed[0]).exists()
 
-    assert run(harness, only=["YouTube walks"]) == Done(counts(adopted=1))
+    assert without_names(run(harness, only=["YouTube walks"])) == Done(counts(adopted=1))
 
     assert not (harness.ideas / "inbox/notes/YouTube walks.md").exists()
     assert [p.name for p in in_folder(harness.ideas, "archive", "YouTube walks.md")] == [
@@ -519,7 +527,7 @@ def test_a_new_capture_at_the_same_inbox_path_does_not_overwrite_the_adopted_doc
     archived = (harness.ideas / "archive" / crashed[0]).read_bytes()
     output = (harness.ideas / "output" / crashed[0]).read_bytes()
 
-    assert run(harness, only=["YouTube walks"]) == Done(counts(adopted=1, staged=1))
+    assert without_names(run(harness, only=["YouTube walks"])) == Done(counts(adopted=1, staged=1))
 
     assert (harness.ideas / "archive" / crashed[0]).read_bytes() == archived  # the first document is kept
     # the adopted working copy is kept: its body and every key but the three the mirror writes
@@ -554,7 +562,7 @@ def _start_work_fails_for(monkeypatch, original: str) -> None:
 def test_a_file_error_in_start_work_fails_that_document_and_the_run_goes_on(harness, monkeypatch):
     _start_work_fails_for(monkeypatch, "systeme.md")
 
-    assert run(harness) == Done(counts(staged=2, errors=1))
+    assert without_names(run(harness)) == Done(counts(staged=2, errors=1))
 
     failed = item_named(harness, "clippings", "systeme.md")
     assert failed.status == "failed" and "could not start work" in (failed.error or "")
@@ -565,7 +573,8 @@ def test_a_file_error_in_start_work_fails_that_document_and_the_run_goes_on(harn
     assert sorted(j.type for j in next_jobs(harness)) == ["llm.reason", "youtube.fetch"]
 
     monkeypatch.undo()
-    assert run(harness) == Done(counts(staged=1))  # a later run is not blocked: same name, row reset
+    # a later run is not blocked: same name, row reset
+    assert without_names(run(harness)) == Done(counts(staged=1))
     again = item_named(harness, "clippings", "systeme.md")
     assert (again.id, again.calculated_name, again.status) == (
         failed.id,
@@ -588,7 +597,8 @@ def test_a_file_error_while_adopting_does_not_block_the_other_documents(harness,
     monkeypatch.setattr(handlers_pipeline, "start_work", real_start_work)
     _start_work_fails_for(monkeypatch, "systeme.md")
 
-    assert run(harness) == Done(counts(staged=2, errors=1))  # tried once in this run, not again by the scan
+    # tried once in this run, not again by the scan
+    assert without_names(run(harness)) == Done(counts(staged=2, errors=1))
 
     item = items(harness)[leftover.calculated_name]
     assert item.status == "failed" and "could not start work" in (item.error or "")
@@ -642,7 +652,7 @@ def test_retry_deferred_queues_a_fetch_for_a_waiting_youtube_row_without_a_job(h
 
     result = run(harness, retry_deferred=True, only=["yt"])
 
-    assert result == Done(counts(adopted=1))
+    assert without_names(result) == Done(counts(adopted=1))
     again = item_named(harness, "clippings", "yt.md")
     assert again.status == "waiting_youtube"
     assert [(j.type, j.status, j.params, j.resource) for j in next_jobs(harness)] == [
@@ -662,7 +672,7 @@ def test_retry_deferred_leaves_an_active_row_with_a_live_job_alone(harness):
 
     result = run(harness, retry_deferred=True, only=["YouTube walks"])
 
-    assert result == Done(counts())
+    assert without_names(result) == Done(counts())
     after = item_named(harness, "notes", "YouTube walks.md")
     assert (after.status, after.stage_since) == ("waiting_llm", before.stage_since)
     assert _item_events(harness, before.calculated_name) == events
@@ -682,7 +692,7 @@ def test_retry_deferred_requeues_a_deferred_row_without_an_archive_copy_from_its
 
     result = run(harness, retry_deferred=True, only=["systeme"], profile="clippings", refresh_llm=True)
 
-    assert result == Done(counts(adopted=1))
+    assert without_names(result) == Done(counts(adopted=1))
     assert item_named(harness, "clippings", "systeme.md").status == "waiting_llm"
     queued = [j for j in next_jobs(harness) if j.status == "queued"]
     assert [(j.type, j.params, j.dedupe_key) for j in queued] == [
@@ -708,9 +718,144 @@ def test_retry_deferred_warns_about_a_row_with_no_file_to_start_from_and_leaves_
     with caplog.at_level("WARNING", logger="catcher.worker"):
         result = run(harness, retry_deferred=True, only=["systeme"])
 
-    assert result == Done(counts())
+    assert without_names(result) == Done(counts())
     assert item_named(harness, "clippings", "systeme.md").status == "deferred"
     assert [j for j in next_jobs(harness) if j.status == "queued"] == []
     assert any(
         r.levelno == logging.WARNING and stalled.calculated_name in r.getMessage() for r in caplog.records
+    )
+
+
+# ---- the names behind the counts (B72): what leaves no item row, for the report -------------------------
+
+
+def names_of(result) -> dict:
+    assert isinstance(result, Done) and result.result is not None
+    return result.result["names"]
+
+
+def test_pipeline_run_returns_the_names(harness, caplog):
+    ideas = harness.ideas
+    (ideas / "inbox/clippings/chat short.md").write_text(_chat(_turns(3)))
+    (ideas / "inbox/clippings/chat long.md").write_text(_chat(_turns(6)))
+    (ideas / "inbox/notes/bad.md").write_text("---\ntitle: [oops\n---\nbody\n")
+    (ideas / "inbox/report.pdf").write_bytes(b"%PDF-1.7 binary \x00\x01")
+
+    with caplog.at_level("WARNING", logger="catcher.worker"):
+        result = run(harness, only=["chat short", "chat long", "bad", "report.pdf", "nothing here"], limit=0)
+
+    assert result.result is not None
+    assert {k: v for k, v in result.result.items() if k != "names"} == counts(
+        duplicates=1, unreadable=1, artifacts=1
+    )
+    names = names_of(result)
+    assert names["duplicates"] == [
+        {
+            "name": "clippings/chat short.md",
+            "doc_id": "2446cd9c762c9cc9",
+            "doc_class": "ai-chat",
+            "winner": "clippings/chat long.md",
+        }
+    ]
+    assert list(names["unreadable"]) == ["inbox/notes/bad.md"]
+    [artifact] = names["artifacts"]
+    assert (artifact["name"], artifact["status"]) == ("report.pdf", "artifact")
+    assert artifact["page"].endswith("-report.pdf")
+    assert names["not_found"] == ["nothing here"]
+    assert names["left_by_limit"] == [
+        {"name": "clippings/chat long.md", "doc_id": "2446cd9c762c9cc9", "doc_class": "ai-chat"}
+    ]
+    assert (names["requeued"], names["requeue_skipped"], names["not_in_archive"]) == ([], [], [])
+    assert "truncated" not in names
+    assert any('no document named "nothing here" found in inbox/' in r.getMessage() for r in caplog.records)
+
+
+def test_pipeline_run_names_the_requeue_moves_skips_and_names_not_in_archive(harness):
+    run(harness, only=["YouTube walks", "systeme"])
+    note = item_named(harness, "notes", "YouTube walks.md")
+    chat = item_named(harness, "clippings", "systeme.md")
+    _finish_jobs(harness)
+    with session_scope(harness.ctx.engine) as session:
+        set_item_status(session, note.calculated_name, "published", now=harness.clock())
+    (harness.ideas / "inbox" / note.calculated_name).write_text("edited in the inbox\n")  # inbox/ wins
+    run(harness, only=["yt"])  # the clip's fetch job is queued: a requeue leaves the clip alone
+    clip = item_named(harness, "clippings", "yt.md")
+    with session_scope(harness.ctx.engine) as session:
+        set_item_status(session, chat.calculated_name, "deferred", now=harness.clock(), reason="down")
+
+    result = run(harness, requeue=["YouTube walks", "systeme", "yt", "never captured"])
+
+    names = names_of(result)
+    assert names["requeued"] == [
+        {"name": chat.calculated_name, "doc_id": chat.doc_id, "doc_class": "ai-chat"}
+    ]
+    assert names["requeue_skipped"] == [  # the ones a job holds first, then the ones inbox/ already has
+        {
+            "name": clip.calculated_name,
+            "doc_id": clip.doc_id,
+            "doc_class": "youtube",
+            "reason": "still being processed by a job (status waiting_youtube)",
+        },
+        {
+            "name": note.calculated_name,
+            "doc_id": note.doc_id,
+            "doc_class": "note",
+            "reason": f"inbox/{note.calculated_name} already exists, not overwritten",
+        },
+    ]
+    assert names["not_in_archive"] == ["never captured"]
+
+
+def test_an_artifact_over_the_size_limit_is_named_skipped_and_stays_in_the_inbox(harness, caplog):
+    (harness.ideas / "inbox/report.pdf").write_bytes(b"%PDF-1.7 binary \x00\x01")
+    harness.ctx.services.settings.artifact_max_mb = 0
+
+    with caplog.at_level("WARNING", logger="catcher"):
+        result = run(harness, only=["report.pdf"])
+
+    [artifact] = names_of(result)["artifacts"]
+    assert (artifact["name"], artifact["status"], artifact["page"]) == ("report.pdf", "skipped", None)
+    assert "ARTIFACT_MAX_MB" in artifact["message"]
+    assert (harness.ideas / "inbox/report.pdf").exists()
+    assert any(r.levelno == logging.WARNING and "ARTIFACT_MAX_MB" in r.getMessage() for r in caplog.records)
+
+
+def test_two_staged_documents_with_one_id_warn_that_the_later_page_replaces_the_earlier(harness, caplog):
+    clips = harness.ideas / "inbox/clippings"
+    (clips / "one.md").write_text(_chat(_turns(3).replace("question 2", "something else")))
+    (clips / "two.md").write_text(_chat(_turns(6)))
+
+    with caplog.at_level("WARNING", logger="catcher.worker"):
+        result = run(harness, only=["one", "two"])
+
+    assert result.result is not None and result.result["staged"] == 2
+    [later] = names_of(result)["same_id"]  # the one staged second; which one that is, is the scan's order
+    assert later in {item_named(harness, "clippings", f"{n}.md").calculated_name for n in ("one", "two")}
+    assert "replaces the earlier one" in caplog.text
+
+
+def test_the_names_are_bounded(harness, monkeypatch):
+    monkeypatch.setattr(handlers_pipeline, "NAMES_MAX", 2)
+    for i in range(4):
+        (harness.ideas / f"inbox/notes/n{i}.md").write_text(f"note {i}\n")
+
+    result = run(harness, limit=0)
+
+    names = names_of(result)
+    assert len(names["left_by_limit"]) == 2 and names["truncated"] is True
+    assert result.result is not None and result.result["staged"] == 0
+    assert json.loads(json.dumps(result.result)) == result.result  # plain JSON, stored on the job as it is
+
+
+def test_refresh_facts_is_copied_into_the_fetch_job_even_when_facts_are_saved(harness, yt_facts):
+    harness.ctx.services.youtube.cache(harness.ideas / "facts").put(yt_facts)
+
+    run(harness, only=["yt"], refresh_facts=True)
+
+    item = item_named(harness, "clippings", "yt.md")
+    assert item.status == "waiting_youtube"
+    [job] = next_jobs(harness)
+    assert (job.type, job.params) == (
+        "youtube.fetch",
+        {"calculated_name": item.calculated_name, "refresh_facts": True},
     )
