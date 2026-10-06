@@ -8,9 +8,13 @@ type: docs
 
 This page follows a document **through the program**: the loop that picks documents from the inbox, the steps Python does, the calls to YouTube and to the LLM, and every circuit breaker and limit on the way. Where the files end up is on [the document flow page](../idea-catcher-diagram-document-flow/), and what runs where is on [the architecture page](../idea-catcher-diagram-architecture/).
 
+{{% alert title="Since B5b (2026-10-06)" color="info" %}}
+`catcher run pipeline` no longer has a loop of its own: it queues `pipeline.run`, runs the worker until nothing is due and then runs `pipeline.publish` (see [`run pipeline`](../idea-catcher-how-to-run/#run-pipeline-the-whole-flow)). The steps per document below (parsing, YouTube facts, the LLM call, the outcomes) are the same in the worker's jobs; the loop in section 1, its progress lines and its per-run counters are the Stage A design.
+{{% /alert %}}
+
 ## 1. The loop over the inbox
 
-This is `catcher run pipeline`, from start to the summary line.
+This is `catcher run pipeline` as Stage A built it, from start to the summary line.
 
 ```mermaid
 flowchart TB

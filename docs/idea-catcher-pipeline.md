@@ -402,7 +402,7 @@ The body of a document is never changed. Only the archive copy's frontmatter get
 
 ### The stage of a document {#file-stage}
 
-Until Postgres arrives in [Stage B](../idea-catcher-service-architecture/#mvp-stage-b), the state is **the folder the file is in, plus a `stage` field in the frontmatter of the working copy**:
+In the files, the state is **the folder the file is in, plus a `stage` field in the frontmatter of the working copy** (in Stage A that was all there was; since [Stage B](../idea-catcher-service-architecture/#mvp-stage-b) the database holds the state and the files mirror it, see below):
 
 - **In `inbox/`**: waiting. Nothing has touched it.
 - **`output/`, `stage: analyzed`**: work has started. `id` and `class` are added. This is also what a crashed run leaves behind.
@@ -413,13 +413,15 @@ Until Postgres arrives in [Stage B](../idea-catcher-service-architecture/#mvp-st
 
 A run **never reads `output/`**, so `analyzed` and `deferred` copies just wait there until you retry them.
 
-**The worker (Stage B, from B5).** On the worker path the **database is the truth**: the item's row in `job_items` holds one of nine states (`staging`, `waiting_youtube`, `waiting_llm`, `ready`, `published`, `deferred`, `stuck`, `failed`, `duplicate`). The worker mirrors that state into the working copy in `output/` (or the file in `failed/`) after every status change: `stage` (the state), `stage_reason` (why) and `stage_since` (since when). The mirror is best effort: if it cannot be written, the row still holds the state and the next change writes it. The finished page keeps `stage: published` and `created_by`, as above. The list above stays true for `run pipeline` until B5b makes it a wrapper over the worker. See [Item states, stuck and reconcile](../idea-catcher-how-to-run-stage-b/#item-states).
+**The worker (Stage B, from B5).** On the worker path the **database is the truth**: the item's row in `job_items` holds one of nine states (`staging`, `waiting_youtube`, `waiting_llm`, `ready`, `published`, `deferred`, `stuck`, `failed`, `duplicate`). The worker mirrors that state into the working copy in `output/` (or the file in `failed/`) after every status change: `stage` (the state), `stage_reason` (why) and `stage_since` (since when). The mirror is best effort: if it cannot be written, the row still holds the state and the next change writes it. The finished page keeps `stage: published` and `created_by`, as above. Since B5b (2026-10-06) `run pipeline` is the worker path too (it queues `pipeline.run`, runs the worker until nothing is due, then runs `pipeline.publish`), so this holds for every run; the Stage A loop is gone. See [Item states, stuck and reconcile](../idea-catcher-how-to-run-stage-b/#item-states).
 
 ### The steps of one document {#capture-steps}
 
+Steps 1 to 3 are the `pipeline.run` job, 4 to 7 the document's own jobs (`youtube.fetch` for a clip without saved facts, then `llm.reason`); the commit is `pipeline.publish`. `run pipeline` runs all of them in one go.
+
 1. **Read.** Scan `inbox/` (or only the documents named with `--file`). Work out the class and `id` in memory. Nothing is written yet. A file that cannot be read is archived and moved to `failed/`.
 2. **Compare.** Among the documents with one `id`, only the longest goes on. Earlier snapshots of it are archived and moved to `duplicates/`. See [Duplicates](#duplicates-folder).
-3. **Start work**, right before the document's own LLM step. Give it its calculated name (or keep it, if it has one). Write the original to `archive/<sub>/<calculated name>` (with the two frontmatter lines), write the working copy to `output/<sub>/<calculated name>` (overwriting a stalled copy from an earlier run) with `stage: analyzed`, and remove the document from `inbox/`. With `--limit 3` or `--file`, only those documents leave `inbox/`.
+3. **Start work** (stage): give it its calculated name (or keep it, if it has one) and a `staging` row in `job_items`, committed before any file moves. Write the original to `archive/<sub>/<calculated name>` (with the two frontmatter lines), write the working copy to `output/<sub>/<calculated name>` (overwriting a stalled copy from an earlier run) with `stage: analyzed`, and remove the document from `inbox/`. With `--limit 3` or `--file`, only those documents leave `inbox/`. Then queue the document's next job.
 4. **Reason.** One LLM call returns validated JSON. For a direct YouTube clip, free Python checks (no second LLM call) then compare the summary with the facts fetched from YouTube, and a failed transient call (a 5xx, a timeout) is tried again, up to 5 calls.
 5. **Ready.** Render and validate the page, write it to `epiaku-docs` **under the calculated name** (removing an older page with the same `id`), and write the same page over the working copy in `output/`. The `stage` is gone.
 6. **Failure.** If the LLM output is invalid twice, or the page is invalid: move the working copy to `failed/<sub>/`, with `<name>.error.txt`.
@@ -461,7 +463,7 @@ The original is always in `archive/`, whatever happens. See [Retrying](#retry).
 
 ### What we do not track yet {#no-state}
 
-Which LLM and profile made a page, whether it was sent to `epiaku-docs`, and any error will be kept **per document in Postgres from Stage B on**. In Stage A there is no database, and that is fine: the folder a file is in and its `stage` show where it stands, and the **Python log** shows what happened: one line per file and step with a progress counter (`(2/15) note 6b4d2e: published …`), a final `processed 15/15: 13 published, 2 failed` line, and the reason for every `deferred` (WARNING) and `failed` (ERROR, with a traceback for unexpected errors). Set `LOG_LEVEL` and `LOG_FILE` in `.env`, or pass `--log-level`. There are no metrics, no `stuck` flag and no retry counter until Stage B.
+Which LLM and profile made a page, whether it was sent to `epiaku-docs`, and any error will be kept **per document in Postgres from Stage B on**. In Stage A there was no database: the folder a file is in and its `stage` showed where it stood, and the **Python log** what happened (with a progress counter like `(2/15)` and a final `processed 15/15` line, gone since B5b). Since Stage B the item rows (`job_items`) and jobs hold the state, the LLM metrics (profile, backend, model, tokens) and the reasons; the log keeps one line per document and step, the reason for every `deferred` (WARNING) and `failed` (ERROR, with a traceback for unexpected errors). Set `LOG_LEVEL` and `LOG_FILE` in `.env`, or pass `--log-level`.
 
 ### ID & naming {#id-naming}
 

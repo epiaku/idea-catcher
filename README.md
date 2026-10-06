@@ -10,7 +10,7 @@ Obsidian -> idea-bucket/inbox -> catcher run pipeline -> epiaku-docs (page)
                                       |-> output/ (the working copy), failed/, duplicates/
 ```
 
-**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it); item states, schedules and Compose come next.
+**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it), and so are the item states and metrics (B5); since B5b `catcher run pipeline` is the worker path in one process (the Stage A loop is gone). Schedules and Compose come next.
 
 ## 📑 Table of contents
 

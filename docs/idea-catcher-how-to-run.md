@@ -53,18 +53,22 @@ uv run catcher run pipeline --push                                   # 3. full r
 uv run catcher run pipeline [OPTIONS]
 ```
 
-What one run does, in order:
+Since B5b (2026-10-06) `run pipeline` **is the worker path in one process**: it does what `catcher jobs add pipeline.run`, `catcher worker --once` and `catcher jobs add pipeline.publish` do (see [How to Run Stage B](../idea-catcher-how-to-run-stage-b/#worker)), with the same jobs, rows and files, and then prints the report of that run. What one run does, in order:
 
-0. Takes the lock in Postgres (also for `--dry-run`), so no worker and no other run works at the same time. If the database cannot be reached it says `cannot reach the database in DATABASE_URL: nothing was done`; if a worker or another run holds the lock, `another worker or run is already running; one at a time: nothing was done`. Both exit with code 2 and touch no file.
-1. Reads the documents in `inbox/` (nothing is written yet).
-2. Moves earlier snapshots of a longer clip to `duplicates/`. They get no LLM call.
-3. For each remaining document, right before its LLM step: gives it its calculated name, copies the original to `archive/` (with two frontmatter lines added), writes a working copy to `output/`, and removes it from `inbox/`. With `--limit` or `--file`, only those documents leave `inbox/`.
-4. Sends the document to the LLM.
-5. When it is ready, writes the page to `epiaku-docs` and over the working copy in `output/`, under the same calculated name.
-6. Moves a document to `failed/` if it cannot be processed for good.
+0. Takes the worker's lock in Postgres (also for `--dry-run`) and holds it to the end, so no worker and no other run works at the same time. If the database cannot be reached it says `cannot reach the database in DATABASE_URL: nothing was done`; if a worker or another run holds the lock, `another worker or run is already running; one at a time: nothing was done`. Both exit with code 2 and touch no file. If a `pipeline.run` or `pipeline.publish` job of an **earlier run** is still queued (an interrupted run, or one you added with `jobs add`), it refuses too: `1 job(s) from an earlier run are still queued (pipeline.run/pipeline.publish): finish them with catcher worker --once (see catcher jobs list), then run this again: nothing was done` (code 2). Queued document jobs of an earlier run (`llm.reason`, `youtube.fetch`) are fine: this run does them too, and lists those documents in its report.
+1. Queues one `pipeline.run` job with your options. It reads `inbox/`, moves earlier snapshots of a longer clip to `duplicates/` (no LLM call), and for each remaining document (with `--limit` or `--file`, only those): gives it its calculated name and a row in the database, copies the original to `archive/` (with two frontmatter lines added), writes a working copy to `output/`, removes it from `inbox/`, and queues its next job (`youtube.fetch` for a clip without saved facts, else `llm.reason`).
    Files that are not markdown (PDFs, images) are **artifacts**: they are renamed `YYYYMMDD-<guid>-<original name>`, copied to `archive/artifacts/` and to `idea-bucket/artifacts/` in the root of epiaku-docs, and removed from `inbox/`. No LLM is used, and `--limit` does not apply.
-7. Leaves the working copy in `output/` with `stage: deferred` if the problem is temporary.
-8. Commits both repos. It pushes only when you ask.
+2. Runs the worker until no job is due: each document is sent to the LLM; when it is ready, its page is written to `epiaku-docs` and over the working copy in `output/`, under the same calculated name. A document that cannot be processed for good moves to `failed/`; a temporary problem leaves the working copy in `output/` with `stage: deferred`. A clip that must wait for the gap between YouTube calls stays **queued** (its working copy waits in `output/`): see `--wait-youtube`.
+3. Queues and runs one `pipeline.publish` job: it commits both repos (`idea-bucket` first), and with `--push` also pulls (rebase) and pushes them. Without `--push` there is no pull and no push, only the local commits. The publish commits everything under the managed folders, so also documents an earlier interrupted run or a `catcher worker` finished but did not commit.
+
+**Ctrl-C** (or a `kill`): the job it was running goes back to `queued`, the jobs it had not reached stay queued, and **nothing is published or committed**. It prints `interrupted: N job(s) left queued, run catcher worker --once to finish` and exits with code 1. Then:
+
+```bash
+uv run catcher worker --once     # finishes the queued documents (pages written, nothing committed yet)
+uv run catcher run pipeline      # the next run commits them with its own publish
+```
+
+While those jobs are queued, a new `run pipeline` refuses to start only when a `pipeline.run` or `pipeline.publish` of the earlier run is among them; `catcher jobs list` shows what is left.
 
 ### Options
 
@@ -75,7 +79,7 @@ What one run does, in order:
   uv run catcher run pipeline --profile clippings    # force the clippings profile for every note
   ```
 
-- **`--limit N`**: process at most N notes. The rest wait for the next run. Use it to control spend.
+- **`--limit N`**: take at most N documents out of `inbox/` in this run. The rest wait in `inbox/` for the next run (`skipped`, `run limit reached`). Use it to control spend. A clip that then waits for YouTube counts too: it already left `inbox/`.
 
   ```bash
   uv run catcher run pipeline --limit 3
@@ -112,7 +116,7 @@ What one run does, in order:
   - It also works for a **failed** note: its original is in `archive/` too, and the copy in `failed/` and the `.error.txt` are removed, so no error message is left behind. Fix the cause first (the `.error.txt` says what it was), or the note fails again.
   - Only `archive/` is searched. A capture that could not even be read (`unreadable`) and `duplicates/` are not found: move those back by hand (see the recipes).
 
-- **`--wait-youtube`** and **`--refresh-facts`**: how a run treats YouTube. To avoid an IP ban, calls to YouTube are spaced out (see [YouTube and the gap between calls](#youtube-gap)).
+- **`--wait-youtube`** and **`--refresh-facts`**: how a run treats YouTube. To avoid an IP ban, calls to YouTube are spaced out (see [YouTube and the gap between calls](#youtube-gap)). Without `--wait-youtube`, a clip whose fetch must wait for the gap stays queued (`waiting` in the report) and a later `catcher worker` or `run pipeline` fetches it. With it, the run sleeps until the fetch is due, as long as that is within `YOUTUBE_WAIT_MAX_S`, and goes on; a longer wait (a block) stays queued.
 
   ```bash
   uv run catcher run pipeline --wait-youtube     # sleep through a short gap, so one run does all the clips
@@ -131,7 +135,7 @@ What one run does, in order:
   uv run catcher run pipeline --retry-deferred
   ```
 
-- **`--dry-run`**: change no files and commit nothing. Note that with a real profile a dry run **still calls the LLM**, unless a good reply is saved (it reads those, free). Combine it with `--profile fake` for a free check. A dry run **never calls YouTube**, and does not use up the gap: a clip with no saved facts shows `would_fetch`.
+- **`--dry-run`**: a read-only **preview** of what a run would do now with the same options. It goes not through the queue: no job, no database row, no file changed, nothing committed. It still takes the lock (so it does not read files a worker is changing). It reads the saved YouTube facts (`facts/`) and the saved LLM replies (`llm/`) and builds each page in memory, but it **never calls a model and never calls YouTube**, and does not touch the YouTube gate: a document without a saved reply shows `would_call_llm`, a clip without saved facts `would_fetch`. So a dry run is always free, with any profile. On a fresh `testdata reset` it shows `would_publish` (saved reply) for every document and `would_copy` for the artifact.
 
   ```bash
   uv run catcher run pipeline --profile fake --dry-run
@@ -162,10 +166,10 @@ What one run does, in order:
 uv run catcher run pipeline --profile fake --dry-run
 ```
 
-- `--profile fake`: use the fake profile, so no LLM is called.
-- `--dry-run`: change nothing and commit nothing.
+- `--profile fake`: use the fake profile for every document.
+- `--dry-run`: a preview: change nothing, commit nothing, call no model and no YouTube.
 
-Together they read both repos, show what would happen, and cost nothing.
+Together they read the inbox, show what would happen, and cost nothing (a dry run never calls a model, whatever the profile).
 
 ## The other commands
 
@@ -305,8 +309,8 @@ The status in the first column is one of:
 - **`would_publish`**: the same, in a `--dry-run`. Nothing was written.
 - **`requeued`** / **`would_requeue`**: `--requeue` moved the original from `archive/` back into `inbox/` (`would_requeue` in a `--dry-run`: nothing moved).
 - **`would_fetch`**: a YouTube clip with no saved facts, in a `--dry-run`. A dry run does not call YouTube.
-- **`waiting`**: a YouTube clip that has to wait for the gap between YouTube calls (or for a block to end). It is **not touched and stays in `inbox/`**: nothing to requeue, the next run takes it. The message says when the next call is allowed. If another run used the gap after this run had started the clip, or YouTube answered with a block, the clip is put **back** in `inbox/` with the same name and shows `waiting` too.
-- **`interrupted`**: Ctrl-C or a `kill` stopped the run during this document. It is put back in `inbox/` under the same name, what was already done is committed, and the run reports a problem (exit code 2). Run again to continue. Only one run or worker works at a time per database (the lock in step 0): a second one is refused with `another worker or run is already running; one at a time: nothing was done` (exit code 2).
+- **`waiting`**: a document still on its way: its next job is queued (`waiting for YouTube`: a clip whose fetch waits for the gap between YouTube calls or for a block to end; `waiting for the LLM`: a document whose `llm.reason` did not run, for example after Ctrl-C). It has left `inbox/`: its working copy is in `output/`, and a later `catcher worker` or `run pipeline` finishes it. Nothing to requeue.
+- **`would_call_llm`**: in a `--dry-run`, a document without a saved reply: a real run would ask the model.
 - **`deferred`**: not done, but not lost. The working copy stays in `output/` with `stage: deferred` and the reason. To retry, run it again with `--requeue NAME`, or move the file from `archive/` back into `inbox/`. Typical reasons: a provider is down, a rate limit, a used-up budget, YouTube facts not available, or a missing model setting. `--retry-deferred` does this for all of them at once.
 - **`failed`**: could not be processed for good, for example invalid LLM output twice, an invalid page, an empty document, or one longer than `LLM_MAX_INPUT_CHARS` (it is not sent to the LLM). The note moves to `failed/` with a `.error.txt` that says why. To try it again after fixing the cause, use `--requeue NAME`.
 - **`duplicate`**: an earlier snapshot of a longer clip. Moved to `duplicates/`, no LLM call.
@@ -315,9 +319,9 @@ The status in the first column is one of:
 
 The last line shows the counts, and whether both repos were committed and pushed.
 
-**Exit code:** `0` when nothing failed. `1` when a note failed, a file could not be read or a `--file`/`--requeue` name was not found, so scripts can notice; also `1` when the run lost its database lock halfway (a Postgres restart: it stops before the next step, commits nothing and says how many documents it had finished; those stay uncommitted until the next `pipeline.publish` job, see [Stage B](../idea-catcher-how-to-run-stage-b/)) or a database error stopped the run. `2` when nothing was done: `DATABASE_URL` is malformed, the database cannot be reached, a worker or another run holds the lock, or a path is wrong; also `2` after Ctrl-C or a `kill` (`interrupted`).
+**Exit code:** `0` when nothing failed. `1` when a note failed, a file could not be read or a `--file`/`--requeue` name was not found, so scripts can notice; also `1` when the run lost its database lock halfway (a Postgres restart: it stops before the next job, commits nothing and says how many documents it had finished; those stay uncommitted until the next `pipeline.publish` job, for example the next `run pipeline`, see [Stage B](../idea-catcher-how-to-run-stage-b/)), when the publish failed, when a database error stopped the run, and after Ctrl-C or a `kill` (`interrupted: N job(s) left queued`). `2` when nothing was done: `DATABASE_URL` is malformed, the database cannot be reached or has no tables, a worker or another run holds the lock, a `pipeline.run`/`pipeline.publish` job of an earlier run is still queued, or a path is wrong.
 
-**The log** goes to the terminal (and to `LOG_FILE` if set), one line per file and step, with progress like `(2/15)`, and a final `processed 15/15` line. Errors are always logged.
+**The log** goes to the terminal (and to `LOG_FILE` if set), one line per document and step, as the worker logs them (no `(2/15)` progress any more, since B5b; a `--dry-run` still ends with `processed 43/43`). Errors are always logged.
 
 **The version** of the Idea Catcher is the first thing after `run started:` in the log (`version=0.1.0`), and `uv run catcher version` prints it. It is one string, `__version__` in `src/catcher/__init__.py`. Change it there when you release; `pyproject.toml` reads it from that file, so there is nothing else to update.
 

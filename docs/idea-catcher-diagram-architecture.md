@@ -116,7 +116,7 @@ flowchart LR
   cli["cli.py<br/>the commands"]
 
   subgraph pipeline["modules/pipeline"]
-    run["run.py<br/>the loop over the inbox"]
+    run["worker/runner.py and the handlers<br/>run pipeline over the worker (B5b)"]
     inbox["inbox.py<br/>scan, names, archive,<br/>output, failed, requeue"]
     doctypes["doctypes.py<br/>which class is it,<br/>its default destination"]
     process["process.py<br/>one document, per class"]
