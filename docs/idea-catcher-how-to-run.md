@@ -323,7 +323,7 @@ The last line shows the counts, and whether both repos were committed and pushed
 
 **The log** goes to the terminal (and to `LOG_FILE` if set), one line per document and step, as the worker logs them (no `(2/15)` progress any more, since B5b; a `--dry-run` still ends with `processed 43/43`). Errors are always logged.
 
-**The version** of the Idea Catcher is the first thing after `run started:` in the log (`version=0.1.0`), and `uv run catcher version` prints it. It is one string, `__version__` in `src/catcher/__init__.py`. Change it there when you release; `pyproject.toml` reads it from that file, so there is nothing else to update.
+**The version** of the Idea Catcher is in the first log line of a run: `inbox: 43 document(s) to process, at most 3 now (catcher version 0.1.0)` (the `pipeline.run` job's line); a `--dry-run` logs `run started: version=0.1.0 ...` instead. `uv run catcher version` prints it. It is one string, `__version__` in `src/catcher/__init__.py`. Change it there when you release; `pyproject.toml` reads it from that file, so there is nothing else to update.
 
 ## Using the test data
 
