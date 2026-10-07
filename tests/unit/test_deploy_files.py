@@ -4,6 +4,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -83,3 +85,77 @@ def test_the_scripts_are_executable_files_in_git():
     ).stdout  # fmt: skip
     modes = [line.split()[0] for line in out.splitlines()]
     assert modes == ["100755", "100755"]
+
+
+def _compose_text() -> str:
+    return (ROOT / "compose.yaml").read_text(encoding="utf-8")
+
+
+def _compose() -> dict:
+    return yaml.safe_load(_compose_text())
+
+
+def test_compose_has_db_migrate_and_worker_and_no_api_yet():
+    assert set(_compose()["services"]) == {"db", "migrate", "worker"}
+    migrate = _compose()["services"]["migrate"]
+    assert migrate["command"] == ["catcher", "db", "upgrade"]
+    assert migrate["restart"] == "no"
+    assert migrate["depends_on"]["db"]["condition"] == "service_healthy"
+    assert not any("repos" in v for v in migrate.get("volumes", []))
+
+
+def test_the_worker_waits_for_the_migrations_to_complete():
+    worker = _compose()["services"]["worker"]
+    assert worker["command"] == ["catcher", "worker"]
+    assert worker["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+
+
+def test_the_worker_keeps_the_repos_in_a_named_volume_and_restarts_unless_stopped():
+    compose = _compose()
+    worker = compose["services"]["worker"]
+    assert worker["restart"] == "unless-stopped"
+    assert "repos:/data/repos" in worker["volumes"]
+    assert "repos" in compose["volumes"]
+    assert "catcher-pgdata" in compose["volumes"]
+
+
+def test_the_container_environment_overrides_host_only_paths():
+    env = _compose()["services"]["worker"]["environment"]
+    assert re.search(r"@db:5432/", env["DATABASE_URL"])
+    assert "localhost" not in env["DATABASE_URL"]
+    assert env["IDEAS_REPO"] == "/data/repos/idea-bucket"
+    assert env["DOCS_REPO"] == "/data/repos/epiaku-docs"
+    assert env["IDEAS_REMOTE"] == "${IDEAS_REMOTE:-}"
+    assert env["DOCS_REMOTE"] == "${DOCS_REMOTE:-}"
+
+
+def test_no_secret_value_is_written_in_compose_yaml():
+    env = _compose()["services"]["worker"]["environment"]
+    assert env["GITHUB_TOKEN"] == "${GITHUB_TOKEN:-}"
+    assert "${DB_PASSWORD:-catcher}" in env["DATABASE_URL"]
+    text = _compose_text()
+    assert not re.search(r"ghp_|github_pat_|sk-", text)
+    assert _compose()["services"]["db"]["environment"]["POSTGRES_PASSWORD"] == "${DB_PASSWORD:-catcher}"
+
+
+def test_the_db_port_is_configurable():
+    assert _compose()["services"]["db"]["ports"] == ["${DB_PORT:-5432}:5432"]
+
+
+def test_the_worker_gets_a_grace_period_to_finish_its_job():
+    assert _compose()["services"]["worker"]["stop_grace_period"] == "120s"
+
+
+def test_the_worker_has_a_catcher_health_healthcheck():
+    check = _compose()["services"]["worker"]["healthcheck"]
+    assert check["test"] == ["CMD", "catcher", "health"]
+    timing = (check["interval"], check["timeout"], check["retries"], check["start_period"])
+    assert timing == ("30s", "10s", 3, "60s")
+
+
+def test_env_example_documents_every_variable_compose_reads():
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    names = set(re.findall(r"\$\{([A-Z_]+)", _compose_text()))
+    assert {"DB_PASSWORD", "DB_PORT", "IDEAS_REMOTE", "DOCS_REMOTE", "GITHUB_TOKEN"} <= names
+    for name in names:
+        assert re.search(rf"^#? ?{name}=", example, re.M), name
