@@ -203,9 +203,24 @@ def test_askpass_answers_username_and_token_and_never_prints_the_token_to_stderr
     assert "tok-123" not in user.stderr + password.stderr
 
 
-def test_askpass_ignores_other_hosts() -> None:
-    assert _askpass("Password for 'https://evil.example.com': ", "tok-123").returncode == 1
-    assert _askpass("Password for 'ssh://github.com': ", "tok-123").stdout == ""
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Password for 'https://evil.example.com': ",
+        "Password for 'ssh://github.com': ",
+        "Username for 'https://github.com.evil.example': ",
+        "Password for 'https://x-access-token@github.com.evil.example': ",
+        "Password for 'https://x-access-token@evil.example/github.com': ",
+        "Username for 'https://evil.example/https://github.com': ",
+        "Password for 'https://github.com': ",
+        "Password for 'https://someone@github.com': ",
+        "Username for 'http://github.com': ",
+    ],
+)
+def test_askpass_answers_only_the_exact_github_prompts(prompt: str) -> None:
+    result = _askpass(prompt, "tok-123")
+    assert result.returncode == 1
+    assert result.stdout == ""
 
 
 def test_askpass_without_a_token_fails() -> None:
