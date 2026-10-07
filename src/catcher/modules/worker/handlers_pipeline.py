@@ -52,7 +52,16 @@ from sqlalchemy.orm import Session
 from catcher import __version__
 from catcher.core.db import session_scope
 from catcher.core.frontmatter import FrontmatterError
-from catcher.core.git import GIT_LOCK, GitError, ahead_of_upstream, commit_managed, has_remote, pull, push
+from catcher.core.git import (
+    GIT_LOCK,
+    GitError,
+    ahead_of_upstream,
+    commit_managed,
+    has_remote,
+    pull,
+    push,
+    require_on_branch,
+)
 from catcher.modules.llm.profiles import Profile, UnknownProfile, resolve_profile
 from catcher.modules.llm.service import (
     BackendBlocked,
@@ -1063,6 +1072,7 @@ def handle_ideas_pull(ctx: HandlerContext, job: Job) -> HandlerResult:
     author = (ctx.settings.git_author_name, ctx.settings.git_author_email)
     with GIT_LOCK:
         try:
+            require_on_branch(ctx.ideas, unattended=True)  # never abort a rebase the user started by hand
             if not has_remote(ctx.ideas, unattended=True):
                 log.info("ideas.pull: %s has no git remote, nothing to pull", ctx.ideas)
                 return Done({"pulled": False, "reason": "no git remote"})

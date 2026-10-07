@@ -98,3 +98,34 @@ def test_ideas_pull_refuses_params_and_is_in_the_registry():
     check_job("ideas.pull", {})
     with pytest.raises(ValueError, match="ideas.pull"):
         check_job("ideas.pull", {"x": 1})
+
+
+def test_pull_leaves_a_hand_started_rebase_alone(harness, sh, tmp_path):
+    (harness.ideas / "clash.md").write_text("base\n")
+    sh(harness.ideas, "add", "-A")
+    sh(harness.ideas, "commit", "-m", "base")
+    sh(harness.ideas, "push")
+    push_from_another_clone(sh, harness.ideas, tmp_path, "clash.md", "theirs\n")
+    (harness.ideas / "clash.md").write_text("ours\n")
+    sh(harness.ideas, "add", "-A")
+    sh(harness.ideas, "commit", "-m", "ours")
+    sh(harness.ideas, "fetch")
+    with pytest.raises(Exception):  # noqa: B017 - the rebase stops on the conflict: the user's work in progress
+        sh(harness.ideas, "rebase", "origin/main")
+    conflicted = (harness.ideas / "clash.md").read_text()
+    assert "<<<<<<<" in conflicted
+
+    result = pull_job(harness)
+
+    assert isinstance(result, Fail) and "rebase" in result.error
+    git_dir = harness.ideas / ".git"
+    assert (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
+    assert (harness.ideas / "clash.md").read_text() == conflicted
+
+
+def test_pull_on_a_detached_head_fails_clearly(harness, sh):
+    sh(harness.ideas, "checkout", "--detach")
+
+    result = pull_job(harness)
+
+    assert isinstance(result, Fail) and "detached" in result.error

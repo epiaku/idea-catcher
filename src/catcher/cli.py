@@ -877,7 +877,10 @@ def _queue_session() -> Iterator[Session]:
 
 @jobs_app.command("add")
 def jobs_add(
-    job_type: Annotated[str, typer.Argument(metavar="TYPE", help="the job type, e.g. pipeline.run")],
+    job_type: Annotated[
+        str,
+        typer.Argument(metavar="TYPE", help="the job type, e.g. pipeline.run, pipeline.publish, ideas.pull"),
+    ],
     param: Annotated[
         list[str] | None,
         typer.Option(
