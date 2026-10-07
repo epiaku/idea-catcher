@@ -32,6 +32,19 @@ _HELD = text(
     "and objsubid = 1)"
 )
 
+# Any backend holds the lock with this key: read-only, takes no lock, needs no table.
+_ANYONE_HOLDS = text(
+    "select exists (select 1 from pg_locks where locktype = 'advisory' and granted "
+    "and classid::bigint = :hi and objid::bigint = :lo and objsubid = 1)"
+)
+
+
+def worker_running(engine: Engine, key: int = DEFAULT_KEY) -> bool:
+    """True when some backend holds the worker lock with this key. One read-only query, no lock taken."""
+    params = {"hi": (key >> 32) & 0xFFFFFFFF, "lo": key & 0xFFFFFFFF}
+    with engine.connect() as connection:
+        return bool(connection.execute(_ANYONE_HOLDS, params).scalar())
+
 
 class WorkerLock:
     """Holds `pg_try_advisory_lock(key)` for the lifetime of the `with` block.

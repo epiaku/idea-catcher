@@ -18,7 +18,7 @@ import typer
 from alembic import command as alembic_command
 from croniter import croniter
 from dotenv import load_dotenv
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -61,7 +61,7 @@ from catcher.modules.scheduler.schedule import (
     parse_schedules,
 )
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
-from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
+from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost, worker_running
 from catcher.modules.worker.loop import Worker
 from catcher.modules.worker.runner import (
     DatabaseNotUpgraded,
@@ -938,6 +938,28 @@ def worker(
         ctx.engine.dispose()
     if failed_once:
         raise typer.Exit(1)
+
+
+@app.command()
+def health() -> None:
+    """Tell whether a worker holds the one-worker lock (for a Docker healthcheck). No lock, no writes.
+
+    Exit codes: 0 a worker is running; 1 no worker holds the lock; 2 DATABASE_URL is malformed or the
+    database cannot be reached."""
+    url = Settings().database_url
+    _check_database_url(url)
+    engine = create_engine(url, connect_args={"connect_timeout": 5})  # fast: a healthcheck runs every 30 s
+    try:
+        running = worker_running(engine)
+    except OperationalError as e:
+        log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
+        raise typer.Exit(2) from e
+    finally:
+        engine.dispose()
+    if not running:
+        typer.echo("no worker holds the lock")
+        raise typer.Exit(1)
+    typer.echo("worker running")
 
 
 jobs_app = typer.Typer(no_args_is_help=True, help="The job queue: add jobs by hand and look at them.")
