@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -18,7 +20,7 @@ ASKPASS = ROOT / "scripts" / "git-askpass.sh"
 
 def _git(*args: str, cwd: Path) -> str:
     env = {
-        **os.environ,
+        **_clean_env(),
         "GIT_AUTHOR_NAME": "t",
         "GIT_AUTHOR_EMAIL": "t@t",
         "GIT_COMMITTER_NAME": "t",
@@ -41,7 +43,7 @@ def _bare_remote(base: Path, name: str) -> Path:
 
 
 def _run(tmp_path: Path, args: list[str], **extra: str) -> subprocess.CompletedProcess[str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("IDEAS_", "DOCS_", "GITHUB_"))}
+    env = {k: v for k, v in _clean_env().items() if not k.startswith(("IDEAS_", "DOCS_", "GITHUB_"))}
     env["HOME"] = str(tmp_path / "home")
     env.update(extra)
     return subprocess.run(
@@ -106,18 +108,25 @@ def test_a_missing_repo_without_a_remote_exits_2_naming_the_variable(tmp_path: P
     assert "DOCS_REMOTE" in result.stderr
 
 
-def test_a_failed_clone_removes_only_the_empty_directory_it_made_and_hides_credentials(
-    tmp_path: Path,
-) -> None:
+def test_a_remote_with_credentials_is_refused_before_anything_is_cloned(tmp_path: Path) -> None:
+    docs = _bare_remote(tmp_path, "rd")
+    for bad in ("https://user:secret@127.0.0.1:1/x.git", "ssh://user:secret@127.0.0.1/x.git"):
+        result = _run(tmp_path, ["true"], **_both(tmp_path, bad, str(docs)))
+        assert result.returncode == 2
+        assert "secret" not in result.stdout + result.stderr
+        assert "IDEAS_REMOTE" in result.stderr
+        assert "GITHUB_TOKEN" in result.stderr
+        assert not (tmp_path / "ideas").exists()
+        assert not (tmp_path / "docs").exists()
+
+
+def test_a_failed_clone_removes_only_the_empty_directory_it_made(tmp_path: Path) -> None:
     docs = _bare_remote(tmp_path, "rd")
     sibling = tmp_path / "docs"
     sibling.mkdir()
     (sibling / "precious.txt").write_text("keep")
-    # Not a git checkout and non-empty: exit 2 without touching it. Use a separate failing ideas repo first.
-    bad = "https://user:secret@127.0.0.1:1/x.git"
-    result = _run(tmp_path, ["true"], **_both(tmp_path, bad, str(docs)))
-    assert result.returncode != 0
-    assert "secret" not in result.stdout + result.stderr
+    result = _run(tmp_path, ["true"], **_both(tmp_path, "https://127.0.0.1:1/x.git", str(docs)))
+    assert result.returncode not in (0, 2)
     assert "IDEAS_REMOTE" in result.stderr
     assert not (tmp_path / "ideas").exists()
     assert (sibling / "precious.txt").read_text() == "keep"
@@ -126,11 +135,29 @@ def test_a_failed_clone_removes_only_the_empty_directory_it_made_and_hides_crede
 def test_a_failed_clone_keeps_a_directory_that_was_there_before(tmp_path: Path) -> None:
     (tmp_path / "ideas").mkdir()
     docs = _bare_remote(tmp_path, "rd")
-    bad = "https://user:secret@127.0.0.1:1/x.git"
-    result = _run(tmp_path, ["true"], **_both(tmp_path, bad, str(docs)))
-    assert result.returncode != 0
-    assert "secret" not in result.stdout + result.stderr
+    result = _run(tmp_path, ["true"], **_both(tmp_path, "https://127.0.0.1:1/x.git", str(docs)))
+    assert result.returncode not in (0, 2)
     assert (tmp_path / "ideas").is_dir()
+
+
+def test_no_command_exits_2(tmp_path: Path) -> None:
+    ideas = _bare_remote(tmp_path, "ri")
+    docs = _bare_remote(tmp_path, "rd")
+    result = _run(tmp_path, [], **_both(tmp_path, str(ideas), str(docs)))
+    assert result.returncode == 2
+    assert "no command" in result.stderr
+
+
+def test_a_hook_set_git_environment_in_the_parent_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ideas = _bare_remote(tmp_path, "ri")
+    docs = _bare_remote(tmp_path, "rd")
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "junk-index"))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "junk-dir"))
+    result = _run(tmp_path, ["true"], **_both(tmp_path, str(ideas), str(docs)))
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "junk-index").exists()
 
 
 def test_the_command_is_exec_ed_with_its_arguments(tmp_path: Path) -> None:
@@ -140,8 +167,11 @@ def test_the_command_is_exec_ed_with_its_arguments(tmp_path: Path) -> None:
     result = _run(tmp_path, ["sh", "-c", script, "sh", "a", "b"], **_both(tmp_path, str(ideas), str(docs)))
     assert result.returncode == 7
     assert result.stdout.strip().endswith("a-b")
-    pid = _run(tmp_path, ["sh", "-c", "echo $$"], **_both(tmp_path, str(ideas), str(docs)))
-    assert pid.stdout.strip().isdigit()
+    env = {**_clean_env(), **_both(tmp_path, str(ideas), str(docs)), "HOME": str(tmp_path / "home")}
+    outer = f'echo $$; exec bash "{ENTRYPOINT}" sh -c "echo \\$\\$"'
+    pids = subprocess.run(["bash", "-c", outer], env=env, capture_output=True, text=True, timeout=60)
+    first, second = pids.stdout.split()
+    assert first == second, pids.stderr
 
 
 def test_the_scripts_are_executable_in_git() -> None:
@@ -171,6 +201,11 @@ def test_askpass_answers_username_and_token_and_never_prints_the_token_to_stderr
     assert password.returncode == 0
     assert password.stdout.strip() == "tok-123"
     assert "tok-123" not in user.stderr + password.stderr
+
+
+def test_askpass_ignores_other_hosts() -> None:
+    assert _askpass("Password for 'https://evil.example.com': ", "tok-123").returncode == 1
+    assert _askpass("Password for 'ssh://github.com': ", "tok-123").stdout == ""
 
 
 def test_askpass_without_a_token_fails() -> None:
