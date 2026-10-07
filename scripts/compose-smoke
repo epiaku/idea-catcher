@@ -5,15 +5,91 @@
 # and is removed at the end, also on failure or Ctrl-C. It never touches tests/data, tmp/ic, ~/.catcher,
 # the host .env, or another compose project (such as a catcher-db on port 5432).
 # Prints PASS/FAIL per step; exits 1 when any step failed.
+#   bash scripts/compose-smoke --selftest   only checks the assertion logic on sample outputs (no Docker)
+# Not covered: `docker compose stop` while a long job runs (the grace period letting it finish). The smoke stop
+# hits an idle worker (it proves SIGTERM reaches the exec'd PID 1, exit 0, within the grace); the runner's own
+# tests cover finishing the current job.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-ROOT="$(pwd -P)"
+
+TYPES=(ideas.pull pipeline.run pipeline.publish)
+
+# --- pure checks (no Docker): also run by --selftest on sample input
+has() {  # grep -q in a pipe ends early; the writer's SIGPIPE fails the pipe under pipefail: read it all first
+  local text
+  text="$(cat)"
+  grep -qE -- "$1" <<<"$text"
+}
+schedules_fired_in() {  # $1: `catcher schedules` output; every schedule on, with a date under `last fired`
+  local name
+  for name in ideas_pull pipeline_run publish; do
+    # name, five cron fields, timezone, last fired (date time | never), next due
+    awk -v n="$name" '$1 == n && $2 != "off" && $8 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/' <<<"$1" \
+      | has . || return 1
+  done
+}
+new_in_window() {  # $1: "type epoch" lines (jobs created_at), $2 type, $3 from (incl), $4 to (excl): the count
+  awk -v t="$2" -v a="$3" -v b="$4" '$1 == t && $2 >= a && $2 < b {n++} END {print n + 0}' <<<"$1"
+}
+one_catch_up_each() {  # $1 created list, $2 restart epoch, $3 the first minute boundary after it: exactly one each
+  local type n ok=0
+  for type in "${TYPES[@]}"; do
+    n="$(new_in_window "$1" "$type" "$2" "$3")"
+    echo "  $type: $n job(s) created between the restart and the next minute boundary"
+    [ "$n" -eq 1 ] || ok=1
+  done
+  return "$ok"
+}
+next_slot_fired() {  # $1 created list, $2 boundary, $3 end: at least one job of each type in [boundary, end)
+  local type
+  for type in "${TYPES[@]}"; do
+    [ "$(new_in_window "$1" "$type" "$2" "$3")" -ge 1 ] || return 1
+  done
+}
+clean_of() {  # clean_of <needle> <marker>: stdin has the marker (so it is real output) and not the needle
+  local text
+  text="$(cat)"
+  grep -qF -- "$2" <<<"$text" && ! grep -qF -- "$1" <<<"$text"
+}
+
+if [ "${1:-}" = --selftest ]; then
+  bad=0
+  expect() {  # expect <0|1> <name> <command...>
+    local want="$1" name="$2" got=0
+    shift 2
+    "$@" >/dev/null || got=1
+    if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "BAD  $name (got $got, want $want)"; bad=1; fi
+  }
+  fired=$'name          cron       timezone  last fired        next due
+ideas_pull    * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48
+pipeline_run  * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48
+publish       * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48'
+  expect 0 "schedules: all three fired" schedules_fired_in "$fired"
+  expect 1 "schedules: one never fired" schedules_fired_in "${fired/publish       * * * * *  UTC       2026-10-07 18:47/publish       * * * * *  UTC       never}"
+  expect 1 "schedules: one missing" schedules_fired_in "$(grep -v ^pipeline_run <<<"$fired")"
+  expect 1 "schedules: one off" schedules_fired_in "${fired/ideas_pull    * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48/ideas_pull    off  -  -  -}"
+  # restart at 1000, first boundary 1020 (sample numbers)
+  old=$'ideas.pull 900\npipeline.run 900\npipeline.publish 900'
+  once=$'ideas.pull 1004\npipeline.run 1004\npipeline.publish 1004\nideas.pull 1021\npipeline.run 1021\npipeline.publish 1021'
+  expect 0 "one catch-up each" one_catch_up_each "$old"$'\n'"$once" 1000 1020
+  expect 1 "a flood (two catch-ups of one type)" one_catch_up_each "$old"$'\n'"$once"$'\npipeline.run 1005' 1000 1020
+  expect 1 "a flood (four of each)" one_catch_up_each "$once"$'\n'"$once"$'\n'"$once"$'\n'"$once" 1000 1020
+  expect 1 "no catch-up at all" one_catch_up_each "$old" 1000 1020
+  expect 0 "the next slot fired" next_slot_fired "$once" 1020 1080
+  expect 1 "the next slot did not fire" next_slot_fired "$old" 1020 1080
+  expect 0 "clean_of: marker, no token" clean_of secret marker <<<"a marker line"
+  expect 1 "clean_of: token present" clean_of secret marker <<<"marker and secret"
+  expect 1 "clean_of: empty input" clean_of secret marker </dev/null
+  [ "$bad" = 0 ] && echo "selftest passed" || echo "selftest FAILED"
+  exit "$bad"
+fi
 
 ID="$$-$RANDOM"
 PROJECT="catcher-smoke-$ID"
 export SMOKE_IMAGE="idea-catcher:smoke-$ID"
 export SMOKE_GITHUB_TOKEN="smoke-token-not-real"  # a dummy: it must never show up in a log or a .git/config
-TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/catcher-smoke.XXXXXX")" && pwd -P)"
+TMP_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+TMP="$(cd "$(mktemp -d "$TMP_BASE/catcher-smoke.XXXXXX")" && pwd -P)"
 export SMOKE_REMOTES="$TMP/remotes"
 : >"$TMP/empty.env"  # compose reads this instead of the project .env for ${...}
 
@@ -45,24 +121,22 @@ check() {  # check "<name>" <command...>: PASS when the command succeeds
   if "$@"; then pass "$name"; else fail "$name"; fi
 }
 now() { date +%s; }
-# grep -q in a pipe ends early and the writer dies of SIGPIPE, which pipefail reports as a failure: read it all.
-has() {
-  local text
-  text="$(cat)"
-  grep -qE -- "$1" <<<"$text"
-}
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 MONITOR_PID=""
 teardown() {
   local rc=$?
+  trap '' INT TERM  # a second Ctrl-C must not stop the teardown halfway
   set +e
   [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null
   log "teardown: compose project $PROJECT (down -v), image $SMOKE_IMAGE, temp dir $TMP"
   if [ "${SMOKE_DEBUG:-}" = 1 ]; then dc logs --no-color --tail 80 >&2; fi
   dc down -v --remove-orphans --timeout 30 >/dev/null 2>&1
   docker image rm "$SMOKE_IMAGE" >/dev/null 2>&1
-  rm -rf "$TMP"
+  case "$TMP" in
+    "$TMP_BASE"/catcher-smoke.?*) rm -rf "$TMP" ;;
+    *) echo "teardown: not removing unexpected temp path '$TMP'" ;;
+  esac
   local left
   left="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" -q)"
   left+="$(docker volume ls --filter "label=com.docker.compose.project=$PROJECT" -q)"
@@ -164,13 +238,7 @@ until jobs_seen || [ "$(now)" -ge "$deadline" ]; do sleep 5; done
 check "(c) jobs list shows ideas.pull, pipeline.run and pipeline.publish" jobs_seen
 SCHEDULES="$(wexec catcher schedules)"
 echo "$SCHEDULES"
-schedules_fired() {
-  local name
-  for name in ideas_pull pipeline_run publish; do
-    awk -v n="$name" '$1 == n && $5 != "never" && $2 != "off"' <<<"$SCHEDULES" | has . || return 1
-  done
-}
-check "(c) schedules: all three have a last fired" schedules_fired
+check "(c) schedules: all three have a last fired" schedules_fired_in "$SCHEDULES"
 
 # --- (d) the capture arrives in the container's clone (pulled by the schedule), and publish pushed back
 capture_arrived() { wexec git -C /data/repos/idea-bucket merge-base --is-ancestor "$CAPTURE_SHA" HEAD 2>/dev/null; }
@@ -183,8 +251,12 @@ published() {
 deadline=$(($(now) + 150))
 until published || [ "$(now)" -ge "$deadline" ]; do sleep 5; done
 check "(d) a worker commit was pushed to the bare idea-bucket remote (publish)" published
-no_push_error() { ! dc logs --no-color worker 2>&1 | has "push failed"; }
-check "(d) no 'push failed' in the worker log" no_push_error
+no_push_error() {
+  local logs
+  logs="$(dc logs --no-color worker 2>&1)" || return 1
+  grep -q "publish: committed=" <<<"$logs" && ! grep -q "push failed" <<<"$logs"
+}
+check "(d) the log has publish lines and no 'push failed'" no_push_error
 if [ "$FAILS" -gt 0 ]; then  # what publish did, for the report
   dc logs --no-color worker 2>&1 | grep -E "publish|ERROR" | tail -n 12
   for name in idea-bucket epiaku-docs; do
@@ -209,16 +281,20 @@ busy_refused() { [ "$rc" = 2 ] && grep -q "another worker or run is already runn
 check "(h) catcher run pipeline in the worker container exits 2 with the one-worker message (rc=$rc)" busy_refused
 
 # --- (g) the dummy token is nowhere it must not be
-token_absent() { ! grep -qF "$SMOKE_GITHUB_TOKEN"; }
-check "(g) no token in the compose logs" token_absent < <(dc logs --no-color 2>&1)
-check "(g) no token in docker history" token_absent < <(docker history --no-trunc "$SMOKE_IMAGE")
-check "(g) no token in the image config" token_absent < <(docker image inspect "$SMOKE_IMAGE")
+# Each grep also needs a marker known to be in that output, so an empty or failed output cannot pass.
+T="$SMOKE_GITHUB_TOKEN"
+WENV="$(wexec env)" || WENV=""
+token_in_env() { grep -qx "GITHUB_TOKEN=$T" <<<"$WENV"; }
+check "(g) the worker env has GITHUB_TOKEN=$T (so the greps below look for something real)" token_in_env
+only_in_github_token() { [ "$(grep -cF -- "$T" <<<"$WENV")" = 1 ]; }
+check "(g) the worker env holds the token only in GITHUB_TOKEN (for askpass)" only_in_github_token
+check "(g) no token in the compose logs" clean_of "$T" "worker " < <(dc logs --no-color 2>&1)
+check "(g) no token in docker history" clean_of "$T" "docker-entrypoint" < <(docker history --no-trunc "$SMOKE_IMAGE")
+check "(g) no token in the image config" clean_of "$T" "GIT_ASKPASS" < <(docker image inspect "$SMOKE_IMAGE")
 for name in idea-bucket epiaku-docs; do
-  check "(g) no token in $name .git/config or git config --list" token_absent \
+  check "(g) no token in $name .git/config or git config --list" clean_of "$T" "/remotes/$name.git" \
     < <(wexec sh -c "cat /data/repos/$name/.git/config; git -C /data/repos/$name config --list --show-origin")
 done
-only_in_github_token() { ! grep -F "$SMOKE_GITHUB_TOKEN" | grep -v "^GITHUB_TOKEN=" | has .; }
-check "(g) the worker env holds the token only in GITHUB_TOKEN (for askpass)" only_in_github_token < <(wexec env)
 
 # --- (e) stop ends within the grace period with exit code 0 and logs `worker ... stopped`
 before_stop="$(wexec catcher jobs list --limit 1000 | awk '{print $2}' | sort | uniq -c)"
@@ -230,10 +306,19 @@ check "(e) the worker exited with code 0" test "$(docker inspect -f '{{.State.Ex
 stopped_logged() { dc logs --no-color worker 2>&1 | has "worker .+ stopped"; }
 check "(e) the log has 'worker ... stopped'" stopped_logged
 
-# --- (f) a restart keeps the repos and the jobs, and a missed slot fires once (not a flood)
-log "worker stopped; waiting 130 s so at least two slots are missed"
-sleep 130
-t1="$(now)"
+# --- (f) a restart keeps the repos and the jobs, and the missed slots fire ONCE (one catch-up, not a flood)
+# Stopped >= 250 s: at least four slots are missed, so a flood would show as several jobs of one type at once.
+# Restart early in a minute (second 5-30) so the catch-up lands well before the next minute boundary.
+log "worker stopped; waiting at least 250 s so at least four slots are missed"
+deadline=$((t0 + 250))
+while [ "$(now)" -lt "$deadline" ] || [ $(($(now) % 60)) -lt 5 ] || [ $(($(now) % 60)) -gt 30 ]; do sleep 2; done
+created() {  # "type epoch" per job, read from the smoke project's own db container
+  dc exec -T db psql -U catcher -d catcher -At -F ' ' -c \
+    "select type, floor(extract(epoch from created_at))::bigint from jobs" 2>/dev/null
+}
+t1="$(dc exec -T db date +%s)"  # the containers' clock: created_at is compared with it
+boundary=$(((t1 / 60 + 1) * 60))
+log "restarting the worker (db clock $t1, next minute boundary in $((boundary - t1)) s)"
 dc up -d worker >/dev/null 2>&1
 if wait_healthy 120; then pass "(f) healthy again after $(($(now) - t1)) s"; else fail "(f) not healthy again"; fi
 check "(f) idea-bucket clone still there with the capture" capture_arrived
@@ -245,25 +330,20 @@ kept() { while read -r n type; do
   [ "${m:-0}" -ge "$n" ] || return 1
 done <<<"$before_stop"; }
 check "(f) every job from before the stop is still there" kept
-# Count the new jobs per type: one catch-up for the missed slots, plus one per minute boundary passed since.
-sleep 20
-t2="$(now)"
-after="$(wexec catcher jobs list --limit 1000 | awk '{print $2}' | sort | uniq -c)"
-boundaries=$((t2 / 60 - t1 / 60))
-not_a_flood() {
-  for type in ideas.pull pipeline.run pipeline.publish; do
-    b="$(awk -v t="$type" '$2 == t {print $1}' <<<"$before_stop")"
-    a="$(awk -v t="$type" '$2 == t {print $1}' <<<"$after")"
-    new=$((${a:-0} - ${b:-0}))
-    echo "  $type: $new new job(s) since the restart ($boundaries minute boundary/ies passed)"
-    [ "$new" -ge 1 ] && [ "$new" -le $((1 + boundaries)) ] || return 1
-  done
-}
-check "(f) the missed slots fired once each after the restart, not a flood" not_a_flood
+# Wait until the first regular slot after the restart has fired too, then count from the database.
+until [ "$(dc exec -T db date +%s)" -ge $((boundary + 40)) ]; do sleep 3; done
+CREATED="$(created)"
+check "(f) exactly one catch-up job per schedule before the next minute boundary (not a flood)" \
+  one_catch_up_each "$CREATED" "$t1" "$boundary"
+check "(f) the next regular slot fired for each schedule" next_slot_fired "$CREATED" "$boundary" $((boundary + 40))
 
 # --- (a) never unhealthy while the worker ran
-unhealthy_seen() { awk '$2 == "true" && $3 == "unhealthy"' "$TMP/health.log" | has .; }
-check "(a) unhealthy never reported while the worker ran" eval '! unhealthy_seen'
+health_ok() {  # samples exist, healthy ones among them, and never unhealthy while running
+  [ -s "$TMP/health.log" ] || return 1
+  awk '$2 == "true" && $3 == "healthy"' "$TMP/health.log" | has . || return 1
+  ! awk '$2 == "true" && $3 == "unhealthy"' "$TMP/health.log" | has .
+}
+check "(a) health samples: healthy, and unhealthy never reported while the worker ran" health_ok
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "all smoke steps passed"; else echo "$FAILS smoke step(s) failed"; fi
