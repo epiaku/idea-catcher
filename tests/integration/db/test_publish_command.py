@@ -6,7 +6,7 @@ prints what was committed and pushed per repo."""
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, text
 from typer.testing import CliRunner
 from worker_harness import DOCS_SEED, NOTES
 
@@ -14,6 +14,7 @@ from catcher.cli import app
 from catcher.core.db import session_scope, utc_now
 from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import enqueue
+from catcher.modules.worker import handlers_pipeline, runner
 from catcher.modules.worker.guard import WorkerLock
 
 pytestmark = pytest.mark.db
@@ -116,3 +117,96 @@ def test_publish_queues_no_pipeline_run(repos, use_services, pg_engine) -> None:
     result = CliRunner().invoke(app, _args(repos))
     assert result.exit_code == 0, result.output
     assert [job.type for job in _jobs(pg_engine)] == ["pipeline.publish"]
+
+
+def test_a_failed_push_says_what_is_committed_and_what_was_pushed(
+    repos, use_services, pg_engine, sh, tmp_path
+) -> None:
+    _dirty(repos)
+    sh(repos.ideas, "remote", "set-url", "--push", "origin", str(tmp_path / "missing.git"))
+    result = CliRunner().invoke(app, _args(repos, "--push"))
+    assert result.exit_code == 1, result.output
+    assert "committed: ideas yes, docs yes" in result.output
+    assert "pushed: docs; push FAILED for: ideas" in result.output
+    assert "nothing to commit" not in result.output
+    assert sh(repos.docs_bare, "rev-parse", "main") == sh(repos.docs, "rev-parse", "main")
+    # again, with nothing new to commit: ideas is still ahead and still fails; the output must not say so
+    again = CliRunner().invoke(app, _args(repos, "--push"))
+    assert again.exit_code == 1, again.output
+    assert "committed: ideas no, docs no" in again.output
+    assert "push FAILED for: ideas" in again.output and "nothing to commit" not in again.output
+
+
+def test_push_on_a_repo_without_a_remote_fails_before_any_git_change(
+    repos, use_services, pg_engine, sh
+) -> None:
+    _dirty(repos)
+    sh(repos.docs, "remote", "remove", "origin")
+    before = (sh(repos.ideas, "log", "--oneline"), sh(repos.docs, "log", "--oneline"))
+    result = CliRunner().invoke(app, _args(repos, "--push"))
+    assert result.exit_code == 1, result.output
+    assert "no git remote" in " ".join(result.output.split())
+    assert (sh(repos.ideas, "log", "--oneline"), sh(repos.docs, "log", "--oneline")) == before
+    assert "??" in sh(repos.ideas, "status", "--porcelain")
+
+
+def test_a_lock_lost_after_the_publish_says_the_publish_happened(
+    repos, use_services, pg_engine, monkeypatch: pytest.MonkeyPatch, sh
+) -> None:
+    _dirty(repos)
+    real_commit = handlers_pipeline.commit_managed
+    calls: list[object] = []
+
+    def commit_then_lose_the_lock(repo, *args, **kwargs):
+        committed = real_commit(repo, *args, **kwargs)
+        calls.append(repo)
+        if len(calls) == 2:
+            with pg_engine.connect() as admin:
+                pids = admin.execute(
+                    text(
+                        "select pid from pg_locks where locktype = 'advisory' and granted"
+                        " and database = (select oid from pg_database where datname = current_database())"
+                    )
+                ).scalars()
+                for pid in list(pids):
+                    admin.execute(text("select pg_terminate_backend(:pid, 5000)"), {"pid": pid})
+        return committed
+
+    monkeypatch.setattr(handlers_pipeline, "commit_managed", commit_then_lose_the_lock)
+    result = CliRunner().invoke(app, _args(repos))
+    assert result.exit_code == 1, result.output
+    assert "committed: ideas yes, docs yes" in result.output
+    assert "the publish itself is done" in result.output
+    assert sh(repos.ideas, "status", "--porcelain") == ""
+
+
+def test_ctrl_c_during_the_publish_leaves_the_job_queued_and_says_so(
+    repos, use_services, pg_engine, monkeypatch: pytest.MonkeyPatch, sh
+) -> None:
+    _dirty(repos)
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(handlers_pipeline, "commit_managed", interrupt)
+    result = CliRunner().invoke(app, _args(repos))
+    assert result.exit_code == 1, result.output
+    assert "run catcher worker --once to finish it" in result.output
+    assert [(job.type, job.status) for job in _jobs(pg_engine)] == [("pipeline.publish", "queued")]
+    assert "??" in sh(repos.ideas, "status", "--porcelain")
+
+
+def test_ctrl_c_before_the_publish_is_queued_does_not_claim_a_queued_job(
+    repos, use_services, pg_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dirty(repos)
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner.Worker, "reap_safely", interrupt)
+    result = CliRunner().invoke(app, _args(repos))
+    assert result.exit_code == 1, result.output
+    assert "nothing was queued or left" in result.output
+    assert "worker --once" not in result.output
+    assert _jobs(pg_engine) == []

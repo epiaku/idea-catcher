@@ -63,7 +63,13 @@ from catcher.modules.scheduler.schedule import (
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
-from catcher.modules.worker.runner import DatabaseNotUpgraded, RunDatabaseError, publish_command, run_command
+from catcher.modules.worker.runner import (
+    DatabaseNotUpgraded,
+    RunDatabaseError,
+    RunOutcome,
+    publish_command,
+    run_command,
+)
 from catcher.modules.youtube.access import build_access
 from catcher.modules.youtube.cache import FACTS_DIR
 from catcher.modules.youtube.facts import FactsUnavailable
@@ -415,25 +421,36 @@ def publish(
     for problem in outcome.report.problems:
         typer.echo(f"problem: {problem}", err=True)
     if outcome.published:
-        typer.echo(_publish_lines(outcome.committed, outcome.pushed, push))
+        typer.echo(_publish_lines(outcome, push))
+    again = "run catcher worker --once to finish it" if outcome.left_queued else "nothing was queued or left"
     if outcome.lock_lost and outcome.published:
         typer.echo("the lock was lost after the publish: the publish itself is done (see above)", err=True)
     elif outcome.lock_lost:
-        typer.echo("the lock was lost before the publish ran: nothing was committed", err=True)
+        typer.echo(f"the lock was lost before the publish ran: nothing was committed; {again}", err=True)
+    elif outcome.interrupted and outcome.published:
+        typer.echo("interrupted after the publish: the publish itself is done (see above)", err=True)
     elif outcome.interrupted:
-        typer.echo("interrupted: the publish job is back in the queue, run catcher worker --once", err=True)
+        typer.echo(f"interrupted before the publish finished: nothing was committed; {again}", err=True)
     raise typer.Exit(outcome.exit_code)
 
 
-def _publish_lines(committed: dict[str, bool], pushed: bool, push: bool) -> str:
-    yes = lambda done: "yes" if done else "no"  # noqa: E731
-    if not any(committed.values()) and not pushed:
+def _publish_lines(outcome: RunOutcome, push: bool) -> str:
+    """What the publish did per repo; `nothing to commit` only when nothing was committed or pushed and no
+    push failed."""
+    committed = outcome.committed
+
+    def yes(done: bool) -> str:
+        return "yes" if done else "no"
+
+    made = f"committed: ideas {yes(committed.get('ideas', False))}, docs {yes(committed.get('docs', False))}"
+    if outcome.push_failed:  # the commit is local; say per repo what was pushed and what not
+        pushed = ", ".join(outcome.pushed_repos) or "none"
+        failed = ", ".join(outcome.push_failed)
+        return f"{made}\npushed: {pushed}; push FAILED for: {failed} (committed, not pushed)"
+    if not any(committed.values()) and not outcome.pushed:
         return "nothing to commit" + (": nothing to push either" if push else "")
-    pushed_text = yes(pushed) if push else "no (without --push)"
-    return (
-        f"committed: ideas {yes(committed.get('ideas', False))}, docs {yes(committed.get('docs', False))}\n"
-        f"pushed: {pushed_text}"
-    )
+    pushed_text = yes(outcome.pushed) if push else "no (without --push)"
+    return f"{made}\npushed: {pushed_text}"
 
 
 def _run_params(

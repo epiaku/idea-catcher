@@ -1103,6 +1103,8 @@ def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
     author = (ctx.settings.git_author_name, ctx.settings.git_author_email)
     committed = {"docs": False, "ideas": False}
     pushed = False
+    pushed_repos: list[str] = []
+    push_failed: list[str] = []
     problems: list[str] = []
     with GIT_LOCK:
         try:
@@ -1115,7 +1117,7 @@ def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
                     )
             for key, repo, managed, message in repos:
                 committed[key] = commit_managed(repo, managed, message, author=author, unattended=True)
-            for _, repo, _, _ in repos:
+            for key, repo, _, _ in repos:
                 if do_pull:  # after the commit: the autostash only ever holds changes outside the managed set
                     pull(repo, author=author, unattended=True)
                 if do_push:
@@ -1123,14 +1125,16 @@ def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
                         if ahead_of_upstream(repo, unattended=True):
                             push(repo, author=author, unattended=True)
                             pushed = True
+                            pushed_repos.append(key)
                     except GitError as e:  # the work is committed: a later publish pushes it
                         log.error("publish: the push failed, the commit stays local: %s", e)
                         problems.append(str(e))
+                        push_failed.append(key)
         except GitError as e:
             log.error("publish failed (committed so far: %s): %s", committed, e)
             return Fail(str(e))
     log.info("publish: committed=%s pushed=%s", committed, pushed and not problems)
     result: dict[str, Any] = {"committed": committed, "pushed": pushed and not problems}
-    if problems:
-        result["problems"] = problems
+    if problems:  # which repo was pushed and which not, so a caller does not call the whole publish failed
+        result.update(problems=problems, pushed_repos=pushed_repos, push_failed=push_failed)
     return Done(result)

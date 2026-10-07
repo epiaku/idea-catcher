@@ -87,6 +87,8 @@ class RunOutcome:
     blocked_lines: list[str] = field(default_factory=list)
     exit_code: int = 0
     lock_lost: bool = False
+    pushed_repos: list[str] = field(default_factory=list)  # with a failed push: the repos that were pushed
+    push_failed: list[str] = field(default_factory=list)  # ... and the repos whose push failed
     published: bool = False  # the publish job succeeded (also when the lock was lost after it)
     refused: str | None = None  # why the run did not start (exit 2, nothing was done)
 
@@ -219,6 +221,28 @@ def _under_the_lock(
     raise AssertionError("unreachable")  # the with block returns or raises; ExitStack could swallow in theory
 
 
+def _read_publish(outcome: RunOutcome, publish: Job | None, *, stopped: bool) -> bool:
+    """Put the `pipeline.publish` job's result in `outcome`; True when the job failed or did not finish
+    (and the run was not stopped before: a lock lost or Ctrl-C leaves its own message)."""
+    if publish is None:
+        return False
+    if publish.status == "succeeded":  # it committed (and pushed), even if the lock went after
+        result = publish.result or {}
+        outcome.published = True
+        outcome.committed = dict(result.get("committed") or {})
+        outcome.pushed = bool(result.get("pushed", False))
+        outcome.pushed_repos = list(result.get("pushed_repos") or [])
+        outcome.push_failed = list(result.get("push_failed") or [])
+        for problem in result.get("problems") or []:  # a failed push: committed, not pushed
+            outcome.report.problems.append(f"{problem}: {PUSH_FAILED}")
+        return False
+    if stopped:
+        return False
+    why = publish.error or f"pipeline.publish is {publish.status}"
+    outcome.report.problems.append(f"{why}: {PUBLISH_FAILED}")
+    return True
+
+
 def _publish_only(ctx: HandlerContext, worker: Worker, *, push: bool) -> RunOutcome:
     """Queue and run one `pipeline.publish`; the outcome says what is true (the job's result, or why not)."""
     outcome = RunOutcome(report=RunReport())
@@ -240,17 +264,8 @@ def _publish_only(ctx: HandlerContext, worker: Worker, *, push: bool) -> RunOutc
     if publish_id is not None:
         with session_scope(ctx.engine) as session:
             publish = session.get(Job, publish_id)
-            if publish is not None and publish.status == "succeeded":  # it happened, lock lost or not
-                result = publish.result or {}
-                outcome.published = True
-                outcome.committed = dict(result.get("committed") or {})
-                outcome.pushed = bool(result.get("pushed", False))
-                for problem in result.get("problems") or []:
-                    outcome.report.problems.append(f"{problem}: {PUSH_FAILED}")
-            elif publish is not None and not outcome.lock_lost and not outcome.interrupted:
-                failed = True
-                why = publish.error or f"pipeline.publish is {publish.status}"
-                outcome.report.problems.append(f"{why}: {PUBLISH_FAILED}")
+            failed = _read_publish(outcome, publish, stopped=outcome.lock_lost or outcome.interrupted)
+            outcome.left_queued = int(publish is not None and publish.status == "queued")
     outcome.report.committed, outcome.report.pushed = outcome.committed, outcome.pushed
     stopped = outcome.lock_lost or outcome.interrupted or failed or job_errors > 0
     outcome.exit_code = 1 if outcome.report.problems or stopped else 0
@@ -334,18 +349,7 @@ def _run(
             outcome.blocked_lines = _blocked_lines(ctx, session, names, now)
             outcome.blocked_lines += _youtube_wait_line(session, names, now)
         publish = session.get(Job, publish_id) if publish_id is not None else None
-        publish_failed = False
-        if publish is not None and publish.status == "succeeded":  # it committed, even if the lock went after
-            result = publish.result or {}
-            outcome.published = True
-            outcome.committed = dict(result.get("committed") or {})
-            outcome.pushed = bool(result.get("pushed", False))
-            for problem in result.get("problems") or []:  # a failed push: committed, not pushed
-                outcome.report.problems.append(f"{problem}: {PUSH_FAILED}")
-        elif publish is not None and not outcome.lock_lost and not outcome.interrupted:
-            publish_failed = True
-            why = publish.error or f"pipeline.publish is {publish.status}"
-            outcome.report.problems.append(f"{why}: {PUBLISH_FAILED}")
+        publish_failed = _read_publish(outcome, publish, stopped=outcome.lock_lost or outcome.interrupted)
     outcome.report.committed, outcome.report.pushed = outcome.committed, outcome.pushed
     report = outcome.report
     failed = (
