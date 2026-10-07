@@ -35,6 +35,7 @@ _HELD = text(
 # Any backend holds the lock with this key: read-only, takes no lock, needs no table.
 _ANYONE_HOLDS = text(
     "select exists (select 1 from pg_locks where locktype = 'advisory' and granted "
+    "and database = (select oid from pg_database where datname = current_database()) "
     "and classid::bigint = :hi and objid::bigint = :lo and objsubid = 1)"
 )
 
