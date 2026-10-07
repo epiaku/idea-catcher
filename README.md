@@ -10,7 +10,7 @@ Obsidian -> idea-bucket/inbox -> catcher run pipeline -> epiaku-docs (page)
                                       |-> output/ (the working copy), failed/, duplicates/
 ```
 
-**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it), and so are the item states and metrics (B5); since B5b `catcher run pipeline` is the worker path in one process (the Stage A loop is gone). Schedules and Compose come next.
+**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it), and so are the item states and metrics (B5); since B5b `catcher run pipeline` is the worker path in one process (the Stage A loop is gone); since B6 `catcher worker` queues the pull, the run and the publish on three cron schedules (`catcher schedules` shows them, `catcher publish` commits by hand). Compose comes next.
 
 ## 📑 Table of contents
 
@@ -49,6 +49,8 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 | `catcher db upgrade`, `catcher db downgrade REVISION` (for example `-1`) | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see [How to run Stage B](docs/idea-catcher-how-to-run-stage-b.md)) |
 | `catcher worker` | Run the jobs in the queue, one at a time, until Ctrl-C (`--once`: run what is due, then exit). One worker at a time (Stage B) |
 | `catcher jobs add TYPE`, `catcher jobs list` | Put a job on the queue (`pipeline.run`, `pipeline.publish`, `ideas.pull`, with `--param KEY=VALUE`), list the jobs (Stage B) |
+| `catcher schedules` | Show the three schedules of the worker (`SCHEDULE_IDEAS_PULL`, `SCHEDULE_PIPELINE_RUN`, `SCHEDULE_PUBLISH`): cron, timezone, last fired (UTC), next due (Stage B) |
+| `catcher publish` | Commit both repos by hand (`--push`: also pull and push); takes the worker's lock, so never next to a worker (Stage B) |
 | `catcher items list` | List the documents the worker handles: state, since when and why (`--status stuck`, `--limit N`; Stage B) |
 | `catcher reconcile` | Rebuild the item rows from the idea-bucket folders after a lost or new database; never deletes a file or a row, and closes the YouTube gate (`--dry-run` first, `--keep-gate`; Stage B) |
 | `catcher youtube gate` | Show the YouTube gate in Postgres, shared by the worker and the CLI (open, the next allowed call, or a block) |

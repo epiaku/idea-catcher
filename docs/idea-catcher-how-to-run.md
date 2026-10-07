@@ -42,6 +42,7 @@ uv run catcher run pipeline --push                                   # 3. full r
 - **`youtube facts`**: prints the counts and transcript of one YouTube video.
 - **`db upgrade`, `db downgrade REVISION`**: create or roll back the Postgres tables (Stage B). See [How to Run Stage B](../idea-catcher-how-to-run-stage-b/#database).
 - **`worker`, `jobs add`, `jobs list`**: run the jobs in the Postgres queue, put a job on it, look at the jobs (Stage B). See [How to Run Stage B](../idea-catcher-how-to-run-stage-b/#worker).
+- **`schedules`, `publish [--push]`**: show the three schedules of the worker (cron, timezone, last fired, next due), and commit (with `--push` also pull and push) both repos by hand (Stage B6). See [Scheduling](../idea-catcher-how-to-run-stage-b/#scheduling).
 - **`youtube gate`**: shows the YouTube gate in Postgres: open, the next allowed call, or a block. See [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate).
 - **`version`**: prints the version.
 
@@ -233,7 +234,7 @@ It needs the database (the gate is in Postgres): without it, it says `the YouTub
 
 ## Stage B: the database and the worker {#stage-b}
 
-The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, how to stop the worker, and the exit codes. The commands on this page need only the database itself: `run pipeline` and `render` take its lock there, and `run pipeline`, `render` and `youtube facts` use the YouTube gate there. Only `scan` and `reason` work without it. `scripts/check` runs every check at once (see that page).
+The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, the schedules (`SCHEDULE_IDEAS_PULL`, `SCHEDULE_PIPELINE_RUN`, `SCHEDULE_PUBLISH`, see [Scheduling](../idea-catcher-how-to-run-stage-b/#scheduling)), how to stop the worker, and the exit codes. The commands on this page need only the database itself: `run pipeline` and `render` take its lock there, and `run pipeline`, `render` and `youtube facts` use the YouTube gate there. Only `scan` and `reason` work without it. `scripts/check` runs every check at once (see that page).
 
 ## YouTube and the gap between calls {#youtube-gap}
 
