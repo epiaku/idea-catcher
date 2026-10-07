@@ -1,0 +1,42 @@
+# Overrides for the smoke run only (scripts/compose-smoke): never for real use.
+#   docker compose -p catcher-smoke-<n> --env-file <empty file> -f compose.yaml -f compose.test.yaml up -d --build
+# Local bare repos instead of GitHub, every schedule each minute, no LLM and no YouTube, no .env.
+# The script exports SMOKE_IMAGE, SMOKE_REMOTES, DB_PORT and SMOKE_GITHUB_TOKEN (a dummy).
+x-smoke: &smoke
+  image: ${SMOKE_IMAGE:?set SMOKE_IMAGE (a throwaway tag such as idea-catcher:smoke-1234)}
+  # The host .env holds real keys: the smoke run never reads it.
+  env_file: !reset []
+  environment:
+    IDEAS_REMOTE: /remotes/idea-bucket.git
+    DOCS_REMOTE: /remotes/epiaku-docs.git
+    GITHUB_TOKEN: ${SMOKE_GITHUB_TOKEN:-}
+    OPENAI_API_KEY: ""  # with no key the OpenAI profiles defer without a call
+    OPENAI_MODEL_CLIPPINGS: smoke-unused
+    OPENAI_MODEL_YOUTUBE: smoke-unused
+    OPENAI_BASE_URL: http://127.0.0.1:1/v1
+    FREELLMAPI_API_KEY: ""
+    FREELLMAPI_URL: http://127.0.0.1:1/v1
+    LLM_MAX_ATTEMPTS: "1"
+    YOUTUBE_OFFLINE: "1"
+    SCHEDULE_IDEAS_PULL: "* * * * *"
+    SCHEDULE_PIPELINE_RUN: "* * * * *"
+    SCHEDULE_PUBLISH: "* * * * *"
+    SCHEDULE_TIMEZONE: UTC
+    GIT_AUTHOR_NAME: idea-catcher-smoke
+    GIT_AUTHOR_EMAIL: idea-catcher-smoke@example.com
+    GIT_COMMITTER_NAME: idea-catcher-smoke
+    GIT_COMMITTER_EMAIL: idea-catcher-smoke@example.com
+
+services:
+  db:
+    ports: !override
+      - "127.0.0.1:${DB_PORT:?set DB_PORT (never 5432)}:5432"
+
+  migrate:
+    <<: *smoke
+
+  worker:
+    <<: *smoke
+    volumes:
+      - repos:/data/repos
+      - ${SMOKE_REMOTES:?set SMOKE_REMOTES (a temp dir with the bare repos)}:/remotes

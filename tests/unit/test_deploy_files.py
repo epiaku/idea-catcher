@@ -166,3 +166,26 @@ def test_env_example_documents_every_variable_compose_reads():
     assert {"DB_PASSWORD", "DB_PORT", "IDEAS_REMOTE", "DOCS_REMOTE", "GITHUB_TOKEN"} <= names
     for name in names:
         assert re.search(rf"^#? ?{name}=", example, re.M), name
+
+
+def test_the_smoke_overrides_never_read_env_call_an_llm_or_youtube_or_use_port_5432():
+    text = (ROOT / "compose.test.yaml").read_text(encoding="utf-8")
+    assert "env_file: !reset []" in text
+    assert "5432:5432" not in text and "${DB_PORT:?" in text
+    assert "CATCHER_ALLOW_NETWORK" not in text
+    for line in (
+        'OPENAI_API_KEY: ""',
+        "OPENAI_BASE_URL: http://127.0.0.1:1/v1",
+        "FREELLMAPI_URL: http://127.0.0.1:1/v1",
+        'YOUTUBE_OFFLINE: "1"',
+        "IDEAS_REMOTE: /remotes/idea-bucket.git",
+        "image: ${SMOKE_IMAGE:?",
+    ):
+        assert line in text, line
+    assert not re.search(r"ghp_|github_pat_|sk-", text)
+    script = ROOT / "scripts" / "compose-smoke"
+    assert script.stat().st_mode & 0o111
+    body = script.read_text(encoding="utf-8")
+    assert "set -euo pipefail" in body and "trap teardown EXIT" in body
+    assert 'docker compose -p "$PROJECT"' in body
+    assert "prune" not in body

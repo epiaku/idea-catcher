@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+# A real compose run of the worker on throwaway copies: proves it clones, pulls, runs, publishes and stops cleanly.
+#   bash scripts/compose-smoke     about 8 minutes; needs Docker; no GitHub, no LLM, no YouTube
+# Everything it makes has its own name (project catcher-smoke-<n>, image idea-catcher:smoke-<n>, a temp dir)
+# and is removed at the end, also on failure or Ctrl-C. It never touches tests/data, tmp/ic, ~/.catcher,
+# the host .env, or another compose project (such as a catcher-db on port 5432).
+# Prints PASS/FAIL per step; exits 1 when any step failed.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+ROOT="$(pwd -P)"
+
+ID="$$-$RANDOM"
+PROJECT="catcher-smoke-$ID"
+export SMOKE_IMAGE="idea-catcher:smoke-$ID"
+export SMOKE_GITHUB_TOKEN="smoke-token-not-real"  # a dummy: it must never show up in a log or a .git/config
+TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/catcher-smoke.XXXXXX")" && pwd -P)"
+export SMOKE_REMOTES="$TMP/remotes"
+: >"$TMP/empty.env"  # compose reads this instead of the project .env for ${...}
+
+free_port() {
+  python3 - <<'EOF'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+EOF
+}
+DB_PORT="$(free_port)"
+while [ "$DB_PORT" = 5432 ]; do DB_PORT="$(free_port)"; done
+export DB_PORT
+
+dc() { docker compose -p "$PROJECT" --env-file "$TMP/empty.env" -f compose.yaml -f compose.test.yaml "$@"; }
+wexec() { dc exec -T worker "$@"; }
+
+FAILS=0
+pass() { echo "PASS $*"; }
+fail() {
+  echo "FAIL $*"
+  FAILS=$((FAILS + 1))
+}
+check() {  # check "<name>" <command...>: PASS when the command succeeds
+  local name="$1"
+  shift
+  if "$@"; then pass "$name"; else fail "$name"; fi
+}
+now() { date +%s; }
+# grep -q in a pipe ends early and the writer dies of SIGPIPE, which pipefail reports as a failure: read it all.
+has() {
+  local text
+  text="$(cat)"
+  grep -qE -- "$1" <<<"$text"
+}
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+MONITOR_PID=""
+teardown() {
+  local rc=$?
+  set +e
+  [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null
+  log "teardown: compose project $PROJECT (down -v), image $SMOKE_IMAGE, temp dir $TMP"
+  if [ "${SMOKE_DEBUG:-}" = 1 ]; then dc logs --no-color --tail 80 >&2; fi
+  dc down -v --remove-orphans --timeout 30 >/dev/null 2>&1
+  docker image rm "$SMOKE_IMAGE" >/dev/null 2>&1
+  rm -rf "$TMP"
+  local left
+  left="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" -q)"
+  left+="$(docker volume ls --filter "label=com.docker.compose.project=$PROJECT" -q)"
+  left+="$(docker network ls --filter "label=com.docker.compose.project=$PROJECT" -q)"
+  left+="$(docker image ls -q "$SMOKE_IMAGE")"
+  if [ -n "$left" ]; then
+    echo "FAIL teardown: something of $PROJECT is left: $left"
+    rc=1
+  else
+    echo "PASS teardown: no container, volume, network or image of $PROJECT is left"
+  fi
+  exit "$rc"
+}
+trap teardown EXIT
+trap 'exit 130' INT TERM
+
+log "project $PROJECT, db port $DB_PORT, image $SMOKE_IMAGE, temp $TMP"
+
+# --- the throwaway remotes: bare copies of the test data, writable for the container user (uid 1000)
+git_clean() { env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -c user.name=smoke -c user.email=smoke@example.com "$@"; }
+uv run --quiet catcher testdata reset --target "$TMP/ic" >/dev/null
+mkdir -p "$SMOKE_REMOTES"
+for name in idea-bucket epiaku-docs; do
+  git_clean clone -q --bare "$TMP/ic/$name" "$SMOKE_REMOTES/$name.git"
+  git_clean -C "$SMOKE_REMOTES/$name.git" config core.sharedRepository world
+done
+chmod -R a+rwX "$SMOKE_REMOTES"
+
+# --- (a) build and start; migrate exits 0; the worker becomes healthy, never unhealthy
+START="$(now)"
+log "building and starting (the first build takes a few minutes)"
+if ! dc up -d --build --quiet-pull >"$TMP/up.log" 2>&1; then
+  tail -n 30 "$TMP/up.log"
+  fail "(a) docker compose up"
+  dc logs --no-color migrate worker 2>&1 | tail -n 30
+  exit 1
+fi
+UP="$(now)"
+log "up after $((UP - START)) s"
+
+MIGRATE_ID="$(dc ps -a -q migrate)"
+WORKER_ID="$(dc ps -a -q worker)"
+check "(a) migrate exited 0" test "$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "$MIGRATE_ID")" = "exited 0"
+
+# Watch the health status in the background for the whole run (only while the container runs).
+(
+  while true; do
+    docker inspect -f '{{.State.Running}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$WORKER_ID" \
+      2>/dev/null | sed "s/^/$(date +%s) /"
+    sleep 5
+  done
+) >"$TMP/health.log" &
+MONITOR_PID=$!
+
+wait_healthy() {  # wait_healthy <seconds>
+  local deadline=$(($(now) + $1)) status
+  while [ "$(now)" -lt "$deadline" ]; do
+    status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$WORKER_ID")"
+    [ "$status" = healthy ] && return 0
+    sleep 3
+  done
+  return 1
+}
+if wait_healthy 180; then
+  HEALTHY="$(now)"
+  pass "(a) the worker is healthy, $((HEALTHY - UP)) s after up ($((HEALTHY - START)) s with the build)"
+else
+  fail "(a) the worker did not become healthy within 180 s"
+  dc logs --no-color worker | tail -n 30
+fi
+log "image size: $(docker image inspect -f '{{.Size}}' "$SMOKE_IMAGE" | awk '{printf "%.0f MB", $1 / 1000000}')"
+
+# --- (b) both repos were cloned into the volume
+for name in idea-bucket epiaku-docs; do
+  check "(b) $name cloned into the repos volume" wexec git -C "/data/repos/$name" log -1 --format='%h %s'
+done
+
+# --- (d, first half) a capture pushed into the bare idea-bucket remote from another clone (the phone)
+CAPTURE="inbox/smoke-capture-$ID.md"
+git_clean clone -q "$SMOKE_REMOTES/idea-bucket.git" "$TMP/phone"
+mkdir -p "$TMP/phone/inbox"
+printf '# Smoke capture %s\n\nA note pushed from another clone while the worker runs.\n' "$ID" >"$TMP/phone/$CAPTURE"
+git_clean -C "$TMP/phone" add "$CAPTURE"
+git_clean -C "$TMP/phone" commit -qm "smoke capture $ID"
+git_clean -C "$TMP/phone" push -q origin HEAD
+CAPTURE_SHA="$(git_clean -C "$TMP/phone" rev-parse HEAD)"
+log "pushed capture $CAPTURE_SHA to the bare idea-bucket remote"
+
+# --- (c) within ~150 s a job of each scheduled type and all three schedules fired
+jobs_seen() {
+  local list type
+  list="$(wexec catcher jobs list --limit 500 2>/dev/null)" || return 1
+  for type in ideas.pull pipeline.run pipeline.publish; do
+    awk -v t="$type" '$2 == t' <<<"$list" | has . || return 1
+  done
+}
+deadline=$(($(now) + 150))
+until jobs_seen || [ "$(now)" -ge "$deadline" ]; do sleep 5; done
+check "(c) jobs list shows ideas.pull, pipeline.run and pipeline.publish" jobs_seen
+SCHEDULES="$(wexec catcher schedules)"
+echo "$SCHEDULES"
+schedules_fired() {
+  local name
+  for name in ideas_pull pipeline_run publish; do
+    awk -v n="$name" '$1 == n && $5 != "never" && $2 != "off"' <<<"$SCHEDULES" | has . || return 1
+  done
+}
+check "(c) schedules: all three have a last fired" schedules_fired
+
+# --- (d) the capture arrives in the container's clone (pulled by the schedule), and publish pushed back
+capture_arrived() { wexec git -C /data/repos/idea-bucket merge-base --is-ancestor "$CAPTURE_SHA" HEAD 2>/dev/null; }
+deadline=$(($(now) + 150))
+until capture_arrived || [ "$(now)" -ge "$deadline" ]; do sleep 5; done
+check "(d) the pushed capture arrived in the container's idea-bucket clone" capture_arrived
+published() {
+  git_clean -C "$SMOKE_REMOTES/idea-bucket.git" log --format='%an' main | has '^idea-catcher-smoke$'
+}
+deadline=$(($(now) + 150))
+until published || [ "$(now)" -ge "$deadline" ]; do sleep 5; done
+check "(d) a worker commit was pushed to the bare idea-bucket remote (publish)" published
+no_push_error() { ! dc logs --no-color worker 2>&1 | has "push failed"; }
+check "(d) no 'push failed' in the worker log" no_push_error
+if [ "$FAILS" -gt 0 ]; then  # what publish did, for the report
+  dc logs --no-color worker 2>&1 | grep -E "publish|ERROR" | tail -n 12
+  for name in idea-bucket epiaku-docs; do
+    echo "bare $name:"
+    git_clean -C "$SMOKE_REMOTES/$name.git" log --format='  %h %an: %s' -3 main
+    echo "container $name:"
+    wexec git -C "/data/repos/$name" log --format='  %h %an: %s' -3
+    wexec git -C "/data/repos/$name" status -sb | head -n 3
+  done
+fi
+
+JOBS_LIST="$(wexec catcher jobs list --limit 500)"
+no_failed_jobs() { ! awk '$3 == "failed"' <<<"$JOBS_LIST" | has .; }
+check "(c) no job failed" no_failed_jobs
+awk '$3 == "failed"' <<<"$JOBS_LIST" | head -n 5
+
+# --- (h) a pipeline run by hand inside the running container refuses: one worker at a time
+rc=0
+out="$(wexec catcher run pipeline 2>&1)" || rc=$?
+echo "$out" | tail -n 2
+busy_refused() { [ "$rc" = 2 ] && grep -q "another worker or run is already running" <<<"$out"; }
+check "(h) catcher run pipeline in the worker container exits 2 with the one-worker message (rc=$rc)" busy_refused
+
+# --- (g) the dummy token is nowhere it must not be
+token_absent() { ! grep -qF "$SMOKE_GITHUB_TOKEN"; }
+check "(g) no token in the compose logs" token_absent < <(dc logs --no-color 2>&1)
+check "(g) no token in docker history" token_absent < <(docker history --no-trunc "$SMOKE_IMAGE")
+check "(g) no token in the image config" token_absent < <(docker image inspect "$SMOKE_IMAGE")
+for name in idea-bucket epiaku-docs; do
+  check "(g) no token in $name .git/config or git config --list" token_absent \
+    < <(wexec sh -c "cat /data/repos/$name/.git/config; git -C /data/repos/$name config --list --show-origin")
+done
+only_in_github_token() { ! grep -F "$SMOKE_GITHUB_TOKEN" | grep -v "^GITHUB_TOKEN=" | has .; }
+check "(g) the worker env holds the token only in GITHUB_TOKEN (for askpass)" only_in_github_token < <(wexec env)
+
+# --- (e) stop ends within the grace period with exit code 0 and logs `worker ... stopped`
+before_stop="$(wexec catcher jobs list --limit 1000 | awk '{print $2}' | sort | uniq -c)"
+t0="$(now)"
+dc stop worker >/dev/null 2>&1
+STOP_S=$(($(now) - t0))
+check "(e) docker compose stop worker took $STOP_S s (grace 120 s)" test "$STOP_S" -lt 120
+check "(e) the worker exited with code 0" test "$(docker inspect -f '{{.State.ExitCode}}' "$WORKER_ID")" = 0
+stopped_logged() { dc logs --no-color worker 2>&1 | has "worker .+ stopped"; }
+check "(e) the log has 'worker ... stopped'" stopped_logged
+
+# --- (f) a restart keeps the repos and the jobs, and a missed slot fires once (not a flood)
+log "worker stopped; waiting 130 s so at least two slots are missed"
+sleep 130
+t1="$(now)"
+dc up -d worker >/dev/null 2>&1
+if wait_healthy 120; then pass "(f) healthy again after $(($(now) - t1)) s"; else fail "(f) not healthy again"; fi
+check "(f) idea-bucket clone still there with the capture" capture_arrived
+no_second_clone() { [ "$(dc logs --no-color worker 2>&1 | grep -c "Cloning into '/data/repos/idea-bucket'")" -le 1 ]; }
+check "(f) the restart did not clone again" no_second_clone
+after="$(wexec catcher jobs list --limit 1000 | awk '{print $2}' | sort | uniq -c)"
+kept() { while read -r n type; do
+  m="$(awk -v t="$type" '$2 == t {print $1}' <<<"$after")"
+  [ "${m:-0}" -ge "$n" ] || return 1
+done <<<"$before_stop"; }
+check "(f) every job from before the stop is still there" kept
+# Count the new jobs per type: one catch-up for the missed slots, plus one per minute boundary passed since.
+sleep 20
+t2="$(now)"
+after="$(wexec catcher jobs list --limit 1000 | awk '{print $2}' | sort | uniq -c)"
+boundaries=$((t2 / 60 - t1 / 60))
+not_a_flood() {
+  for type in ideas.pull pipeline.run pipeline.publish; do
+    b="$(awk -v t="$type" '$2 == t {print $1}' <<<"$before_stop")"
+    a="$(awk -v t="$type" '$2 == t {print $1}' <<<"$after")"
+    new=$((${a:-0} - ${b:-0}))
+    echo "  $type: $new new job(s) since the restart ($boundaries minute boundary/ies passed)"
+    [ "$new" -ge 1 ] && [ "$new" -le $((1 + boundaries)) ] || return 1
+  done
+}
+check "(f) the missed slots fired once each after the restart, not a flood" not_a_flood
+
+# --- (a) never unhealthy while the worker ran
+unhealthy_seen() { awk '$2 == "true" && $3 == "unhealthy"' "$TMP/health.log" | has .; }
+check "(a) unhealthy never reported while the worker ran" eval '! unhealthy_seen'
+
+echo
+if [ "$FAILS" -eq 0 ]; then echo "all smoke steps passed"; else echo "$FAILS smoke step(s) failed"; fi
+[ "$FAILS" -eq 0 ]
