@@ -87,7 +87,8 @@ def _run_unattended(
 ) -> subprocess.CompletedProcess[str]:
     """Run `cmd` in its own process group with no terminal. On a timeout the whole group (git, its hooks,
     ssh) gets SIGTERM, so git removes its lock files; whatever is left after KILL_GRACE_S gets SIGKILL.
-    Raises GitTimeout once the child is reaped."""
+    Raises GitTimeout once the child is reaped. An interrupt (KeyboardInterrupt, raised by Ctrl-C or the
+    SIGTERM handler of `run pipeline`) stops the group the same way, then propagates."""
     proc = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -101,15 +102,24 @@ def _run_unattended(
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        _signal_group(proc.pid, signal.SIGTERM)
-        try:
-            proc.communicate(timeout=KILL_GRACE_S)
-        except subprocess.TimeoutExpired:
-            _signal_group(proc.pid, signal.SIGKILL)
-            proc.communicate()
-        _signal_group(proc.pid, signal.SIGKILL)  # a grandchild that ignored SIGTERM
+        _stop_group(proc)
         raise GitTimeout(f"timed out after {timeout} s") from None
+    except BaseException:  # Ctrl-C or SIGTERM: the child is in its own session, so the signal missed it
+        _stop_group(proc)
+        raise
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def _stop_group(proc: subprocess.Popen[str]) -> None:
+    """SIGTERM to the child's whole process group (git, its hooks, ssh), KILL_GRACE_S to clean up (git removes
+    its lock files), then SIGKILL; returns once the child is reaped."""
+    _signal_group(proc.pid, signal.SIGTERM)
+    try:
+        proc.communicate(timeout=KILL_GRACE_S)
+    except subprocess.TimeoutExpired:
+        _signal_group(proc.pid, signal.SIGKILL)
+        proc.communicate()
+    _signal_group(proc.pid, signal.SIGKILL)  # a grandchild that ignored SIGTERM
 
 
 def git(repo: Path, *args: str, unattended: bool = False) -> str:
