@@ -129,3 +129,52 @@ def test_pull_on_a_detached_head_fails_clearly(harness, sh):
     result = pull_job(harness)
 
     assert isinstance(result, Fail) and "detached" in result.error
+
+
+def seed_worker_files(harness, sh) -> None:
+    """`output/y.md` and `inbox/x.md` are tracked and pushed."""
+    for rel in ("output/y.md", "inbox/x.md"):
+        (harness.ideas / rel).parent.mkdir(parents=True, exist_ok=True)
+        (harness.ideas / rel).write_text("base\n")
+    sh(harness.ideas, "add", "-A")
+    sh(harness.ideas, "commit", "-m", "seed files")
+    sh(harness.ideas, "push")
+
+
+def test_pull_when_the_remote_edited_a_file_the_worker_changed_leaves_the_files_intact(harness, sh, tmp_path):
+    seed_worker_files(harness, sh)
+    push_from_another_clone(sh, harness.ideas, tmp_path, "output/y.md", "remote y\n")
+    push_from_another_clone(sh, harness.ideas, tmp_path, "inbox/x.md", "remote x\n")
+    (harness.ideas / "output/y.md").write_text("worker y\n")  # uncommitted, as after a pipeline.run
+    (harness.ideas / "inbox/x.md").unlink()
+
+    result = pull_job(harness)
+
+    assert isinstance(result, Fail) and result.error
+    assert_clean_branch(sh, harness.ideas)  # no rebase, no unmerged file, no stash entry
+    assert (harness.ideas / "output/y.md").read_text() == "worker y\n"  # no conflict markers
+    assert not (harness.ideas / "inbox/x.md").exists()
+    assert "unmerged" not in sh(harness.ideas, "status").lower()
+
+    # the remote edit is gone: the next pull succeeds with the worker's commit ahead
+    other = tmp_path / f"other-{harness.ideas.name}"
+    sh(other, "reset", "--hard", "HEAD~2")
+    sh(other, "push", "--force")
+    assert pull_job(harness) == Done({"pulled": True})
+    assert (harness.ideas / "output/y.md").read_text() == "worker y\n"
+
+
+def test_pull_commits_the_workers_changes_locally_first_and_does_not_push(harness, sh):
+    seed_worker_files(harness, sh)
+    remote = harness.ideas.with_name(f"{harness.ideas.name}.git")
+    remote_head = sh(remote, "rev-parse", "main")
+    (harness.ideas / "output/y.md").write_text("worker y\n")
+
+    assert pull_job(harness) == Done({"pulled": True})
+
+    assert sh(harness.ideas, "status", "--porcelain") == ""
+    assert (
+        sh(harness.ideas, "log", "-1", "--format=%s").strip()
+        == "idea-catcher: process the inbox (pipeline.publish)"
+    )
+    assert sh(remote, "rev-parse", "main") == remote_head

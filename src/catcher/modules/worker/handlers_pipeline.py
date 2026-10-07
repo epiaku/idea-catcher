@@ -33,11 +33,12 @@ no session open and never sleeps: a closed gate (the gap, or the breaker after a
 gate's time (no attempt counted) and the item keeps waiting. No facts to be had (no transcript, a gone video,
 a yt-dlp failure) defers the item, as in Stage A, and the job succeeds. Saved facts mean no second call.
 
-`pipeline.publish` is the only handler that runs git. Per repo (the idea-bucket, then epiaku-docs with the
-pages and `idea-bucket/artifacts`): commit the managed folders, pull with a rebase, push. Committing first
-means the pull's autostash never holds the worker's own changes. Changes outside those folders are left
-alone. A failed rebase is aborted and fails the job; the commit stays local, and the next publish pulls and
-pushes it."""
+`pipeline.publish` and `ideas.pull` are the handlers that run git (`ideas.pull`: commit the idea-bucket's
+managed folders locally, then pull; it never pushes). `pipeline.publish`, per repo (the idea-bucket, then
+epiaku-docs with the pages and `idea-bucket/artifacts`): commit the managed folders, pull with a rebase,
+push. Committing first means the pull's autostash never holds the worker's own changes. Changes outside
+those folders are left alone. A failed rebase is aborted and fails the job; the commit stays local, and the
+next publish pulls and pushes it."""
 
 import logging
 import uuid
@@ -1061,7 +1062,8 @@ def parse_pull_params(params: dict[str, Any]) -> None:
 
 
 def handle_ideas_pull(ctx: HandlerContext, job: Job) -> HandlerResult:
-    """Pull (rebase, autostash) the idea-bucket checkout, so a capture pushed from another machine arrives.
+    """Commit the worker's managed folders locally (as publish does, no push), then pull (rebase) the
+    idea-bucket checkout, so a capture pushed from another machine arrives.
 
     A repo without a remote is a no-op `Done`. A failed pull (conflict, network) is `Fail(git's message)`;
     git's own rebase abort has already run, so no rebase stays in progress."""
@@ -1076,6 +1078,9 @@ def handle_ideas_pull(ctx: HandlerContext, job: Job) -> HandlerResult:
             if not has_remote(ctx.ideas, unattended=True):
                 log.info("ideas.pull: %s has no git remote, nothing to pull", ctx.ideas)
                 return Done({"pulled": False, "reason": "no git remote"})
+            # commit first, as publish does (local only, no push): the autostash then never holds the
+            # worker's own changes, and a remote edit of a file the worker changed ends in a clean abort
+            commit_managed(ctx.ideas, IDEAS_MANAGED, IDEAS_MESSAGE, author=author, unattended=True)
             pull(ctx.ideas, author=author, unattended=True)
         except GitError as e:
             log.error("ideas.pull failed: %s", e)
