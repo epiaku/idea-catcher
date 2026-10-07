@@ -20,7 +20,7 @@ The protections of Step 1 are in the code and tested (no network). How they diff
 | Hardening added on 2026-10-02 (review fixes) | **A damaged gate state fails closed:** the gate closes for the block hours (then a damaged file, since 2026-10-04 a damaged or missing row in Postgres). A value from the far future is capped at 24 hours. A fetch that started before a newer block cannot close the breaker (`blocked_at`, `started_at`). Two fetches that both get a 429 count as one block. **A dry run never calls YouTube** and does not use the gap (`would_fetch`). A clip whose gap closed after its check, or that got a 429, goes **back to `inbox/`** as `waiting`. A private or removed video is remembered for a day. The Stage B gate has to do all of this too |
 | A guard against live calls in development | `YOUTUBE_OFFLINE=1` (saved facts still work). `catcher youtube facts` goes through the same gap and breaker |
 
-**Built since in Stage B:** the Postgres queue (B2, B3) and the gate in Postgres (B4; since B4b, 2026-10-04, the only gate: the gate file and `CATCHER_STATE_DIR` are gone). **Not built yet:** the pull and publish schedules, and the backfill import. The text below is the analysis and the design that led here.
+**Built since in Stage B:** the Postgres queue (B2, B3) and the gate in Postgres (B4; since B4b, 2026-10-04, the only gate: the gate file and `CATCHER_STATE_DIR` are gone). **Built since then:** the pull, run and publish schedules (B6, 2026-10-07). **Not built yet:** the backfill import. The text below is the analysis and the design that led here.
 
 ## Short answer
 

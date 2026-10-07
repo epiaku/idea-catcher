@@ -185,7 +185,7 @@ SCHEDULE_TICK_S=30                           # how often the scheduler checks fo
 
 - The worker started at 09:34:23 logged one line per schedule (`schedule publish: '* * * * *' Europe/Amsterdam, next 09:35`) and `new, starts now; the next slot fires` for each. Nothing fired until the 09:35 slot; the tick at 09:35:23 queued `ideas.pull`, `pipeline.run` and `pipeline.publish` (`schedule ideas_pull: slot 2026-10-07T07:35:00+00:00, queued ideas.pull job ...`), and the worker ran them.
 - A capture pushed from another clone into the `idea-bucket` remote at 09:34:42 was pulled by that `ideas.pull` and staged by the `pipeline.run` right after it. A second capture pushed while the worker was stopped arrived with the first pull after the restart.
-- The laptop slept from 09:36 to 09:52: on waking, each schedule fired **once** (slot 09:52), not 16 times. The same after `kill` (SIGTERM; the worker exited 0 within a second, `worker ... stopped`) and 18 minutes down: the restart queued exactly one job per schedule at once, then the normal slots.
+- The laptop slept from 09:36 to 09:52: on waking, each schedule fired **once** (slot 09:52), not 16 times. The same after `kill` (SIGTERM; the worker stopped within a second, `worker ... stopped`; exit code 0 was seen in a separate foreground run) and 18 minutes down: the restart queued exactly one job per schedule at once, then the normal slots.
 - The deferred captures (no LLM) were retried by every scheduled run; the LLM was called once per 10-minute block, the other runs deferred without a call.
 - `catcher publish` while the worker ran: exit 2, `another worker or run is already running; one at a time: nothing was done`. With the worker stopped: `committed: ideas yes, docs no` / `pushed: no (without --push)`, then `nothing to commit`, then `catcher publish --push` pushed the local commit (`pushed: yes`).
 
@@ -199,7 +199,7 @@ uv run catcher schedules
 # publish       off        -                 -                 -
 ```
 
-It reads the same variables as the worker (so run it with the same `.env`) and the `schedules` table; it is read-only and works while a worker runs. **`last fired` is in UTC, `next due` in `SCHEDULE_TIMEZONE`** (the example above was taken at 09:52 in Amsterdam, which is 07:52 UTC). `next due` says `due now` when a slot has passed that the scheduler has not handled yet (it will at its next tick, or at the next start of the worker), `never` in `last fired` means the worker has not seen that schedule yet, and `off` means the variable is empty. A bad cron string or timezone exits 2 with the same message as the worker; no database exits 2.
+It reads the same variables as the worker (so run it with the same `.env`) and the `schedules` table; it is read-only and works while a worker runs. **`last fired` is in UTC, `next due` in `SCHEDULE_TIMEZONE`** (the example above is illustrative, as at 09:52 in Amsterdam, which is 07:52 UTC; there `publish` is shown as off). `next due` says `due now` when a slot has passed that the scheduler has not handled yet (it will at its next tick, or at the next start of the worker), `never` in `last fired` means the worker has not seen that schedule yet, and `off` means the variable is empty. A bad cron string or timezone exits 2 with the same message as the worker; no database exits 2.
 
 **Publish by hand: `catcher publish`.**
 
