@@ -562,10 +562,16 @@ def test_the_worker_starts_the_scheduler_and_stops_it_with_the_worker(
         return Done({})
 
     monkeypatch.setitem(worker_app.EXTRA_HANDLERS, "pipeline.run", stub)
-    result = runner.invoke(
-        app,
-        ["worker", "--poll-s", "0.1", "--ideas", str(tmp_path / "i"), "--docs", str(tmp_path / "d")],
-    )
+    # Watchdog: if no job is ever queued the worker would run until killed; stop it so the test fails fast
+    watchdog = threading.Timer(10, os.kill, (os.getpid(), signal.SIGTERM))
+    watchdog.start()
+    try:
+        result = runner.invoke(
+            app,
+            ["worker", "--poll-s", "0.1", "--ideas", str(tmp_path / "i"), "--docs", str(tmp_path / "d")],
+        )
+    finally:
+        watchdog.cancel()
     assert result.exit_code == 0, result.output
     assert seen == [{"retry_deferred": True}]
     [job] = _jobs(engine)
