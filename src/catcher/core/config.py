@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     youtube_skip_manifests: bool = False  # skip the video-format request (try by hand before turning on)
     youtube_wait_max_s: float = 1800.0  # with --wait-youtube: the longest wait for the gap inside a run
     youtube_negative_ttl_h: float = 24.0  # a video without captions is asked about again after this long
+    # scheduler (in `catcher worker`): five-field cron strings in `schedule_timezone`; empty = off
+    schedule_ideas_pull: str = ""
+    schedule_pipeline_run: str = ""
+    schedule_publish: str = ""
+    schedule_timezone: str = "Europe/Amsterdam"
+    schedule_tick_s: float = Field(default=30, gt=0)  # seconds between two checks for a due slot
     git_author_name: str = "idea-catcher"
     git_author_email: str = "idea-catcher@users.noreply.github.com"
     artifact_max_mb: int = 25
