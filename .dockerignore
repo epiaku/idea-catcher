@@ -1,0 +1,21 @@
+# Keep secrets, state and non-runtime files out of the build context.
+.env
+.env.*
+.git
+.venv
+tmp
+tests
+docs
+research_notes
+reports
+.superpowers
+.claude
+.cline
+.clinerules
+.roo
+.pytest_cache
+.ruff_cache
+.pyright
+__pycache__
+*.pyc
+*.log

@@ -1,0 +1,85 @@
+"""The Dockerfile and .dockerignore, checked as plain text (no Docker needed)."""
+
+import re
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _dockerfile() -> str:
+    return (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+
+def _instructions() -> list[str]:
+    """Dockerfile instructions with comments dropped and continuation lines joined."""
+    text = re.sub(r"\\\n", " ", _dockerfile())
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+
+
+def test_the_dockerfile_installs_git_and_deno_and_pins_both_tool_versions():
+    text = _dockerfile()
+    assert text.startswith("# syntax") or "FROM python:3.12-slim-bookworm" in text
+    for package in ("git", "openssh-client", "ca-certificates", "curl", "unzip"):
+        assert re.search(rf"\b{package}\b", text)
+    assert re.search(r"^ARG DENO_VERSION=\d+\.\d+\.\d+$", text, re.M)
+    assert "denoland/deno/releases/download/v${DENO_VERSION}" in text
+    assert re.search(r"^ARG UV_VERSION=\d+\.\d+\.\d+$", text, re.M)
+    assert "ghcr.io/astral-sh/uv:${UV_VERSION}" in text
+    assert "uv sync --frozen --no-dev" in text
+    assert "safe.directory" in text
+
+
+def test_the_dockerfile_runs_as_a_non_root_user():
+    text = _dockerfile()
+    assert re.search(r"useradd .*--uid 1000 .*catcher", text)
+    users = [line for line in _instructions() if line.startswith("USER ")]
+    assert users and users[-1] == "USER catcher"
+    assert "/data/repos" in text
+
+
+def test_the_dockerfile_never_copies_env_or_sets_a_secret():
+    for line in _instructions():
+        if line.startswith("COPY"):
+            assert not re.search(r"(^|\s)\.env\b", line)
+        if line.startswith(("ENV ", "ARG ")):
+            assert not re.search(r"TOKEN|PASSWORD|SECRET|KEY", line, re.I), line
+
+
+def test_the_dockerfile_has_no_node_claude_or_hugo():
+    text = _dockerfile().lower()
+    for word in ("nodejs", "npm", "claude", "hugo"):
+        assert word not in text
+
+
+def test_the_image_entrypoint_and_default_command():
+    text = _dockerfile()
+    assert 'ENTRYPOINT ["docker-entrypoint"]' in text
+    assert 'CMD ["catcher", "worker"]' in text
+    assert "ENV GIT_ASKPASS=/usr/local/bin/git-askpass" in text
+    assert "scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint" in text
+    assert "scripts/git-askpass.sh /usr/local/bin/git-askpass" in text
+    assert "HEALTHCHECK" not in text
+
+
+def test_dockerignore_keeps_secrets_and_state_out_of_the_build_context():
+    entries = {
+        line.strip()
+        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    wanted = {
+        ".env", ".env.*", ".git", ".venv", "tmp", "tests", "docs", "research_notes", "reports",
+        ".superpowers", ".claude", ".cline", ".clinerules", ".roo", "*.log",
+    }  # fmt: skip
+    assert wanted <= entries
+    assert not any(entry.startswith("!") for entry in entries)
+
+
+def test_the_scripts_are_executable_files_in_git():
+    out = subprocess.run(
+        ["git", "ls-files", "--stage", "scripts/docker-entrypoint.sh", "scripts/git-askpass.sh"],
+        cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+    modes = [line.split()[0] for line in out.splitlines()]
+    assert modes == ["100755", "100755"]
