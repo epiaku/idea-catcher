@@ -1045,6 +1045,34 @@ def parse_publish_params(params: dict[str, Any]) -> tuple[bool, bool]:
     return params.get("pull", True), params.get("push", True)
 
 
+def parse_pull_params(params: dict[str, Any]) -> None:
+    """`ideas.pull` takes no parameters. Raises ValueError naming the ones given."""
+    if params:
+        raise ValueError(f"ideas.pull takes no parameters, got: {', '.join(sorted(params))}")
+
+
+def handle_ideas_pull(ctx: HandlerContext, job: Job) -> HandlerResult:
+    """Pull (rebase, autostash) the idea-bucket checkout, so a capture pushed from another machine arrives.
+
+    A repo without a remote is a no-op `Done`. A failed pull (conflict, network) is `Fail(git's message)`;
+    git's own rebase abort has already run, so no rebase stays in progress."""
+    try:
+        parse_pull_params(dict(job.params or {}))
+    except ValueError as e:
+        return Fail(str(e))
+    author = (ctx.settings.git_author_name, ctx.settings.git_author_email)
+    with GIT_LOCK:
+        try:
+            if not has_remote(ctx.ideas, unattended=True):
+                log.info("ideas.pull: %s has no git remote, nothing to pull", ctx.ideas)
+                return Done({"pulled": False, "reason": "no git remote"})
+            pull(ctx.ideas, author=author, unattended=True)
+        except GitError as e:
+            log.error("ideas.pull failed: %s", e)
+            return Fail(str(e))
+    return Done({"pulled": True})
+
+
 def handle_pipeline_publish(ctx: HandlerContext, job: Job) -> HandlerResult:
     """Commit the managed folders of both repos (idea-bucket first), then per repo pull (rebase) and push.
 

@@ -12,12 +12,14 @@ from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter_mirror
 from catcher.modules.worker.handlers_pipeline import (
+    handle_ideas_pull,
     handle_llm_reason,
     handle_pipeline_publish,
     handle_pipeline_run,
     handle_youtube_fetch,
     parse_params,
     parse_publish_params,
+    parse_pull_params,
     parse_reason_params,
 )
 from catcher.modules.youtube.pg_gate import YOUTUBE_RESOURCE, PostgresGate
@@ -33,6 +35,7 @@ def build_handlers() -> dict[str, Handler]:
         "youtube.fetch": handle_youtube_fetch,
         "llm.reason": handle_llm_reason,
         "pipeline.publish": handle_pipeline_publish,
+        "ideas.pull": handle_ideas_pull,
     }
     handlers.update(EXTRA_HANDLERS)
     return handlers
@@ -44,6 +47,7 @@ PARAM_CHECKS: dict[str, Callable[[dict[str, Any]], object]] = {
     "youtube.fetch": lambda params: parse_reason_params(params, "youtube.fetch"),
     "llm.reason": parse_reason_params,
     "pipeline.publish": parse_publish_params,
+    "ideas.pull": parse_pull_params,
 }
 
 
