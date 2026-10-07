@@ -30,8 +30,11 @@ services:
       POSTGRES_USER: catcher
       POSTGRES_PASSWORD: ${DB_PASSWORD:-catcher}
       POSTGRES_DB: catcher
+    # Restarts with Docker (after a reboot the worker needs it). Published on 127.0.0.1 only: set DB_BIND
+    # (e.g. 0.0.0.0) only when another machine really needs the port, and then a real DB_PASSWORD.
+    restart: unless-stopped
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "${DB_BIND:-127.0.0.1}:${DB_PORT:-5432}:5432"
     volumes:
       - catcher-pgdata:/var/lib/postgresql/data
     healthcheck:

@@ -31,19 +31,30 @@ schedules_fired_in() {  # $1: `catcher schedules` output; every schedule on, wit
 new_in_window() {  # $1: "type epoch" lines (jobs created_at), $2 type, $3 from (incl), $4 to (excl): the count
   awk -v t="$2" -v a="$3" -v b="$4" '$1 == t && $2 >= a && $2 < b {n++} END {print n + 0}' <<<"$1"
 }
-one_catch_up_each() {  # $1 created list, $2 restart epoch, $3 the first minute boundary after it: exactly one each
-  local type n ok=0
+first_new() {  # $1 created list, $2 type, $3 epoch: the first created_at of that type after it (empty: none)
+  awk -v t="$2" -v a="$3" '$1 == t && $2 > a && (m == "" || $2 < m) {m = $2} END {print m}' <<<"$1"
+}
+# The scheduler ticks every SCHEDULE_TICK_S (30 s): all catch-ups of one restart are queued in ONE tick, so a
+# flood shows as two or more jobs of one type within seconds of the first new one; the next regular slot comes
+# at least one tick later. Only created_at values (one clock, the db container's) are compared.
+CATCH_UP_WINDOW_S=15
+one_catch_up_each() {  # $1 created list, $2 epoch the worker stopped: exactly one job per type in the first tick
+  local type first n ok=0
   for type in "${TYPES[@]}"; do
-    n="$(new_in_window "$1" "$type" "$2" "$3")"
-    echo "  $type: $n job(s) created between the restart and the next minute boundary"
+    first="$(first_new "$1" "$type" "$2")"
+    n=0
+    [ -z "$first" ] || n="$(new_in_window "$1" "$type" "$first" $((first + CATCH_UP_WINDOW_S)))"
+    echo "  $type: $n job(s) queued in the first ${CATCH_UP_WINDOW_S} s after the restart (the catch-up)"
     [ "$n" -eq 1 ] || ok=1
   done
   return "$ok"
 }
-next_slot_fired() {  # $1 created list, $2 boundary, $3 end: at least one job of each type in [boundary, end)
-  local type
+next_slot_fired() {  # $1 created list, $2 epoch the worker stopped: a later regular job of each type too
+  local type first
   for type in "${TYPES[@]}"; do
-    [ "$(new_in_window "$1" "$type" "$2" "$3")" -ge 1 ] || return 1
+    first="$(first_new "$1" "$type" "$2")"
+    [ -n "$first" ] && [ "$(new_in_window "$1" "$type" $((first + CATCH_UP_WINDOW_S)) 99999999999)" -ge 1 ] \
+      || return 1
   done
 }
 clean_of() {  # clean_of <needle> <marker>: stdin has the marker (so it is real output) and not the needle
@@ -68,15 +79,16 @@ publish       * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48'
   expect 1 "schedules: one never fired" schedules_fired_in "${fired/publish       * * * * *  UTC       2026-10-07 18:47/publish       * * * * *  UTC       never}"
   expect 1 "schedules: one missing" schedules_fired_in "$(grep -v ^pipeline_run <<<"$fired")"
   expect 1 "schedules: one off" schedules_fired_in "${fired/ideas_pull    * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48/ideas_pull    off  -  -  -}"
-  # restart at 1000, first boundary 1020 (sample numbers)
+  # stopped at 950 (sample numbers): catch-up at 1004, the next regular slot at 1021
   old=$'ideas.pull 900\npipeline.run 900\npipeline.publish 900'
-  once=$'ideas.pull 1004\npipeline.run 1004\npipeline.publish 1004\nideas.pull 1021\npipeline.run 1021\npipeline.publish 1021'
-  expect 0 "one catch-up each" one_catch_up_each "$old"$'\n'"$once" 1000 1020
-  expect 1 "a flood (two catch-ups of one type)" one_catch_up_each "$old"$'\n'"$once"$'\npipeline.run 1005' 1000 1020
-  expect 1 "a flood (four of each)" one_catch_up_each "$once"$'\n'"$once"$'\n'"$once"$'\n'"$once" 1000 1020
-  expect 1 "no catch-up at all" one_catch_up_each "$old" 1000 1020
-  expect 0 "the next slot fired" next_slot_fired "$once" 1020 1080
-  expect 1 "the next slot did not fire" next_slot_fired "$old" 1020 1080
+  catch=$'ideas.pull 1004\npipeline.run 1004\npipeline.publish 1005'
+  once="$catch"$'\nideas.pull 1021\npipeline.run 1021\npipeline.publish 1021'
+  expect 0 "one catch-up each" one_catch_up_each "$old"$'\n'"$once" 950
+  expect 1 "a flood (two catch-ups of one type)" one_catch_up_each "$old"$'\n'"$once"$'\npipeline.run 1006' 950
+  expect 1 "a flood (four of each)" one_catch_up_each "$catch"$'\n'"$catch"$'\n'"$catch"$'\n'"$catch" 950
+  expect 1 "no catch-up at all" one_catch_up_each "$old" 950
+  expect 0 "the next slot fired" next_slot_fired "$once" 950
+  expect 1 "the next slot did not fire" next_slot_fired "$old"$'\n'"$catch" 950
   expect 0 "clean_of: marker, no token" clean_of secret marker <<<"a marker line"
   expect 1 "clean_of: token present" clean_of secret marker <<<"marker and secret"
   expect 1 "clean_of: empty input" clean_of secret marker </dev/null
@@ -298,9 +310,11 @@ done
 
 # --- (e) stop ends within the grace period with exit code 0 and logs `worker ... stopped`
 before_stop="$(wexec catcher jobs list --limit 1000 | awk '{print $2}' | sort | uniq -c)"
+dbnow() { dc exec -T db date +%s; }  # the containers' clock (Docker's VM can drift from the Mac's)
 t0="$(now)"
 dc stop worker >/dev/null 2>&1
 STOP_S=$(($(now) - t0))
+TSTOP="$(dbnow)"
 check "(e) docker compose stop worker took $STOP_S s (grace 120 s)" test "$STOP_S" -lt 120
 check "(e) the worker exited with code 0" test "$(docker inspect -f '{{.State.ExitCode}}' "$WORKER_ID")" = 0
 stopped_logged() { dc logs --no-color worker 2>&1 | has "worker .+ stopped"; }
@@ -308,19 +322,22 @@ check "(e) the log has 'worker ... stopped'" stopped_logged
 
 # --- (f) a restart keeps the repos and the jobs, and the missed slots fire ONCE (one catch-up, not a flood)
 # Stopped >= 250 s: at least four slots are missed, so a flood would show as several jobs of one type at once.
-# Restart early in a minute (second 5-30) so the catch-up lands well before the next minute boundary.
+# Restart early in a minute (second 5-30, db clock) so the catch-up lands well before the next slot.
 log "worker stopped; waiting at least 250 s so at least four slots are missed"
-deadline=$((t0 + 250))
-while [ "$(now)" -lt "$deadline" ] || [ $(($(now) % 60)) -lt 5 ] || [ $(($(now) % 60)) -gt 30 ]; do sleep 2; done
+while :; do
+  t="$(dbnow)"
+  [ "$t" -ge $((TSTOP + 250)) ] && [ $((t % 60)) -ge 5 ] && [ $((t % 60)) -le 30 ] && break
+  sleep 2
+done
 created() {  # "type epoch" per job, read from the smoke project's own db container
   dc exec -T db psql -U catcher -d catcher -At -F ' ' -c \
     "select type, floor(extract(epoch from created_at))::bigint from jobs" 2>/dev/null
 }
-t1="$(dc exec -T db date +%s)"  # the containers' clock: created_at is compared with it
+t1="$(dbnow)"
 boundary=$(((t1 / 60 + 1) * 60))
-log "restarting the worker (db clock $t1, next minute boundary in $((boundary - t1)) s)"
+log "restarting the worker (db clock $t1, host clock $(now), stopped since db clock $TSTOP)"
 dc up -d worker >/dev/null 2>&1
-if wait_healthy 120; then pass "(f) healthy again after $(($(now) - t1)) s"; else fail "(f) not healthy again"; fi
+if wait_healthy 120; then pass "(f) healthy again after $(($(dbnow) - t1)) s"; else fail "(f) not healthy again"; fi
 check "(f) idea-bucket clone still there with the capture" capture_arrived
 no_second_clone() { [ "$(dc logs --no-color worker 2>&1 | grep -c "Cloning into '/data/repos/idea-bucket'")" -le 1 ]; }
 check "(f) the restart did not clone again" no_second_clone
@@ -331,11 +348,51 @@ kept() { while read -r n type; do
 done <<<"$before_stop"; }
 check "(f) every job from before the stop is still there" kept
 # Wait until the first regular slot after the restart has fired too, then count from the database.
-until [ "$(dc exec -T db date +%s)" -ge $((boundary + 40)) ]; do sleep 3; done
+until [ "$(dbnow)" -ge $((boundary + 40)) ]; do sleep 3; done
 CREATED="$(created)"
-check "(f) exactly one catch-up job per schedule before the next minute boundary (not a flood)" \
-  one_catch_up_each "$CREATED" "$t1" "$boundary"
-check "(f) the next regular slot fired for each schedule" next_slot_fired "$CREATED" "$boundary" $((boundary + 40))
+check "(f) exactly one catch-up job per schedule after the restart (not a flood)" one_catch_up_each "$CREATED" "$TSTOP"
+check "(f) the next regular slot fired for each schedule" next_slot_fired "$CREATED" "$TSTOP"
+
+# --- (i) by hand inside the stack, as the how-to documents: stop the worker, `docker compose run --rm worker catcher
+# ...` (same environment, the same repos volume; the entrypoint finds the clones), start the worker again.
+# Stop well after the minute's tick (second 30-50), so no scheduled pipeline job is still queued: a by-hand run
+# refuses then (exit 2, "an earlier run's job is still queued").
+until t="$(dbnow)" && [ $((t % 60)) -ge 30 ] && [ $((t % 60)) -le 50 ]; do sleep 2; done
+dc stop worker >/dev/null 2>&1
+printf '# Smoke capture two %s\n\nPushed while the worker was stopped, for the by-hand run.\n' "$ID" \
+  >"$TMP/phone/inbox/smoke-capture-two-$ID.md"
+git_clean -C "$TMP/phone" pull -q --rebase origin main
+git_clean -C "$TMP/phone" add "inbox/smoke-capture-two-$ID.md"
+git_clean -C "$TMP/phone" commit -qm "smoke capture two $ID"
+git_clean -C "$TMP/phone" push -q origin HEAD
+CAPTURE2_SHA="$(git_clean -C "$TMP/phone" rev-parse HEAD)"
+log "worker stopped; pushed capture two $CAPTURE2_SHA; running by hand with docker compose run --rm worker"
+by_hand() {  # by_hand <log name> <catcher args...>: docker compose run --rm worker catcher ..., exit code kept
+  local name="$1" rc=0
+  shift
+  dc run --rm -T worker catcher "$@" >"$TMP/$name.log" 2>&1 || rc=$?
+  tail -n 3 "$TMP/$name.log" | sed 's/^/    /'
+  return "$rc"
+}
+check "(i) docker compose run --rm worker catcher publish --push exits 0 (pulls capture two)" \
+  by_hand publish1 publish --push
+in_volume_clone() { dc run --rm -T worker git -C /data/repos/idea-bucket merge-base --is-ancestor "$1" HEAD >/dev/null 2>&1; }
+check "(i) capture two is in the volume's clone" in_volume_clone "$CAPTURE2_SHA"
+BARE_BEFORE_RUN="$(git_clean -C "$SMOKE_REMOTES/idea-bucket.git" rev-parse main)"
+check "(i) docker compose run --rm worker catcher run pipeline exits 0 (offline: the capture defers)" \
+  by_hand run1 run pipeline
+check "(i) docker compose run --rm worker catcher publish --push exits 0" by_hand publish2 publish --push
+pushed_by_hand() {  # the run's commit reached the remote: main moved since the first publish, worker-authored
+  [ "$(git_clean -C "$SMOKE_REMOTES/idea-bucket.git" rev-parse main)" != "$BARE_BEFORE_RUN" ] \
+    && [ "$(git_clean -C "$SMOKE_REMOTES/idea-bucket.git" log -1 --format=%an main)" = idea-catcher-smoke ]
+}
+check "(i) the by-hand run's commit was pushed to the bare idea-bucket remote (main moved)" pushed_by_hand
+no_run_left() { [ -z "$(docker ps -a -q --filter "label=com.docker.compose.project=$PROJECT" \
+  --filter "label=com.docker.compose.oneoff=True")" ]; }
+check "(i) no one-off container is left (--rm)" no_run_left
+t3="$(now)"
+dc up -d worker >/dev/null 2>&1
+if wait_healthy 120; then pass "(i) the worker is healthy again after $(($(now) - t3)) s"; else fail "(i) not healthy again"; fi
 
 # --- (a) never unhealthy while the worker ran
 health_ok() {  # samples exist, healthy ones among them, and never unhealthy while running

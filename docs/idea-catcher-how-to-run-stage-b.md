@@ -81,7 +81,7 @@ docker compose down -v         # stop it and delete the data
 
 If an older container from `docker run ... --name catcher-db` is still running, stop it first (`docker stop catcher-db`): both want port 5432.
 
-This matches the default `DATABASE_URL`, `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`. To use another port or server, set `DATABASE_URL` in `.env` or in the shell (see [Configuration](../idea-catcher-configuration/)). The compose file has only the database for now: the worker joins it in step B7.
+This matches the default `DATABASE_URL`, `postgresql+psycopg://catcher:catcher@localhost:5432/catcher`. To use another port or server, set `DATABASE_URL` in `.env` or in the shell (see [Configuration](../idea-catcher-configuration/)). Since B7 the compose file also has `migrate` and `worker`: `docker compose up -d db` starts only the database (see [Run it in Docker](#docker) for the whole stack).
 
 **Create and drop the tables:**
 
@@ -243,6 +243,8 @@ The worker's entrypoint clones both repos into the `repos` volume (`/data/repos/
 
 **Port note: `DB_PORT`.** The compose `db` publishes Postgres on host port `DB_PORT`, default **5432**. If something already listens on 5432 (for example a `docker run` container named `catcher-db`), `docker compose up` fails with a port-already-allocated error. Either stop the other one first, or set `DB_PORT=5433` in `.env`. Host `catcher` commands then need the same port in `DATABASE_URL` (`postgresql+psycopg://catcher:catcher@localhost:5433/catcher`; with `DB_PASSWORD` set, that password). Inside the compose network the containers always use `db:5432`, so `DB_PORT` only matters on the host.
 
+**The db port is published on `127.0.0.1` only** (`DB_BIND`, default `127.0.0.1`), so the host `catcher` commands reach it on `localhost` and nothing else on the network does. On a server, set a real `DB_PASSWORD` in `.env` before the first `up` (Postgres applies it only when the volume is first created; changing it later breaks `migrate` and `worker`). Set `DB_BIND=0.0.0.0` only when another machine on the LAN really needs the database, and then never with the dev password. The `db` service restarts with Docker (`restart: unless-stopped`) like the worker, so after a reboot both come back.
+
 **The LLM must be reachable from the container.** `localhost` inside the container is the container itself. Point `FREELLMAPI_URL` at the LAN address of the FreeLLMApi, or use `http://host.docker.internal:3001/v1` when it runs on the Mac. The OpenAI profiles need `OPENAI_API_KEY` in `.env` as usual. All of `.env` is read by the containers; `DATABASE_URL`, `IDEAS_REPO` and `DOCS_REPO` are set by `compose.yaml` and win over the host values in `.env`.
 
 **What you see:**
@@ -260,15 +262,21 @@ docker compose exec worker catcher health      # "worker running", exit 0
 
 **The host `catcher` commands still work.** The `db` service publishes Postgres on `localhost:DB_PORT`, so `uv run catcher jobs list`, `items list`, `schedules` and `db upgrade` on the host read the same database as the worker (the host `DATABASE_URL` default matches the compose defaults, see `.env.example`). They read the host's own clones (`IDEAS_REPO` in your host `.env`), not the ones in the volume.
 
-**Running by hand: stop the worker first.** One worker or run at a time holds the lock, so `catcher run pipeline` and `catcher publish` refuse while the worker runs (exit 2, `another worker or run is already running`; the smoke run saw this message from `docker compose exec worker catcher run pipeline`). So:
+**One stack per pair of remotes.** Run one stack against the real `idea-bucket` and `epiaku-docs`: not a Mac stack and a server stack at the same time (two databases, two locks: both process the same inbox, pay the LLM twice and make conflicting commits), and remember that `restart: unless-stopped` brings a Mac stack back whenever Docker Desktop starts (`docker compose down` it when the server takes over). Do not mix the host's clones and the stack's clones against one database either: the queue and the item states would describe one clone while the files move in the other.
+
+**Running by hand: inside the stack.** One worker or run at a time holds the lock, so `catcher run pipeline` and `catcher publish` refuse while the worker runs (exit 2, `another worker or run is already running`; the smoke run saw this message from `docker compose exec worker catcher run pipeline`). While the stack runs, work on the stack's clones, not the host's: stop the worker, run the command in a one-off worker container (same environment, the same `repos` volume; the entrypoint finds the clones and does not clone again), then start the worker:
 
 ```bash
 docker compose stop worker
-uv run catcher run pipeline        # on the host, on the host's clones; see Run it on your real repos
+docker compose run --rm worker catcher publish --push     # pull (new captures) and push
+docker compose run --rm worker catcher run pipeline       # process the inbox (add --push to push as well)
+docker compose run --rm worker catcher publish --push     # commit and push the result
 docker compose start worker
 ```
 
-Run on the host: that is what has been tried. The clones inside the volume are the worker's own; a by-hand run in a container is not covered here.
+The smoke run does exactly this (step (i)): with the worker stopped, a capture pushed to the remote was pulled by `publish --push`, `run pipeline` exited 0 and the next `publish --push` pushed the commit; `--rm` leaves no container behind, and the worker was healthy again after `up -d worker`. If a by-hand command says an earlier run's job is still queued, a scheduled job had not run yet when you stopped the worker: `docker compose start worker`, wait for it to finish, then stop it again (or `docker compose run --rm worker catcher worker --once`).
+
+Or do not stop anything: queue the work and let the worker run it, `docker compose exec worker catcher jobs add pipeline.run` (or `pipeline.publish`); from the host `uv run catcher jobs add ...` does the same, as it only writes the queue.
 
 **Stopping and updating:**
 
@@ -296,7 +304,7 @@ Run on the host: that is what has been tried. The clones inside the volume are t
 
 **The smoke run: `bash scripts/compose-smoke`.** A real compose run on throwaway copies that proves the worker clones, pulls, runs, publishes and stops cleanly. It uses its own compose project, its own image tag (`idea-catcher:smoke-...`), a random free port and local bare repos as remotes; it never reads your `.env`, calls no LLM, YouTube or GitHub, and does not touch a `catcher-db` on 5432 or your own stack. It prints `PASS` or `FAIL` per step and removes what it made (containers, volumes, network, image, temp dir), also on failure.
 
-- **What it proves** (run 5 on 2026-10-07, all steps passed): `migrate` exits 0 and the worker is `healthy`; both repos are cloned; all three schedules fired (`last fired` shows a date) and no job failed; a capture pushed to the remote is pulled by the worker, and the worker's publish commits are pushed back; the dummy token is in no log, image history, image config or `.git/config`; `catcher run pipeline` next to the worker exits 2 with the one-worker message; `docker compose stop worker` exits cleanly within the grace period; and after the worker was down for 285 s (four or more missed slots) a restart queued exactly one catch-up job per schedule, with the clones and the queue intact.
+- **What it proves** (runs 5 and 9 on 2026-10-07, all steps passed): `migrate` exits 0 and the worker is `healthy`; both repos are cloned; all three schedules fired (`last fired` shows a date) and no job failed; a capture pushed to the remote is pulled by the worker, and the worker's publish commits are pushed back; the dummy token is in no log, image history, image config or `.git/config`; `catcher run pipeline` next to the worker exits 2 with the one-worker message; `docker compose stop worker` exits cleanly within the grace period; and after the worker was down for 285 s (four or more missed slots) a restart queued exactly one catch-up job per schedule, with the clones and the queue intact; and the by-hand run inside the stack (step (i), see Running by hand) works: `docker compose run --rm worker catcher publish --push`, `... run pipeline` and `publish --push` exit 0, pull a new capture, push the run's commit and leave no container. `bash scripts/compose-smoke --selftest` checks the assertion logic alone (no Docker).
 - **What it costs:** Docker only, no money. A cold build is slow: about 4 to 8 minutes for the whole run, and the image is about 790 MB. The BuildKit build cache stays afterwards (`docker builder prune` clears it).
 - **`bash scripts/compose-smoke --selftest`** checks only the script's own assertion logic on sample outputs, without Docker.
 

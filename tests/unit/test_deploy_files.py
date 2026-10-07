@@ -145,8 +145,13 @@ def test_no_secret_value_is_written_in_compose_yaml():
     assert _compose()["services"]["db"]["environment"]["POSTGRES_PASSWORD"] == "${DB_PASSWORD:-catcher}"
 
 
-def test_the_db_port_is_configurable():
-    assert _compose()["services"]["db"]["ports"] == ["${DB_PORT:-5432}:5432"]
+def test_the_db_port_is_configurable_and_bound_to_localhost_by_default():
+    assert _compose()["services"]["db"]["ports"] == ["${DB_BIND:-127.0.0.1}:${DB_PORT:-5432}:5432"]
+
+
+def test_the_db_restarts_with_docker_like_the_worker():
+    # After a reboot Docker restarts the worker; without the db it would exit 2 and restart-loop.
+    assert _compose()["services"]["db"]["restart"] == "unless-stopped"
 
 
 def test_the_worker_gets_a_grace_period_to_finish_its_job():
@@ -163,7 +168,7 @@ def test_the_worker_has_a_catcher_health_healthcheck():
 def test_env_example_documents_every_variable_compose_reads():
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
     names = set(re.findall(r"\$\{([A-Z_]+)", _compose_text()))
-    assert {"DB_PASSWORD", "DB_PORT", "IDEAS_REMOTE", "DOCS_REMOTE", "GITHUB_TOKEN"} <= names
+    assert {"DB_BIND", "DB_PASSWORD", "DB_PORT", "IDEAS_REMOTE", "DOCS_REMOTE", "GITHUB_TOKEN"} <= names
     for name in names:
         assert re.search(rf"^#? ?{name}=", example, re.M), name
 

@@ -29,6 +29,7 @@ x-smoke: &smoke
 
 services:
   db:
+    # compose.yaml already binds 127.0.0.1; this makes DB_PORT mandatory, so a smoke run never falls back to 5432.
     ports: !override
       - "127.0.0.1:${DB_PORT:?set DB_PORT (never 5432)}:5432"
 
