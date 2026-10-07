@@ -63,7 +63,7 @@ from catcher.modules.scheduler.schedule import (
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
-from catcher.modules.worker.runner import DatabaseNotUpgraded, RunDatabaseError, run_command
+from catcher.modules.worker.runner import DatabaseNotUpgraded, RunDatabaseError, publish_command, run_command
 from catcher.modules.youtube.access import build_access
 from catcher.modules.youtube.cache import FACTS_DIR
 from catcher.modules.youtube.facts import FactsUnavailable
@@ -322,32 +322,16 @@ def run_pipeline_cmd(
     if dry_run:  # a read-only preview of its own: no job, no row, no file
         _dry_run(settings, ideas_repo, docs_repo, params)
         return
-    with ExitStack() as stack:
-        try:
-            outcome = run_command(
-                settings,
-                ideas=ideas_repo,
-                docs=docs_repo,
-                params=params,
-                push=push,
-                wait_youtube_s=settings.youtube_wait_max_s if wait_youtube else None,
-                services_factory=lambda s: _services(stack, s),  # built while the lock is held
-            )
-        except WorkerAlreadyRunning as e:
-            log.error("%s", RUN_BUSY)
-            typer.echo(RUN_BUSY, err=True)
-            raise typer.Exit(2) from e
-        except OperationalError as e:  # taking the lock: nothing was done
-            log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
-            typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
-            raise typer.Exit(2) from e
-        except DatabaseNotUpgraded as e:
-            log.error("%s", e)
-            typer.echo(f"{e}: nothing was done", err=True)
-            raise typer.Exit(2) from e
-        except RunDatabaseError as e:
-            typer.echo(RUN_DB_ERROR, err=True)
-            raise typer.Exit(1) from e
+    with ExitStack() as stack, _worker_path_errors():
+        outcome = run_command(
+            settings,
+            ideas=ideas_repo,
+            docs=docs_repo,
+            params=params,
+            push=push,
+            wait_youtube_s=settings.youtube_wait_max_s if wait_youtube else None,
+            services_factory=lambda s: _services(stack, s),  # built while the lock is held
+        )
     if outcome.refused:
         typer.echo(outcome.refused, err=True)
         raise typer.Exit(outcome.exit_code)
@@ -371,6 +355,85 @@ def run_pipeline_cmd(
     else:
         typer.echo(f"summary: {report.counts()} committed={outcome.committed} pushed={outcome.pushed}")
     raise typer.Exit(outcome.exit_code)
+
+
+@contextmanager
+def _worker_path_errors() -> Iterator[None]:
+    """The exits of a command that runs the worker path (`run_command`, `publish_command`): 2 when a worker
+    or run runs, the database cannot be reached or has no tables (nothing was done); 1 when a database error
+    stopped it later."""
+    try:
+        yield
+    except WorkerAlreadyRunning as e:
+        log.error("%s", RUN_BUSY)
+        typer.echo(RUN_BUSY, err=True)
+        raise typer.Exit(2) from e
+    except OperationalError as e:  # taking the lock: nothing was done
+        log.error("cannot reach the database in DATABASE_URL: %s", e.orig or e)
+        typer.echo("cannot reach the database in DATABASE_URL: nothing was done", err=True)
+        raise typer.Exit(2) from e
+    except DatabaseNotUpgraded as e:
+        log.error("%s", e)
+        typer.echo(f"{e}: nothing was done", err=True)
+        raise typer.Exit(2) from e
+    except RunDatabaseError as e:
+        typer.echo(RUN_DB_ERROR, err=True)
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def publish(
+    ideas: IdeasOpt = None,
+    docs: DocsOpt = None,
+    push: Annotated[bool, typer.Option("--push", help="pull and push both repos (off by default)")] = False,
+) -> None:
+    """Commit the managed folders of both repos by hand (and with --push pull and push them).
+
+    It takes the worker's lock in DATABASE_URL like `run pipeline`, queues ONE `pipeline.publish` job (never
+    a `pipeline.run`), runs it and prints what was committed and pushed per repo. Without --push it only
+    commits: no pull, no push. Nothing to commit says so and exits 0. Ctrl-C or a `kill` puts the job back
+    in the queue (`catcher worker --once` finishes it).
+
+    Exit codes: 0 done; 1 the publish failed, a push failed (the commit stays local), it was interrupted, or
+    the lock was lost (it says whether the publish happened); 2 DATABASE_URL is malformed, the database
+    cannot be reached or has no tables, a worker or a run is running, or an earlier `pipeline.run` or
+    `pipeline.publish` job is still queued (nothing was done)."""
+    settings = Settings()
+    signal.signal(signal.SIGTERM, _terminate)
+    _check_database_url(settings.database_url)
+    with ExitStack() as stack, _worker_path_errors():
+        outcome = publish_command(
+            settings,
+            ideas=ideas or settings.ideas_repo,
+            docs=docs or settings.docs_repo,
+            push=push,
+            services_factory=lambda s: _services(stack, s),
+        )
+    if outcome.refused:
+        typer.echo(outcome.refused, err=True)
+        raise typer.Exit(outcome.exit_code)
+    for problem in outcome.report.problems:
+        typer.echo(f"problem: {problem}", err=True)
+    if outcome.published:
+        typer.echo(_publish_lines(outcome.committed, outcome.pushed, push))
+    if outcome.lock_lost and outcome.published:
+        typer.echo("the lock was lost after the publish: the publish itself is done (see above)", err=True)
+    elif outcome.lock_lost:
+        typer.echo("the lock was lost before the publish ran: nothing was committed", err=True)
+    elif outcome.interrupted:
+        typer.echo("interrupted: the publish job is back in the queue, run catcher worker --once", err=True)
+    raise typer.Exit(outcome.exit_code)
+
+
+def _publish_lines(committed: dict[str, bool], pushed: bool, push: bool) -> str:
+    yes = lambda done: "yes" if done else "no"  # noqa: E731
+    if not any(committed.values()) and not pushed:
+        return "nothing to commit" + (": nothing to push either" if push else "")
+    pushed_text = yes(pushed) if push else "no (without --push)"
+    return (
+        f"committed: ideas {yes(committed.get('ideas', False))}, docs {yes(committed.get('docs', False))}\n"
+        f"pushed: {pushed_text}"
+    )
 
 
 def _run_params(

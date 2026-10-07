@@ -135,6 +135,61 @@ def run_command(
     if problems:
         return RunOutcome(report=RunReport(problems=problems), exit_code=2)
 
+    def body(ctx: HandlerContext, worker: Worker, worked_on: list[str]) -> RunOutcome:
+        return _run(
+            ctx, worker, params, push=push, wait_youtube_s=wait_youtube_s, sleep=sleep, worked_on=worked_on
+        )
+
+    return _under_the_lock(
+        settings,
+        ideas=ideas,
+        docs=docs,
+        services=services,
+        services_factory=services_factory,
+        clock=clock,
+        body=body,
+    )
+
+
+def publish_command(
+    settings: Settings,
+    *,
+    ideas: Path,
+    docs: Path,
+    push: bool,
+    services: Services | None = None,
+    services_factory: Callable[[Settings], Services] | None = None,
+    clock: Callable[[], datetime] = utc_now,
+) -> RunOutcome:
+    """`catcher publish`: queue ONE `pipeline.publish` (`pull` = `push`), never a `pipeline.run`, under the
+    same lock and refusals as `run_command`, drain it and return what it committed and pushed (`committed`,
+    `pushed`, `published`; git's push problems in `report.problems`). Raises what `run_command` raises."""
+    problems = _path_problems(ideas, docs)
+    if problems:
+        return RunOutcome(report=RunReport(problems=problems), exit_code=2)
+    return _under_the_lock(
+        settings,
+        ideas=ideas,
+        docs=docs,
+        services=services,
+        services_factory=services_factory,
+        clock=clock,
+        body=lambda ctx, worker, worked_on: _publish_only(ctx, worker, push=push),
+    )
+
+
+def _under_the_lock(
+    settings: Settings,
+    *,
+    ideas: Path,
+    docs: Path,
+    services: Services | None,
+    services_factory: Callable[[Settings], Services] | None,
+    clock: Callable[[], datetime],
+    body: Callable[[HandlerContext, Worker, list[str]], RunOutcome],
+) -> RunOutcome:
+    """Take the worker lock, refuse over an earlier run's `pipeline.run`/`pipeline.publish`, build the
+    context and a `Worker` that checks the lock before each job, and return `body(ctx, worker, worked_on)`."""
     with ExitStack() as stack:
         lock_engine = make_worker_engine(settings.database_url)
         stack.callback(lock_engine.dispose)
@@ -157,19 +212,49 @@ def run_command(
             lock_check=lock.check,
         )
         try:
-            return _run(
-                ctx,
-                worker,
-                params,
-                push=push,
-                wait_youtube_s=wait_youtube_s,
-                sleep=sleep,
-                worked_on=worked_on,
-            )
+            return body(ctx, worker, worked_on)
         except SQLAlchemyError as e:
             log.error("a database error stopped the run: %s", getattr(e, "orig", None) or type(e).__name__)
             raise RunDatabaseError(str(type(e).__name__)) from e
     raise AssertionError("unreachable")  # the with block returns or raises; ExitStack could swallow in theory
+
+
+def _publish_only(ctx: HandlerContext, worker: Worker, *, push: bool) -> RunOutcome:
+    """Queue and run one `pipeline.publish`; the outcome says what is true (the job's result, or why not)."""
+    outcome = RunOutcome(report=RunReport())
+    publish_id: uuid.UUID | None = None
+    job_errors = 0
+    try:
+        worker.check_lock()
+        worker.reap_safely()
+        publish_id = _enqueue(ctx, "pipeline.publish", {"push": push, "pull": push})
+        job_errors += _drain(worker)[1]
+    except WorkerLockLost as e:
+        log.error("the lock was lost: the publish stops here (%s)", e)
+        outcome.lock_lost = True
+    except KeyboardInterrupt:
+        released = _release_own_jobs(ctx, worker.worker_id)
+        log.warning("interrupted: %d running job(s) put back in the queue", released)
+        outcome.interrupted = True
+    failed = False
+    if publish_id is not None:
+        with session_scope(ctx.engine) as session:
+            publish = session.get(Job, publish_id)
+            if publish is not None and publish.status == "succeeded":  # it happened, lock lost or not
+                result = publish.result or {}
+                outcome.published = True
+                outcome.committed = dict(result.get("committed") or {})
+                outcome.pushed = bool(result.get("pushed", False))
+                for problem in result.get("problems") or []:
+                    outcome.report.problems.append(f"{problem}: {PUSH_FAILED}")
+            elif publish is not None and not outcome.lock_lost and not outcome.interrupted:
+                failed = True
+                why = publish.error or f"pipeline.publish is {publish.status}"
+                outcome.report.problems.append(f"{why}: {PUBLISH_FAILED}")
+    outcome.report.committed, outcome.report.pushed = outcome.committed, outcome.pushed
+    stopped = outcome.lock_lost or outcome.interrupted or failed or job_errors > 0
+    outcome.exit_code = 1 if outcome.report.problems or stopped else 0
+    return outcome
 
 
 def _recording(handlers: dict[str, Handler], worked_on: list[str]) -> dict[str, Handler]:
