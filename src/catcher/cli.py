@@ -9,11 +9,14 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
+from zoneinfo import ZoneInfo
 
 import typer
 from alembic import command as alembic_command
+from croniter import croniter
 from dotenv import load_dotenv
 from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
@@ -47,8 +50,16 @@ from catcher.modules.pipeline.report import NOT_STARTED, RunReport
 from catcher.modules.pipeline.scan_state import scan_item_files
 from catcher.modules.pipeline.tags import load_tags
 from catcher.modules.queue import queue
-from catcher.modules.queue.models import ITEM_STATUSES, JOB_STATUSES, Job, JobItem
+from catcher.modules.queue.models import ITEM_STATUSES, JOB_STATUSES, Job, JobItem, Schedule
 from catcher.modules.queue.reconcile import reconcile
+from catcher.modules.scheduler.loop import Scheduler
+from catcher.modules.scheduler.schedule import (
+    SCHEDULE_NAMES,
+    ScheduleSpec,
+    due_slot,
+    load_timezone,
+    parse_schedules,
+)
 from catcher.modules.worker.app import JOB_RESOURCES, build_context, build_handlers, check_job
 from catcher.modules.worker.guard import WorkerAlreadyRunning, WorkerLock, WorkerLockLost
 from catcher.modules.worker.loop import Worker
@@ -720,6 +731,19 @@ def _stop_on_signals(stop: threading.Event) -> Iterator[None]:
             signal.signal(signum, handler)
 
 
+SCHEDULER_JOIN_S = 30.0  # a tick waits at most 3 x the 10 s lock timeout; then the worker leaves it
+
+
+def _next_slot(spec: ScheduleSpec, tz: ZoneInfo, now: datetime) -> datetime:
+    """The next slot after `now`, as a wall time in `tz` (the same mapping `due_slot` uses)."""
+    wall = croniter(spec.cron, now.astimezone(tz).replace(tzinfo=None)).get_next(datetime)
+    return wall.replace(tzinfo=tz, fold=0)
+
+
+def _next_text(spec: ScheduleSpec, tz: ZoneInfo, now: datetime) -> str:
+    return f"next {_next_slot(spec, tz, now):%H:%M}"
+
+
 @app.command()
 def worker(
     once: Annotated[
@@ -742,9 +766,20 @@ def worker(
     poll_s = _positive_seconds("--poll-s", poll_s)
     settings = Settings()
     _check_database_url(settings.database_url)
+    specs: list[ScheduleSpec] = []
+    tz = None
+    if not once:  # a bad cron or timezone ends the command before the lock is tried
+        try:
+            tz = load_timezone(settings)
+            specs = parse_schedules(settings)
+        except ValueError as e:
+            log.error("%s", e)
+            typer.echo(str(e), err=True)
+            raise typer.Exit(2) from None
     ctx = build_context(settings, ideas=ideas, docs=docs)
     stop = threading.Event()
     failed_once = False
+    scheduler_thread: threading.Thread | None = None
     try:
         with WorkerLock(ctx.engine) as lock, _stop_on_signals(stop):
             runner = Worker(
@@ -780,7 +815,33 @@ def worker(
                     )
                     failed_once = True
             else:
-                runner.run_forever(stop)
+                if specs and tz is not None:
+                    # ctx.engine is the worker engine (lock_timeout), so a stuck row lock cannot hang a tick
+                    for spec in specs:
+                        log.info(
+                            "schedule %s: %r %s, %s",
+                            spec.name,
+                            spec.cron,
+                            tz.key,
+                            _next_text(spec, tz, utc_now()),
+                        )
+                    scheduler = Scheduler(ctx.engine, specs, tz, lambda: utc_now())
+                    scheduler_thread = threading.Thread(
+                        target=scheduler.run_forever,
+                        args=(stop, settings.schedule_tick_s),
+                        name="scheduler",
+                    )
+                    scheduler_thread.start()
+                try:
+                    runner.run_forever(stop)
+                finally:
+                    stop.set()  # also when the worker ends on its own (lock lost): the scheduler stops too
+                    if scheduler_thread is not None:
+                        scheduler_thread.join(SCHEDULER_JOIN_S)
+                        if scheduler_thread.is_alive():
+                            log.error(
+                                "the scheduler thread did not stop within %s s; leaving it", SCHEDULER_JOIN_S
+                            )
             log.info("worker %s stopped", runner.worker_id)
     except WorkerAlreadyRunning as e:
         log.error("%s", e)
@@ -941,6 +1002,38 @@ def jobs_list(
         typer.echo(
             f"{job.id}  {job.type:<16} {job.status:<9} {job.priority:>4}  {run_after}  {reason}".rstrip()
         )
+
+
+@app.command()
+def schedules() -> None:
+    """Show the three schedules of `catcher worker`: name, cron, timezone, last fired (UTC) and next due
+    (in the schedule timezone). An empty variable shows `off`. Read-only; the worker need not run."""
+    settings = Settings()
+    try:
+        tz = load_timezone(settings)
+        specs = {spec.name: spec for spec in parse_schedules(settings)}
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(2) from None
+    now = utc_now()
+    with _queue_session() as session:
+        fired = {row.name: row.last_fired_at for row in session.scalars(select(Schedule))}
+    rows = [("name", "cron", "timezone", "last fired", "next due")]
+    for name in SCHEDULE_NAMES:
+        spec = specs.get(name)
+        if spec is None:
+            rows.append((name, "off", "-", "-", "-"))
+            continue
+        last = fired.get(name)
+        last_text = f"{last:%Y-%m-%d %H:%M}" if last else "never"
+        if last is not None and due_slot(spec, tz, last, now) is not None:
+            next_text = "due now"
+        else:
+            next_text = f"{_next_slot(spec, tz, now):%Y-%m-%d %H:%M}"
+        rows.append((name, spec.cron, tz.key, last_text, next_text))
+    widths = [max(len(row[i]) for row in rows) for i in range(5)]
+    for row in rows:
+        typer.echo("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip())
 
 
 items_app = typer.Typer(no_args_is_help=True, help="The documents the worker handles: their state.")

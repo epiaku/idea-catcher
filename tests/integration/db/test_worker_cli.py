@@ -522,3 +522,62 @@ def test_a_malformed_database_url_exits_2_with_a_short_message_and_no_password(
 
 def test_typer_never_shows_local_variables_in_a_traceback() -> None:
     assert app.pretty_exceptions_show_locals is False  # older Typer versions default to True
+
+
+def test_worker_refuses_a_bad_cron_before_the_lock(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "not a cron")
+    with WorkerLock(engine):  # taken by someone else: a bad cron must be reported before the lock is tried
+        result = runner.invoke(app, ["worker"])
+    assert result.exit_code == 2
+    assert "SCHEDULE_PIPELINE_RUN" in result.output
+    assert "another worker" not in result.output
+    with WorkerLock(engine):  # free again
+        pass
+
+    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "")
+    monkeypatch.setenv("SCHEDULE_TIMEZONE", "Mars/Olympus")
+    result = runner.invoke(app, ["worker"])
+    assert result.exit_code == 2
+    assert "SCHEDULE_TIMEZONE" in result.output
+
+
+def test_the_worker_starts_the_scheduler_and_stops_it_with_the_worker(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from catcher.modules.queue.models import Schedule
+
+    now = datetime(2026, 1, 7, 12, 0, tzinfo=utc_now().tzinfo)  # in the past: its job is due at once
+    monkeypatch.setattr(cli, "utc_now", lambda: now)
+    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "*/5 * * * *")
+    monkeypatch.setenv("SCHEDULE_TICK_S", "0.1")
+    with session_scope(engine) as session:
+        session.add(Schedule(name="pipeline_run", last_fired_at=now - timedelta(hours=1)))
+    seen: list[dict] = []
+
+    def stub(ctx: HandlerContext, job: Job) -> Done:
+        seen.append(dict(job.params))
+        os.kill(os.getpid(), signal.SIGTERM)  # the worker stops after this job
+        return Done({})
+
+    monkeypatch.setitem(worker_app.EXTRA_HANDLERS, "pipeline.run", stub)
+    result = runner.invoke(
+        app,
+        ["worker", "--poll-s", "0.1", "--ideas", str(tmp_path / "i"), "--docs", str(tmp_path / "d")],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == [{"retry_deferred": True}]
+    [job] = _jobs(engine)
+    assert (job.type, job.status) == ("pipeline.run", "succeeded")
+    assert not [t for t in threading.enumerate() if t.name == "scheduler"]  # joined
+
+
+def test_worker_once_starts_no_scheduler(runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "* * * * *")
+    started: list[object] = []
+    monkeypatch.setattr(cli, "Scheduler", lambda *a, **k: started.append(a))
+    result = runner.invoke(app, ["worker", "--once"])
+    assert result.exit_code == 0, result.output
+    assert started == []
+    assert _jobs(engine) == []
