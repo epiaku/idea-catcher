@@ -234,7 +234,7 @@ It needs the database (the gate is in Postgres): without it, it says `the YouTub
 
 ## Stage B: the database and the worker {#stage-b}
 
-The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, the schedules (`SCHEDULE_IDEAS_PULL`, `SCHEDULE_PIPELINE_RUN`, `SCHEDULE_PUBLISH`, see [Scheduling](../idea-catcher-how-to-run-stage-b/#scheduling)), how to stop the worker, and the exit codes. The commands on this page need only the database itself: `run pipeline` and `render` take its lock there, and `run pipeline`, `render` and `youtube facts` use the YouTube gate there. Only `scan` and `reason` work without it. `scripts/check` runs every check at once (see that page).
+The Postgres queue, the worker and the `jobs` commands have their own page: [How to Run Stage B](../idea-catcher-how-to-run-stage-b/). It has the steps for the test repos and for your real repos, the job types and their parameters, the schedules (`SCHEDULE_IDEAS_PULL`, `SCHEDULE_PIPELINE_RUN`, `SCHEDULE_PUBLISH`, see [Scheduling](../idea-catcher-how-to-run-stage-b/#scheduling)), how to stop the worker, and the exit codes. The commands on this page need only the database itself: `run pipeline` and `render` take its lock there, and `run pipeline`, `render` and `youtube facts` use the YouTube gate there. Only `scan` and `reason` work without it. `scripts/check` runs every check at once (see that page). To run the worker in Docker Compose (clones the repos on first start, runs the schedules), see [Run it in Docker](../idea-catcher-how-to-run-stage-b/#docker).
 
 ## YouTube and the gap between calls {#youtube-gap}
 
