@@ -42,6 +42,8 @@ services:
 
   migrate:
     <<: *app
+    # Skip the image entrypoint: it clones the repos, which migrate neither has (no repos volume) nor needs.
+    entrypoint: []
     command: ["catcher", "db", "upgrade"]
     restart: "no"
     depends_on:

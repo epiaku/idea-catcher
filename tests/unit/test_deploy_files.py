@@ -104,6 +104,13 @@ def test_compose_has_db_migrate_and_worker_and_no_api_yet():
     assert not any("repos" in v for v in migrate.get("volumes", []))
 
 
+def test_migrate_skips_the_cloning_entrypoint():
+    # Found by the smoke run: through the entrypoint, migrate cloned the repos into its own throwaway
+    # filesystem (no repos volume) and failed when a remote was unreachable from it.
+    assert _compose()["services"]["migrate"]["entrypoint"] == []
+    assert "entrypoint" not in _compose()["services"]["worker"]
+
+
 def test_the_worker_waits_for_the_migrations_to_complete():
     worker = _compose()["services"]["worker"]
     assert worker["command"] == ["catcher", "worker"]
