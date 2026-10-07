@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from croniter import croniter
 
 from catcher.core.config import Settings
+from catcher.core.db import require_aware
 
 SCHEDULE_NAMES = ("ideas_pull", "pipeline_run", "publish")
 
@@ -56,14 +57,22 @@ def parse_schedules(settings: Settings) -> list[ScheduleSpec]:
 
 
 def due_slot(spec: ScheduleSpec, tz: ZoneInfo, last_fired_at: datetime, now: datetime) -> datetime | None:
-    """The latest slot s with last_fired_at < s <= now (aware UTC in and out; slots in `tz`), or None."""
+    """The latest slot s with last_fired_at < s <= now (aware UTC in and out; slots in `tz`), or None.
+
+    Slots are wall-clock times in `tz`, mapped to an instant with fold=0: a wall time that happens twice
+    (fall back) is its first pass, so it counts once; one that does not exist (spring forward) is shifted by
+    the gap (02:30 in Amsterdam becomes 03:30 CEST)."""
+    require_aware(last_fired_at)
+    require_aware(now)
     if last_fired_at >= now:
         return None
-    local_now = now.astimezone(tz)
-    # get_prev is strictly before its start; start a moment later so a slot exactly at `now` counts
-    slot = croniter(spec.cron, local_now + timedelta(seconds=1)).get_prev(datetime)
-    # A wall-clock time that happens twice (fall back) counts once: the second pass maps to the first
-    slot_utc = slot.replace(tzinfo=None).replace(tzinfo=tz, fold=0).astimezone(UTC)
-    if last_fired_at < slot_utc <= now:
-        return slot_utc
-    return None
+    wall_now = now.astimezone(tz).replace(tzinfo=None)
+    # get_prev is strictly before its start; start one microsecond later so a slot exactly at `now` counts
+    slots = croniter(spec.cron, wall_now + timedelta(microseconds=1))
+    while True:
+        slot_utc = slots.get_prev(datetime).replace(tzinfo=tz, fold=0).astimezone(UTC)
+        if slot_utc <= last_fired_at:
+            return None
+        if slot_utc <= now:
+            return slot_utc
+        # only a slot inside the spring-forward gap maps past `now` (now is early in the hour after the gap)

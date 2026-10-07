@@ -54,6 +54,31 @@ def test_nothing_is_due_before_the_slot():
     assert due_slot(spec("0 8 * * *"), AMS, utc(2026, 1, 10, 6, 0), utc(2026, 1, 10, 6, 59)) is None
 
 
+def test_a_sub_second_now_finds_the_slot_at_or_before_it_and_not_after():
+    every_minute = spec("* * * * *")
+    # 08:59:59.5 Amsterdam (07:59:59.5 UTC): the 07:59 UTC slot is due, the 08:00 UTC slot is not yet
+    just_before = utc(2026, 1, 10, 7, 59, 59, 500000)
+    assert due_slot(every_minute, AMS, utc(2026, 1, 10, 7, 58, 30), just_before) == utc(2026, 1, 10, 7, 59)
+    assert (
+        due_slot(spec("0 8 * * *"), AMS, utc(2026, 1, 10, 6, 0), utc(2026, 1, 10, 6, 59, 59, 999999)) is None
+    )
+    # exactly on the slot, and a microsecond after it: due
+    assert due_slot(every_minute, AMS, utc(2026, 1, 10, 7, 59, 30), utc(2026, 1, 10, 8, 0)) == utc(
+        2026, 1, 10, 8, 0
+    )
+    assert due_slot(every_minute, AMS, utc(2026, 1, 10, 7, 59, 30), utc(2026, 1, 10, 8, 0, 0, 1)) == utc(
+        2026, 1, 10, 8, 0
+    )
+
+
+@pytest.mark.parametrize("which", ["last_fired_at", "now"])
+def test_a_naive_datetime_is_refused(which):
+    times = {"last_fired_at": utc(2026, 1, 10, 6, 0), "now": utc(2026, 1, 10, 7, 0, 5)}
+    times[which] = times[which].replace(tzinfo=None)
+    with pytest.raises(ValueError):
+        due_slot(spec("0 8 * * *"), AMS, times["last_fired_at"], times["now"])
+
+
 def test_nothing_is_due_when_last_fired_is_in_the_future():
     assert due_slot(spec("* * * * *"), AMS, utc(2026, 1, 10, 9, 0), utc(2026, 1, 10, 8, 0)) is None
 
@@ -80,6 +105,11 @@ def test_the_spring_forward_gap_fires_once():
     fires = sweep(utc(2026, 3, 27, 12, 0), days=4)
     assert fires["2026-03-29"] == 1
     assert fires["2026-03-28"] == 1 and fires["2026-03-30"] == 1
+    # the slot of the gap day itself is 03:30 CEST = 01:30 UTC
+    s = spec("30 2 * * *")
+    slot = due_slot(s, AMS, utc(2026, 3, 28, 12, 0), utc(2026, 3, 29, 3, 0))
+    assert slot == utc(2026, 3, 29, 1, 30)
+    assert slot.astimezone(AMS).strftime("%H:%M %Z") == "03:30 CEST"
 
 
 def test_the_fall_back_hour_fires_once():
