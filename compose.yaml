@@ -5,7 +5,7 @@
 #   docker compose down            stop and remove the containers, keep the data
 #   docker compose down -v         stop and delete the data too (queue and the cloned repos)
 # Only one worker may hold the lock: run `docker compose stop worker` before running
-# `catcher run pipeline` or `catcher run publish` by hand, and `docker compose start worker` after.
+# `catcher run pipeline` or `catcher publish` by hand, and `docker compose start worker` after.
 # Settings come from .env (optional: environment variables work too). DATABASE_URL, IDEAS_REPO and DOCS_REPO
 # are set below, so the host values in .env are ignored inside the containers. See .env.example.
 # The database defaults match the host DATABASE_URL: postgresql+psycopg://catcher:catcher@localhost:5432/catcher
