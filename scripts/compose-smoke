@@ -522,8 +522,17 @@ if wait_healthy 120; then pass "(i) the worker is healthy again after $(($(now) 
 # --- (j) the dummy API key is in no log and not in the image. It IS in the api container's env and its
 # `docker inspect` (Config.Env): that is how compose hands it over, by design.
 K="$SMOKE_API_KEY"
-for svc in api worker migrate; do
+for svc in api worker; do
   check "(j) no API key in the $svc log" clean_of "$K" "$svc-1" < <(dc logs --no-color "$svc" 2>&1)
+done
+# `catcher db upgrade` logs nothing, so the migrate log is empty (clean_of refuses empty output): check the
+# whole project's log instead (the api lines are the marker), and that migrate and the worker never got the key.
+echo "  the migrate log has $(dc logs --no-color migrate 2>&1 | grep -c .) line(s)"
+check "(j) no API key in the whole compose log (db, migrate, worker, api)" clean_of "$K" "api-1" \
+  < <(dc logs --no-color 2>&1)
+for svc in migrate worker; do
+  check "(j) the $svc container config has no API key" clean_of "$K" "DATABASE_URL" \
+    < <(docker inspect "$(dc ps -a -q "$svc")")
 done
 check "(j) no API key in docker history" clean_of "$K" "docker-entrypoint" < <(docker history --no-trunc "$SMOKE_IMAGE")
 check "(j) no API key in the image config" clean_of "$K" "GIT_ASKPASS" < <(docker image inspect "$SMOKE_IMAGE")
