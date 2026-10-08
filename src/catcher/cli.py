@@ -1228,6 +1228,39 @@ def health() -> None:
     typer.echo("worker running")
 
 
+@app.command("api")
+def api_command(
+    host: Annotated[
+        str, typer.Option("--host", help="address to listen on (0.0.0.0 for the LAN)")
+    ] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", min=1, max=65535, help="port to listen on")] = 8000,
+) -> None:
+    """Serve the HTTP API (Swagger UI at /docs). Needs API_KEYS and DATABASE_URL.
+
+    Exit code 2 before it listens when API_KEYS is missing or not valid, or DATABASE_URL is not set or
+    malformed."""
+    import uvicorn  # here, not at the top: the other commands do not pay for loading the web stack
+
+    from catcher.api.app import create_app
+    from catcher.api.auth import parse_api_keys
+
+    settings = Settings()
+    try:
+        parse_api_keys(settings.api_keys.get_secret_value())
+    except ValueError as e:  # the message names the problem and the entry, never the key
+        typer.echo(f"{e}; the format is name:scope[,scope]:key, entries separated by spaces", err=True)
+        raise typer.Exit(2) from None
+    if not os.environ.get("DATABASE_URL"):
+        typer.echo(
+            "DATABASE_URL is not set: catcher api does not run on the built-in development database; "
+            "set DATABASE_URL (in the environment or .env)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _check_database_url(settings.database_url)
+    uvicorn.run(create_app(settings), host=host, port=port, log_config=None)
+
+
 jobs_app = typer.Typer(no_args_is_help=True, help="The job queue: add jobs by hand and look at them.")
 app.add_typer(jobs_app, name="jobs")
 

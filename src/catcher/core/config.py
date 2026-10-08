@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     git_author_email: str = "idea-catcher@users.noreply.github.com"
     artifact_max_mb: int = 25
     database_url: str = "postgresql+psycopg://catcher:catcher@localhost:5432/catcher"
+    # `catcher api`: whitespace-separated `name:scope[,scope]:key` entries (scopes `read`, `run`; a key is at
+    # least 24 characters). SecretStr: a repr or a traceback shows ****
+    api_keys: SecretStr = SecretStr("")
+    api_docs: bool = True  # serve Swagger UI at /docs and the schema at /openapi.json
     log_level: str = "INFO"
     log_file: Path | None = None
 
