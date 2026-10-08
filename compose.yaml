@@ -1,12 +1,12 @@
-# The Idea Catcher stack (Stage B): the Postgres queue, the migrations (run once) and the worker.
-#   docker compose up -d --build   build the image and start db, migrate and worker
+# The Idea Catcher stack: the Postgres queue, the migrations (run once), the worker and the HTTP API.
+#   docker compose up -d --build   build the image and start db, migrate, worker and api
 #   docker compose up -d db        only the database (for running `catcher` on the host)
 #   docker compose logs -f worker  follow the worker
 #   docker compose down            stop and remove the containers, keep the data
 #   docker compose down -v         stop and delete the data too (queue and the cloned repos)
 # Only one worker may hold the lock: run `docker compose stop worker` before running
 # `catcher run pipeline` or `catcher publish` by hand, and `docker compose start worker` after.
-# Settings come from .env (optional: environment variables work too). DATABASE_URL, IDEAS_REPO and DOCS_REPO
+# Settings come from .env (optional: environment variables work too); the api reads only the three it is given. DATABASE_URL, IDEAS_REPO and DOCS_REPO
 # are set below, so the host values in .env are ignored inside the containers. See .env.example.
 # The database defaults match the host DATABASE_URL: postgresql+psycopg://catcher:catcher@localhost:5432/catcher
 x-app: &app
@@ -16,7 +16,7 @@ x-app: &app
     - path: .env
       required: false
   environment:
-    DATABASE_URL: postgresql+psycopg://catcher:${DB_PASSWORD:-catcher}@db:5432/catcher
+    DATABASE_URL: &database_url postgresql+psycopg://catcher:${DB_PASSWORD:-catcher}@db:5432/catcher
     IDEAS_REPO: /data/repos/idea-bucket
     DOCS_REPO: /data/repos/epiaku-docs
     IDEAS_REMOTE: ${IDEAS_REMOTE:-}
@@ -66,6 +66,37 @@ services:
       start_period: 60s
     volumes:
       - repos:/data/repos
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # The HTTP API (Swagger UI at http://127.0.0.1:8000/docs). It only reads and enqueues jobs in Postgres:
+  # no repos, no Git token, no LLM key. So no env_file (the host .env holds those) and no x-app anchor:
+  # it gets exactly DATABASE_URL, API_KEYS and LOG_LEVEL.
+  # Without API_KEYS (or with a malformed one) `catcher api` exits 2 before it listens, and Docker restarts
+  # it in a loop: set API_KEYS in .env (see .env.example) before `docker compose up`.
+  # Published on 127.0.0.1 only; API_BIND=0.0.0.0 opens it to the LAN (on purpose, with real keys).
+  api:
+    build: .
+    image: idea-catcher:latest
+    # Skip the image entrypoint: it clones the repos, which the API neither has nor needs.
+    entrypoint: []
+    command: ["catcher", "api", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: *database_url
+      API_KEYS: ${API_KEYS:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+    ports:
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"
+    # Alive = /health answers at all: 200, or 503 while no worker holds the lock (the worker's own
+    # healthcheck covers that) or the database is away. Not /docs: API_DOCS=false turns it off.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health | grep -qx -e 200 -e 503"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     depends_on:
       migrate:
         condition: service_completed_successfully

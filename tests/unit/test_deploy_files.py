@@ -95,8 +95,8 @@ def _compose() -> dict:
     return yaml.safe_load(_compose_text())
 
 
-def test_compose_has_db_migrate_and_worker_and_no_api_yet():
-    assert set(_compose()["services"]) == {"db", "migrate", "worker"}
+def test_compose_has_db_migrate_worker_and_api():
+    assert set(_compose()["services"]) == {"db", "migrate", "worker", "api"}
     migrate = _compose()["services"]["migrate"]
     assert migrate["command"] == ["catcher", "db", "upgrade"]
     assert migrate["restart"] == "no"
@@ -163,6 +163,90 @@ def test_the_worker_has_a_catcher_health_healthcheck():
     assert check["test"] == ["CMD", "catcher", "health"]
     timing = (check["interval"], check["timeout"], check["retries"], check["start_period"])
     assert timing == ("30s", "10s", 3, "60s")
+
+
+class _TaggedLoader(yaml.SafeLoader):
+    """Reads compose's own tags (!reset, !override) as the plain value under them."""
+
+
+def _untagged(loader: yaml.SafeLoader, suffix: str, node: yaml.Node) -> object:
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node)
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node)
+    return loader.construct_scalar(node)
+
+
+_TaggedLoader.add_multi_constructor("!", _untagged)
+
+
+def _compose_test() -> dict:
+    return yaml.load((ROOT / "compose.test.yaml").read_text(encoding="utf-8"), Loader=_TaggedLoader)  # noqa: S506
+
+
+def _api() -> dict:
+    return _compose()["services"]["api"]
+
+
+def test_compose_has_an_api_service_without_env_file_repos_or_secrets():
+    api = _api()
+    assert api["image"] == _compose()["services"]["worker"]["image"]
+    assert api["build"] == "."
+    # No cloning entrypoint (it has no repos) and no env_file: the host .env with the LLM keys and the
+    # GitHub token never reaches the API container.
+    assert api["entrypoint"] == []
+    assert api["command"] == ["catcher", "api", "--host", "0.0.0.0", "--port", "8000"]
+    assert "env_file" not in api
+    assert "volumes" not in api
+    text = yaml.safe_dump(api)
+    for word in ("GITHUB_TOKEN", "OPENAI", "FREELLMAPI", "IDEAS_", "DOCS_", "/data/repos"):
+        assert word not in text, word
+
+
+def test_the_api_environment_is_exactly_the_database_url_the_keys_and_the_log_level():
+    env = _api()["environment"]
+    assert set(env) == {"DATABASE_URL", "API_KEYS", "LOG_LEVEL"}
+    assert env["DATABASE_URL"] == _compose()["services"]["worker"]["environment"]["DATABASE_URL"]
+    assert env["API_KEYS"] == "${API_KEYS:-}"
+    assert env["LOG_LEVEL"] == "${LOG_LEVEL:-INFO}"
+
+
+def test_the_api_waits_for_the_migrations_and_binds_to_localhost_by_default():
+    api = _api()
+    assert api["depends_on"] == {"migrate": {"condition": "service_completed_successfully"}}
+    assert api["ports"] == ["${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"]
+    assert api["restart"] == "unless-stopped"
+
+
+def test_the_api_healthcheck_does_not_depend_on_the_worker_or_the_docs():
+    check = _api()["healthcheck"]
+    command = check["test"]
+    assert command[0] == "CMD-SHELL"
+    # Any HTTP answer of /health (200, or 503 while no worker holds the lock) means the API is alive;
+    # /docs is not used because API_DOCS=false turns it off.
+    assert "http://127.0.0.1:8000/health" in command[1]
+    assert "-e 200 -e 503" in command[1]
+    assert "/docs" not in command[1]
+    assert (check["interval"], check["start_period"]) == ("30s", "30s")
+
+
+def test_env_example_documents_api_keys_api_port_and_api_bind():
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    for name in ("API_KEYS", "API_PORT", "API_BIND"):
+        assert re.search(rf"^# ?{name}=", example, re.M), name  # commented out: no key in the repo
+    assert "name:scope[,scope]:key" in example
+    assert "24 characters" in example
+    assert not re.search(r"^API_KEYS=\S", example, re.M)
+
+
+def test_the_smoke_api_gets_a_dummy_key_and_a_random_port_never_the_host_env():
+    api = _compose_test()["services"]["api"]
+    assert api["environment"] == {"API_KEYS": "${SMOKE_API_KEYS:?set SMOKE_API_KEYS (a dummy key)}"}
+    text = (ROOT / "compose.test.yaml").read_text(encoding="utf-8")
+    assert "127.0.0.1:${API_PORT:?" in text
+    assert "env_file" not in api
+    body = (ROOT / "scripts" / "compose-smoke").read_text(encoding="utf-8")
+    assert "smoke-api-key-not-real-0000" in body
 
 
 def test_env_example_documents_every_variable_compose_reads():

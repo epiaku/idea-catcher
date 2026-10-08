@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# A real compose run of the worker on throwaway copies: proves it clones, pulls, runs, publishes and stops cleanly.
+# A real compose run of the worker and the API on throwaway copies: proves the worker clones, pulls, runs, publishes
+# and stops cleanly, and the API answers with its keys, enqueues runs and holds no token (step j).
 #   bash scripts/compose-smoke     about 8 minutes; needs Docker; no GitHub, no LLM, no YouTube
 # Everything it makes has its own name (project catcher-smoke-<n>, image idea-catcher:smoke-<n>, a temp dir)
 # and is removed at the end, also on failure or Ctrl-C. It never touches tests/data, tmp/ic, ~/.catcher,
@@ -62,6 +63,31 @@ clean_of() {  # clean_of <needle> <marker>: stdin has the marker (so it is real 
   text="$(cat)"
   grep -qF -- "$2" <<<"$text" && ! grep -qF -- "$1" <<<"$text"
 }
+json_field() {  # json_field <name> < JSON object: the field's value (a string as is, others as JSON); fails on bad JSON
+  python3 -c 'import json, sys
+v = json.load(sys.stdin)[sys.argv[1]]
+print(v if isinstance(v, str) else json.dumps(v))' "$1" 2>/dev/null
+}
+job_types_in() {  # stdin: a /api/v1/jobs page; the type of every job on it, one per line
+  python3 -c 'import json, sys
+for job in json.load(sys.stdin)["items"]:
+    print(job["type"])' 2>/dev/null
+}
+all_types_in() {  # $1: types, one per line; every scheduled type is among them
+  local type
+  for type in "${TYPES[@]}"; do grep -qx -- "$type" <<<"$1" || return 1; done
+}
+API_ENV_NAMES="API_KEYS DATABASE_URL LOG_LEVEL"
+api_env_ok() {  # $1: `env` in the api container, $2: the image's own env; compose added exactly the three
+  local added
+  # The settings the api must never hold, by name (also when empty).
+  ! grep -qE '^(GITHUB_TOKEN|OPENAI_[A-Z_]*|FREELLMAPI_[A-Z_]*|IDEAS_[A-Z_]*|DOCS_[A-Z_]*|DB_PASSWORD)=' <<<"$1" \
+    || return 1
+  # Names compose added: not in the image config, and not the two Docker sets itself (HOSTNAME, HOME).
+  added="$(cut -d= -f1 <<<"$1" | grep -vxF -f <(cut -d= -f1 <<<"$2"; printf 'HOSTNAME\nHOME\n') | sort | xargs)"
+  echo "  names compose added to the api container: $added"
+  [ "$added" = "$API_ENV_NAMES" ]
+}
 
 if [ "${1:-}" = --selftest ]; then
   bad=0
@@ -92,6 +118,24 @@ publish       * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48'
   expect 0 "clean_of: marker, no token" clean_of secret marker <<<"a marker line"
   expect 1 "clean_of: token present" clean_of secret marker <<<"marker and secret"
   expect 1 "clean_of: empty input" clean_of secret marker </dev/null
+  expect 0 "json_field: a string" test "$(json_field job_id <<<'{"job_id": "ab-1", "existing": true}')" = ab-1
+  expect 0 "json_field: a bool as JSON" test "$(json_field existing <<<'{"job_id": "ab-1", "existing": true}')" = true
+  expect 1 "json_field: missing field" json_field job_id <<<'{"detail": "Not authenticated"}'
+  expect 1 "json_field: not JSON" json_field job_id <<<'Internal Server Error'
+  page='{"items": [{"type": "ideas.pull"}, {"type": "pipeline.run"}, {"type": "pipeline.publish"}], "total": 3}'
+  expect 0 "jobs page: all three types" all_types_in "$(job_types_in <<<"$page")"
+  expect 1 "jobs page: publish missing" all_types_in "$(job_types_in <<<"${page/pipeline.publish/ideas.pull}")"
+  expect 1 "jobs page: empty" all_types_in "$(job_types_in <<<'{"items": [], "total": 0}')"
+  expect 1 "jobs page: not JSON" all_types_in "$(job_types_in <<<'oops')"
+  image_env=$'PATH=/app/.venv/bin:/usr/bin\nLANG=C.UTF-8\nGIT_ASKPASS=/usr/local/bin/git-askpass'
+  api_env="$image_env"$'\nHOSTNAME=abc\nHOME=/home/catcher\nDATABASE_URL=postgresql+psycopg://x\nAPI_KEYS=k\nLOG_LEVEL=INFO'
+  expect 0 "api env: exactly the three" api_env_ok "$api_env" "$image_env"
+  expect 1 "api env: a GITHUB_TOKEN (empty)" api_env_ok "$api_env"$'\nGITHUB_TOKEN=' "$image_env"
+  expect 1 "api env: an OpenAI key" api_env_ok "$api_env"$'\nOPENAI_API_KEY=sk' "$image_env"
+  expect 1 "api env: a repo path" api_env_ok "$api_env"$'\nIDEAS_REPO=/data/repos/idea-bucket' "$image_env"
+  expect 1 "api env: another added name" api_env_ok "$api_env"$'\nPROFILES_FILE=profiles.yaml' "$image_env"
+  expect 1 "api env: API_KEYS missing" api_env_ok "$(grep -v ^API_KEYS <<<"$api_env")" "$image_env"
+  expect 1 "api env: empty" api_env_ok "" "$image_env"
   [ "$bad" = 0 ] && echo "selftest passed" || echo "selftest FAILED"
   exit "$bad"
 fi
@@ -100,6 +144,8 @@ ID="$$-$RANDOM"
 PROJECT="catcher-smoke-$ID"
 export SMOKE_IMAGE="idea-catcher:smoke-$ID"
 export SMOKE_GITHUB_TOKEN="smoke-token-not-real"  # a dummy: it must never show up in a log or a .git/config
+SMOKE_API_KEY="smoke-api-key-not-real-0000"  # a dummy API key: never printed, never in a log or the image
+export SMOKE_API_KEYS="smoke:read,run:$SMOKE_API_KEY"
 TMP_BASE="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 TMP="$(cd "$(mktemp -d "$TMP_BASE/catcher-smoke.XXXXXX")" && pwd -P)"
 export SMOKE_REMOTES="$TMP/remotes"
@@ -117,6 +163,9 @@ EOF
 DB_PORT="$(free_port)"
 while [ "$DB_PORT" = 5432 ]; do DB_PORT="$(free_port)"; done
 export DB_PORT
+API_PORT="$(free_port)"
+while [ "$API_PORT" = 5432 ] || [ "$API_PORT" = "$DB_PORT" ]; do API_PORT="$(free_port)"; done
+export API_PORT
 
 dc() { docker compose -p "$PROJECT" --env-file "$TMP/empty.env" -f compose.yaml -f compose.test.yaml "$@"; }
 wexec() { dc exec -T worker "$@"; }
@@ -165,7 +214,7 @@ teardown() {
 trap teardown EXIT
 trap 'exit 130' INT TERM
 
-log "project $PROJECT, db port $DB_PORT, image $SMOKE_IMAGE, temp $TMP"
+log "project $PROJECT, db port $DB_PORT, api port $API_PORT, image $SMOKE_IMAGE, temp $TMP"
 
 # --- the throwaway remotes: bare copies of the test data, writable for the container user (uid 1000)
 git_clean() { env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -c user.name=smoke -c user.email=smoke@example.com "$@"; }
@@ -203,10 +252,10 @@ check "(a) migrate exited 0" test "$(docker inspect -f '{{.State.Status}} {{.Sta
 ) >"$TMP/health.log" &
 MONITOR_PID=$!
 
-wait_healthy() {  # wait_healthy <seconds>
+wait_healthy() {  # wait_healthy <seconds> [container id, default the worker]
   local deadline=$(($(now) + $1)) status
   while [ "$(now)" -lt "$deadline" ]; do
-    status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$WORKER_ID")"
+    status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${2:-$WORKER_ID}")"
     [ "$status" = healthy ] && return 0
     sleep 3
   done
@@ -308,6 +357,69 @@ for name in idea-bucket epiaku-docs; do
     < <(wexec sh -c "cat /data/repos/$name/.git/config; git -C /data/repos/$name config --list --show-origin")
 done
 
+# --- (j) the API container: health, keys, reads, triggers, least privilege. Every call goes to the published
+# port on 127.0.0.1; the key travels in a header file (curl -H @file), never on a command line or in the output.
+API_URL="http://127.0.0.1:$API_PORT"
+printf 'Authorization: Bearer %s\n' "$SMOKE_API_KEY" >"$TMP/key.h"
+printf 'Authorization: Bearer %s\n' "smoke-api-key-not-real-9999" >"$TMP/wrong.h"
+call() {  # call <key|wrong|none> <GET|POST> <path>: prints the HTTP status; the body lands in $TMP/body.json
+  local header=/dev/null
+  case "$1" in key) header="$TMP/key.h" ;; wrong) header="$TMP/wrong.h" ;; esac
+  if [ "$2" = POST ]; then
+    curl -s -m 10 -o "$TMP/body.json" -w '%{http_code}' -H "@$header" -H 'Content-Type: application/json' \
+      -X POST -d '{}' "$API_URL$3"
+  else
+    curl -s -m 10 -o "$TMP/body.json" -w '%{http_code}' -H "@$header" "$API_URL$3"
+  fi
+}
+body() { cat "$TMP/body.json" 2>/dev/null; }
+API_ID="$(dc ps -a -q api)"
+if wait_healthy 120 "$API_ID"; then pass "(j) the api container is healthy"; else
+  fail "(j) the api container did not become healthy within 120 s"
+  dc logs --no-color api | tail -n 20
+fi
+check "(j) the api port is published on 127.0.0.1 only ($(dc port api 8000))" \
+  test "$(dc port api 8000)" = "127.0.0.1:$API_PORT"
+health_is() {  # health_is <code> <worker>: /health answers that code and names the worker that way
+  [ "$(call none GET /health)" = "$1" ] && [ "$(body | json_field worker)" = "$2" ] \
+    && [ "$(body | json_field database)" = ok ]
+}
+deadline=$(($(now) + 60))
+until health_is 200 running || [ "$(now)" -ge "$deadline" ]; do sleep 3; done
+check "(j) /health is 200 with the worker running ($(body))" health_is 200 running
+check "(j) no key: 401" test "$(call none GET /api/v1/jobs)" = 401
+check "(j) a wrong key: 401" test "$(call wrong GET /api/v1/jobs)" = 401
+check "(j) a wrong key on a trigger: 401" test "$(call wrong POST /api/v1/pipeline/runs)" = 401
+code="$(call key GET '/api/v1/jobs?limit=200')"
+API_TYPES="$(body | job_types_in)"
+echo "  GET /api/v1/jobs: $code, total $(body | json_field total), types: $(sort -u <<<"$API_TYPES" | xargs)"
+check "(j) GET /api/v1/jobs with the key is 200 and lists ideas.pull, pipeline.run and pipeline.publish" \
+  all_types_in "$API_TYPES"
+code1="$(call key POST /api/v1/pipeline/runs)"
+id1="$(body | json_field job_id)" || id1=""
+code2="$(call key POST /api/v1/pipeline/runs)"
+id2="$(body | json_field job_id)" || id2=""
+existing2="$(body | json_field existing)" || existing2=""
+echo "  POST /api/v1/pipeline/runs twice: $code1 $id1, then $code2 $id2 (existing $existing2)"
+first_ok() { case "$code1" in 200 | 202) [ -n "$id1" ] ;; *) return 1 ;; esac; }
+check "(j) the first POST /api/v1/pipeline/runs is 202 or 200 (a scheduled run queued) with a job_id" first_ok
+check "(j) the second POST at once is 200, existing, with the same job_id" \
+  test "$code2 $existing2 $id2" = "200 true $id1"
+job_ok() { [ "$(call key GET "/api/v1/jobs/$id1")" = 200 ] && [ "$(body | json_field id)" = "$id1" ] \
+  && [ "$(body | json_field type)" = pipeline.run ]; }
+check "(j) GET /api/v1/jobs/<that id> is 200 with that pipeline.run" job_ok
+AENV="$(dc exec -T api env)" || AENV=""
+IENV="$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$SMOKE_IMAGE")"
+key_in_env() { grep -qx "API_KEYS=$SMOKE_API_KEYS" <<<"$AENV"; }
+check "(j) the api env has API_KEYS (the dummy; the greps below look at real output)" key_in_env
+check "(j) the api env: no GITHUB_TOKEN, no LLM key, no repo variable; compose added only $API_ENV_NAMES" \
+  api_env_ok "$AENV" "$IENV"
+rc=0
+dc run --rm --no-deps -T -e API_KEYS= api >"$TMP/nokey.log" 2>&1 || rc=$?
+tail -n 2 "$TMP/nokey.log" | sed 's/^/    /'
+no_key_refused() { [ "$rc" = 2 ] && grep -q API_KEYS "$TMP/nokey.log"; }
+check "(j) the api without API_KEYS exits 2 before it listens, naming API_KEYS (rc=$rc)" no_key_refused
+
 # --- (e) stop ends within the grace period with exit code 0 and logs `worker ... stopped`
 before_stop="$(wexec catcher jobs list --limit 1000 | awk '{print $2}' | sort | uniq -c)"
 dbnow() { dc exec -T db date +%s; }  # the containers' clock (Docker's VM can drift from the Mac's)
@@ -319,6 +431,16 @@ check "(e) docker compose stop worker took $STOP_S s (grace 120 s)" test "$STOP_
 check "(e) the worker exited with code 0" test "$(docker inspect -f '{{.State.ExitCode}}' "$WORKER_ID")" = 0
 stopped_logged() { dc logs --no-color worker 2>&1 | has "worker .+ stopped"; }
 check "(e) the log has 'worker ... stopped'" stopped_logged
+
+# --- (j) with the worker stopped the API still answers: /health 503 naming the worker, the rest as before
+deadline=$(($(now) + 60))
+until health_is 503 none || [ "$(now)" -ge "$deadline" ]; do sleep 3; done
+check "(j) worker stopped: /health is 503 with \"worker\": \"none\" ($(body))" health_is 503 none
+check "(j) worker stopped: GET /api/v1/jobs with the key is still 200" test "$(call key GET /api/v1/jobs)" = 200
+check "(j) worker stopped: no key is still 401" test "$(call none GET /api/v1/jobs)" = 401
+API_HEALTH_CMD="$(docker inspect -f '{{index .Config.Healthcheck.Test 1}}' "$API_ID")"
+check "(j) worker stopped: the api healthcheck command (from the container config) still exits 0" \
+  dc exec -T api sh -c "$API_HEALTH_CMD"
 
 # --- (f) a restart keeps the repos and the jobs, and the missed slots fire ONCE (one catch-up, not a flood)
 # Stopped >= 250 s: at least four slots are missed, so a flood would show as several jobs of one type at once.
@@ -333,6 +455,9 @@ created() {  # "type epoch" per job, read from the smoke project's own db contai
   dc exec -T db psql -U catcher -d catcher -At -F ' ' -c \
     "select type, floor(extract(epoch from created_at))::bigint from jobs" 2>/dev/null
 }
+api_status() { docker inspect -f '{{.State.Health.Status}} restarts={{.RestartCount}}' "$API_ID"; }
+check "(j) after $(($(dbnow) - TSTOP)) s without a worker the api is still healthy ($(api_status))" \
+  test "$(api_status)" = "healthy restarts=0"
 t1="$(dbnow)"
 boundary=$(((t1 / 60 + 1) * 60))
 log "restarting the worker (db clock $t1, host clock $(now), stopped since db clock $TSTOP)"
@@ -393,6 +518,19 @@ check "(i) no one-off container is left (--rm)" no_run_left
 t3="$(now)"
 dc up -d worker >/dev/null 2>&1
 if wait_healthy 120; then pass "(i) the worker is healthy again after $(($(now) - t3)) s"; else fail "(i) not healthy again"; fi
+
+# --- (j) the dummy API key is in no log and not in the image. It IS in the api container's env and its
+# `docker inspect` (Config.Env): that is how compose hands it over, by design.
+K="$SMOKE_API_KEY"
+for svc in api worker migrate; do
+  check "(j) no API key in the $svc log" clean_of "$K" "$svc-1" < <(dc logs --no-color "$svc" 2>&1)
+done
+check "(j) no API key in docker history" clean_of "$K" "docker-entrypoint" < <(docker history --no-trunc "$SMOKE_IMAGE")
+check "(j) no API key in the image config" clean_of "$K" "GIT_ASKPASS" < <(docker image inspect "$SMOKE_IMAGE")
+in_container_config() { docker inspect "$API_ID" | has "$K"; }
+check "(j) the key is in the api container config (by design: compose passes it as an env variable)" \
+  in_container_config
+check "(j) the api is still healthy and never restarted ($(api_status))" test "$(api_status)" = "healthy restarts=0"
 
 # --- (a) never unhealthy while the worker ran
 health_ok() {  # samples exist, healthy ones among them, and never unhealthy while running

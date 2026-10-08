@@ -1,7 +1,7 @@
 # Overrides for the smoke run only (scripts/compose-smoke): never for real use.
 #   docker compose -p catcher-smoke-<n> --env-file <empty file> -f compose.yaml -f compose.test.yaml up -d --build
 # Local bare repos instead of GitHub, every schedule each minute, no LLM and no YouTube, no .env.
-# The script exports SMOKE_IMAGE, SMOKE_REMOTES, DB_PORT and SMOKE_GITHUB_TOKEN (a dummy).
+# The script exports SMOKE_IMAGE, SMOKE_REMOTES, DB_PORT, API_PORT, SMOKE_GITHUB_TOKEN and SMOKE_API_KEYS (dummies).
 x-smoke: &smoke
   image: ${SMOKE_IMAGE:?set SMOKE_IMAGE (a throwaway tag such as idea-catcher:smoke-1234)}
   # The host .env holds real keys: the smoke run never reads it.
@@ -41,3 +41,12 @@ services:
     volumes:
       - repos:/data/repos
       - ${SMOKE_REMOTES:?set SMOKE_REMOTES (a temp dir with the bare repos)}:/remotes
+
+  # Not the x-smoke anchor: the api keeps its own three variables (no token, no LLM settings); only the key
+  # is a dummy, never a host API_KEYS, and the port a random one.
+  api:
+    image: ${SMOKE_IMAGE:?set SMOKE_IMAGE (a throwaway tag such as idea-catcher:smoke-1234)}
+    environment:
+      API_KEYS: ${SMOKE_API_KEYS:?set SMOKE_API_KEYS (a dummy key)}
+    ports: !override
+      - "127.0.0.1:${API_PORT:?set API_PORT (a random free port)}:8000"
