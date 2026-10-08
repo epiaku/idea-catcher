@@ -14,7 +14,7 @@ from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from catcher import __version__
-from catcher.api import routes_health, routes_items, routes_jobs, routes_youtube
+from catcher.api import routes_health, routes_items, routes_jobs, routes_runs, routes_youtube
 from catcher.api.auth import bearer, parse_api_keys
 from catcher.core.config import Settings
 from catcher.core.db import WORKER_LOCK_TIMEOUT_MS
@@ -115,6 +115,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_jobs.router)
     app.include_router(routes_items.router)
     app.include_router(routes_youtube.router)
+    app.include_router(routes_runs.router)
 
     def openapi() -> dict[str, Any]:
         """The schema, with the Bearer scheme declared even before a route uses it (for Authorize)."""

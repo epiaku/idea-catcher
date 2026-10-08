@@ -1,4 +1,4 @@
-"""The `pipeline.run`, `llm.reason`, `youtube.fetch` and `pipeline.publish` handlers.
+"""The `pipeline.run`, `pipeline.preview`, `llm.reason`, `youtube.fetch` and `pipeline.publish` handlers.
 
 Every change of an item's status goes through `ctx.item_states` (the one writer: status, reason,
 `stage_since` and an event, in the handler's commit); after that commit the state is mirrored into the
@@ -38,12 +38,15 @@ managed folders locally, then pull; it never pushes). `pipeline.publish`, per re
 epiaku-docs with the pages and `idea-bucket/artifacts`): commit the managed folders, pull with a rebase,
 push. Committing first means the pull's autostash never holds the worker's own changes. Changes outside
 those folders are left alone. A failed rebase is aborted and fails the job; the commit stays local, and the
-next publish pulls and pushes it."""
+next publish pulls and pushes it.
+
+`pipeline.preview` is the read-only preview of `run pipeline --dry-run`, run by the worker (it holds the
+repos) for the API's `dry_run: true`: its result is the report, and it changes nothing."""
 
 import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -93,6 +96,7 @@ from catcher.modules.pipeline.inbox import (
     with_filename_fields,
 )
 from catcher.modules.pipeline.outcome import RunState, apply_outcome, classify, log_outcome
+from catcher.modules.pipeline.preview import preview
 from catcher.modules.pipeline.process import (
     ProcessedPage,
     ProcessOptions,
@@ -184,11 +188,12 @@ def _plain_query(query: str) -> bool:
     return bool(cleaned) and "\x00" not in cleaned and not cleaned.startswith("/") and ".." not in parts
 
 
-def parse_params(params: dict[str, Any]) -> RunParams:
-    """The job's params, checked. Raises ValueError with a message that names the bad parameter."""
+def parse_params(params: dict[str, Any], job_type: str = "pipeline.run") -> RunParams:
+    """The job's params, checked (`pipeline.preview` takes the same). Raises ValueError with a message that
+    names the bad parameter."""
     unknown = sorted(set(params) - set(RunParams.__dataclass_fields__))
     if unknown:
-        raise ValueError(f"unknown parameter(s) for pipeline.run: {', '.join(unknown)}")
+        raise ValueError(f"unknown parameter(s) for {job_type}: {', '.join(unknown)}")
     for key in ("only", "requeue"):
         value = params.get(key)
         if value is not None and not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
@@ -631,6 +636,34 @@ def _bounded(names: dict[str, Any]) -> dict[str, Any]:
     if truncated:
         bounded["truncated"] = True
     return bounded
+
+
+def parse_preview_params(params: dict[str, Any]) -> RunParams:
+    """The `pipeline.preview` params: the `pipeline.run` ones, checked the same way."""
+    return parse_params(params, "pipeline.preview")
+
+
+def handle_pipeline_preview(ctx: HandlerContext, job: Job) -> HandlerResult:
+    """What a `pipeline.run` with these params would do now (`run pipeline --dry-run`, for the API).
+    Read-only: it writes no file, no row and no job, never asks the YouTube gate, and calls neither a model
+    nor YouTube. It takes no lock of its own (the worker running it holds the one-worker lock). The result
+    is `{"report": {"counts": ..., "names": ...}}`: the counts per status stay whole, the name lists are cut
+    like the `pipeline.run` result's (`_bounded`)."""
+    try:
+        params = dict(job.params or {})
+        parse_preview_params(params)
+    except ValueError as e:
+        return Fail(str(e))
+    report = preview(ctx.ideas, ctx.docs, params, ctx.services)
+    if report.problems:
+        return Fail("; ".join(report.problems))
+    names: dict[str, Any] = {
+        "items": [asdict(item) for item in report.items],
+        "unreadable": dict(report.unreadable),
+        "not_found": list(report.not_found),
+        "not_in_archive": list(report.not_in_archive),
+    }
+    return Done({"report": {"counts": report.counts(), "names": _bounded(names)}})
 
 
 def _doc(note: Note) -> dict[str, str]:

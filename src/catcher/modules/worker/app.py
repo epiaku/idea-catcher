@@ -14,10 +14,12 @@ from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter
 from catcher.modules.worker.handlers_pipeline import (
     handle_ideas_pull,
     handle_llm_reason,
+    handle_pipeline_preview,
     handle_pipeline_publish,
     handle_pipeline_run,
     handle_youtube_fetch,
     parse_params,
+    parse_preview_params,
     parse_publish_params,
     parse_pull_params,
     parse_reason_params,
@@ -32,6 +34,7 @@ def build_handlers() -> dict[str, Handler]:
     """The job type -> handler registry (plus EXTRA_HANDLERS)."""
     handlers: dict[str, Handler] = {
         "pipeline.run": handle_pipeline_run,
+        "pipeline.preview": handle_pipeline_preview,
         "youtube.fetch": handle_youtube_fetch,
         "llm.reason": handle_llm_reason,
         "pipeline.publish": handle_pipeline_publish,
@@ -44,6 +47,7 @@ def build_handlers() -> dict[str, Handler]:
 # The param parser each handler runs first, so `catcher jobs add` refuses what the handler would refuse.
 PARAM_CHECKS: dict[str, Callable[[dict[str, Any]], object]] = {
     "pipeline.run": parse_params,
+    "pipeline.preview": parse_preview_params,
     "youtube.fetch": lambda params: parse_reason_params(params, "youtube.fetch"),
     "llm.reason": parse_reason_params,
     "pipeline.publish": parse_publish_params,
