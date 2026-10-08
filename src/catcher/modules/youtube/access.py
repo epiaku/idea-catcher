@@ -87,15 +87,21 @@ class YoutubeAccess:
             return None
         if self.offline:
             return None  # get() explains it
-        self._record_pending_block()
-        if self.clock() < self.unrecorded_until:
-            return Wait(self.unrecorded_until, blocked=True)
         try:
-            pending = self.gate.peek()
+            return self.wait_for_call(wait=wait)
         except GateUnavailable as e:
             # Closed, never open: the document waits a minute, like a gap (the database of the gate is
             # down); a Wait (not FactsDeferred) keeps the contract of this read-only question.
             return Wait(self._retry_at(e), blocked=False)
+
+    def wait_for_call(self, *, wait: bool = False) -> Wait | None:
+        """Must a call to YouTube wait? None means go ahead (with `wait`: also a gap short enough to sleep
+        through). Read-only: no gate slot is taken. Offline is not looked at here (the caller decides); a gate
+        that cannot answer raises `GateUnavailable`."""
+        self._record_pending_block()
+        if self.clock() < self.unrecorded_until:
+            return Wait(self.unrecorded_until, blocked=True)
+        pending = self.gate.peek()
         if (
             pending is not None
             and wait
@@ -144,6 +150,27 @@ class YoutubeAccess:
         if write_cache and cache is not None:
             cache.put(facts)
         return facts
+
+    def call[T](self, work: Callable[[], T], *, wait: bool = False) -> T:
+        """One call to YouTube that is not a video's facts (the channel listing), through the same gate as a
+        fetch: offline refuses it, it takes one gate slot first (a gap or a block raises `FactsDeferred` and
+        nothing is called), a block (a 429, a bot check) opens the breaker exactly as a failed fetch does,
+        any other error is raised as it is (no breaker), and a success closes the breaker."""
+        if self.offline:
+            raise FactsUnavailable("YOUTUBE_OFFLINE is on: no call to YouTube")
+        self._pass_the_gate(wait)
+        started = self.clock()
+        try:
+            result = work()
+        except Exception as e:
+            if getattr(e, "blocked", False) is True or is_block_error(e):  # the listing's flag, or the text
+                raise self._blocked(started) from e
+            raise
+        try:
+            self.gate.record_success(started)
+        except GateUnavailable as e:
+            log.error("the YouTube gate could not record a call that worked: %s", _short(e))
+        return result
 
     def _remember_gone(
         self, video_id: str, cache: FactsCache | None, write_cache: bool, error: Exception

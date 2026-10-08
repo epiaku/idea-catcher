@@ -47,6 +47,7 @@ def test_the_fetcher_is_used_only_inside_build_access():
     assert _uses("fetch_facts") == [("modules/youtube/access.py", "fetch")]  # the closure in build_access
     assert _uses("build_access") == [
         ("cli.py", "youtube_facts"),
+        ("cli.py", "youtube_import"),  # the channel listing: `YoutubeAccess.call`, through the same gate
         ("modules/pipeline/process.py", "default_services"),
     ]
 
@@ -69,3 +70,29 @@ def test_services_without_an_access_have_no_fetcher_by_default():
     services = Services(settings=Settings(), profiles=None, backends=None, tags=None)  # type: ignore[arg-type]
     with pytest.raises(FactsUnavailable, match="through the gate"):
         services.facts("nGVZS_wUDGM")
+
+
+def test_the_channel_listing_is_built_and_called_only_where_the_gate_is_passed():
+    """`build_extractor` (yt-dlp) is built only in `_list_channels`, and `list_channel` runs there only inside
+    `access.call` (the gate slot, the breaker)."""
+    assert _named("build_extractor") == [("cli.py", "_list_channels")]
+    assert _named("list_channel") == [("cli.py", "_list_channels")]
+    assert _named("_list_channels") == [("cli.py", "youtube_import")]
+
+
+def _named(name: str) -> list[tuple[str, str]]:
+    """(file, enclosing function) of every use of `name` in src, as a name or as `module.name` (the CLI
+    reaches the listing through its module, so a test can replace the extractor)."""
+    found: list[tuple[str, str]] = []
+    for path in sorted(SRC.rglob("*.py")):
+        rel = path.relative_to(SRC).as_posix()
+        if rel == "modules/backfill/channel.py":
+            continue  # the definitions themselves
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            for node in ast.walk(function):
+                if (isinstance(node, ast.Name) and node.id == name) or (
+                    isinstance(node, ast.Attribute) and node.attr == name
+                ):
+                    found.append((rel, function.name))
+    return sorted(set(found))

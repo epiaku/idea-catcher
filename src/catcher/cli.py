@@ -28,9 +28,11 @@ from catcher.core.config import Settings
 from catcher.core.db import alembic_config, make_worker_engine, session_scope, utc_now
 from catcher.core.log import configure_logging
 from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError, reset_test_repos
+from catcher.modules.backfill import channel as backfill_channel
 from catcher.modules.backfill import store as backfill_store
 from catcher.modules.backfill.importer import run_import
 from catcher.modules.backfill.release import daily_allowance, release
+from catcher.modules.backfill.scan import known_ids
 from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import UnknownProfile, load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
@@ -73,9 +75,9 @@ from catcher.modules.worker.runner import (
     publish_command,
     run_command,
 )
-from catcher.modules.youtube.access import build_access
+from catcher.modules.youtube.access import YoutubeAccess, build_access
 from catcher.modules.youtube.cache import FACTS_DIR
-from catcher.modules.youtube.facts import FactsUnavailable
+from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable
 from catcher.modules.youtube.gate import GateUnavailable
 from catcher.modules.youtube.gate_rules import GateState, clock_text, wait_for
 from catcher.modules.youtube.pg_gate import PostgresGate
@@ -734,6 +736,18 @@ def youtube_import(
     release_: Annotated[
         bool, typer.Option("--release", help="release with BACKFILL_DAILY_LIMIT as the limit (default 10)")
     ] = False,
+    channels: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--channel",
+            help="also list this YouTube channel (/@handle, /channel/ID, /c/, /user/) or playlist and add "
+            "its videos to the backlog: calls YouTube, one gate slot per channel; try a SMALL channel with a "
+            "small --max-videos first. Repeat for more",
+        ),
+    ] = None,
+    max_videos: Annotated[
+        int, typer.Option("--max-videos", min=1, help="with --channel: list at most N videos per channel")
+    ] = 200,
 ) -> None:
     """Scan the docs for YouTube links that have no page and add them to the backfill backlog.
 
@@ -747,29 +761,112 @@ def youtube_import(
     then 50) and raise YOUTUBE_MIN_GAP_S before raising the limit. The idea bucket is not committed here
     (publish does). With --dry-run it prints what it would release and writes nothing.
 
-    Exit codes: 0 done; 2 a folder is missing, DATABASE_URL is malformed, the database cannot be reached or
-    has no tables (run `catcher db upgrade`)."""
+    With --channel URL (repeatable) it also lists the videos of a channel or playlist (one flat yt-dlp
+    listing of at most --max-videos videos, every request paced by YOUTUBE_REQUEST_DELAY_S) and adds the ones
+    not known yet to the backlog (source `channel`). This is the only part that calls YouTube, and it goes
+    through the same gate as a fetch: one gate slot per channel, a short gap is waited for (at most
+    YOUTUBE_WAIT_MAX_S), a block or a closed gate stops it before any call, and a block during the listing
+    opens the breaker as a failed fetch does. No retry. Try the first listing by hand on a SMALL channel
+    with a small --max-videos (say 20) and look at `catcher youtube gate` afterwards. With --dry-run nothing
+    is listed and no gate slot is taken. YOUTUBE_OFFLINE=1 refuses --channel.
+
+    Exit codes: 0 done; 1 --channel stopped by the gate, a block, YOUTUBE_OFFLINE or a listing error (the
+    channels listed before it are kept); 2 a folder is missing, a --channel URL is not a channel or
+    playlist, DATABASE_URL is malformed, the database cannot be reached or has no tables (run `catcher db
+    upgrade`)."""
     settings = Settings()
     ideas_repo, docs_repo = ideas or settings.ideas_repo, docs or settings.docs_repo
     for label, folder in (("docs", docs_repo), ("ideas", ideas_repo)):
         if not folder.is_dir():
             typer.echo(f"the {label} folder does not exist: {folder}", err=True)
             raise typer.Exit(2)
+    channel_urls = [url.strip() for url in channels or []]
+    for url in channel_urls:
+        if not backfill_channel.is_channel_url(url):
+            typer.echo(f"not a YouTube channel or playlist URL: {url!r} (nothing was done)", err=True)
+            raise typer.Exit(2)
     cap = limit if limit is not None else settings.backfill_daily_limit if release_ else None
-    now = utc_now()
-    lines: list[str] = []
-    with _backfill_session() as session:
-        result = run_import(session, ideas_repo, docs_repo, now, dry_run=dry_run)
-        if cap is not None:
-            lines = _release_backlog(session, ideas_repo, cap, now, result.new_ids if dry_run else None)
-    typer.echo(
-        f"scanned {result.files} file(s), found {result.found} video(s), {result.known} already have a page, "
-        f"{result.new} new in the backlog ({result.pending} pending in all)"
-    )
-    if result.unreadable:
-        typer.echo(f"skipped {result.unreadable} unreadable file(s)")
+    access = None
+    if channel_urls and not dry_run:
+        _check_database_url(settings.database_url)
+        access = build_access(settings, clock=_gate_clock)
+    try:
+        if access is not None:
+            _refuse_a_closed_gate(access)  # before anything is written
+        now = utc_now()
+        lines: list[str] = []
+        with _backfill_session() as session:
+            result = run_import(session, ideas_repo, docs_repo, now, dry_run=dry_run)
+        typer.echo(
+            f"scanned {result.files} file(s), found {result.found} video(s), {result.known} already have a "
+            f"page, {result.new} new in the backlog ({result.pending} pending in all)"
+        )
+        if result.unreadable:
+            typer.echo(f"skipped {result.unreadable} unreadable file(s)")
+        if channel_urls and dry_run:
+            typer.echo(f"would list {len(channel_urls)} channel(s), up to {max_videos} video(s) each")
+        if access is not None:
+            _list_channels(access, settings, channel_urls, max_videos, ideas_repo, docs_repo)
+    finally:
+        if access is not None and isinstance(access.gate, PostgresGate):
+            access.gate.engine.dispose()
+    if cap is not None:
+        with _backfill_session() as session:
+            lines = _release_backlog(session, ideas_repo, cap, utc_now(), result.new_ids if dry_run else None)
     for line in lines:
         typer.echo(line)
+
+
+def _refuse_a_closed_gate(access: YoutubeAccess) -> None:
+    """--channel: exit 1 before anything is done when YouTube may not be called (offline, a block, a gap
+    longer than YOUTUBE_WAIT_MAX_S); exit 2 when the gate cannot answer (its database). Takes no slot."""
+    if access.offline:
+        typer.echo("YOUTUBE_OFFLINE is on: --channel calls YouTube, nothing was listed", err=True)
+        raise typer.Exit(1)
+    try:
+        wait = access.wait_for_call(wait=True)
+    except GateUnavailable as e:
+        _log_gate_unavailable(e)
+        typer.echo("the YouTube gate is unavailable (the database): nothing was listed", err=True)
+        raise typer.Exit(2) from None
+    if wait is not None:
+        typer.echo(f"{wait.message(access.clock())}: nothing was listed", err=True)
+        raise typer.Exit(1)
+
+
+def _list_channels(
+    access: YoutubeAccess, settings: Settings, urls: list[str], max_videos: int, ideas: Path, docs: Path
+) -> None:
+    """List each channel through the gate (one slot each) and store its unknown videos at once, so a later
+    stop keeps what was listed. A stop (the gate, a block, an error) ends the command with exit 1."""
+    extractor = backfill_channel.build_extractor(settings.youtube_request_delay_s)
+    for url in urls:
+        target = backfill_channel.listing_url(url)
+        try:
+            ids = access.call(
+                lambda target=target: backfill_channel.list_channel(
+                    target, max_videos=max_videos, extractor=extractor
+                ),
+                wait=True,
+            )
+        except FactsDeferred as e:  # the gap, a block (the breaker is now open) or the gate's database
+            if isinstance(e.__cause__, GateUnavailable):
+                _log_gate_unavailable(e.__cause__)
+                typer.echo(f"the YouTube gate is unavailable (the database): {url} was not listed", err=True)
+                raise typer.Exit(2) from None
+            typer.echo(f"{e}: {url} was not listed (nothing more is listed)", err=True)
+            raise typer.Exit(1) from None
+        except (FactsUnavailable, backfill_channel.ChannelListingError) as e:
+            typer.echo(f"{e} (nothing more is listed)", err=True)
+            raise typer.Exit(1) from None
+        with _backfill_session() as session:
+            known = known_ids(session, ideas, docs)
+            fresh = {vid: ("channel", url) for vid in ids if vid not in known}
+            added = backfill_store.add_pending(session, fresh, utc_now())
+        typer.echo(
+            f"listed {len(ids)} video(s) from {url}: {len(ids) - len(fresh)} already known, "
+            f"{added} new in the backlog"
+        )
 
 
 def _release_backlog(
