@@ -20,7 +20,7 @@ from croniter import croniter
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import ArgumentError, OperationalError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from catcher import __version__
@@ -28,6 +28,8 @@ from catcher.core.config import Settings
 from catcher.core.db import alembic_config, make_worker_engine, session_scope, utc_now
 from catcher.core.log import configure_logging
 from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError, reset_test_repos
+from catcher.modules.backfill import store as backfill_store
+from catcher.modules.backfill.importer import run_import
 from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import UnknownProfile, load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
@@ -701,6 +703,62 @@ def youtube_facts(url: str) -> None:
         if isinstance(gate, PostgresGate):
             gate.engine.dispose()
     typer.echo(facts.model_dump_json(indent=2))
+
+
+@contextmanager
+def _backfill_session() -> Iterator[Session]:
+    """A queue session where a database without tables ends the command with exit code 2."""
+    try:
+        with _queue_session() as session:
+            yield session
+    except ProgrammingError as e:
+        log.error("the database has no backfill table: %s", e.orig or e)
+        typer.echo("the database has no tables yet: run catcher db upgrade (nothing was done)", err=True)
+        raise typer.Exit(2) from e
+
+
+@youtube_app.command("import")
+def youtube_import(
+    ideas: IdeasOpt = None,
+    docs: DocsOpt = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="print the counts, write nothing")] = False,
+) -> None:
+    """Scan the docs for YouTube links that have no page and add them to the backfill backlog.
+
+    A video counts as known when it has a page in the docs, a job item, a clip in the idea bucket or a row
+    in the backlog. It takes no worker lock and asks YouTube and the LLM for nothing.
+
+    Exit codes: 0 done; 2 a folder is missing, DATABASE_URL is malformed, the database cannot be reached or
+    has no tables (run `catcher db upgrade`)."""
+    settings = Settings()
+    ideas_repo, docs_repo = ideas or settings.ideas_repo, docs or settings.docs_repo
+    for label, folder in (("docs", docs_repo), ("ideas", ideas_repo)):
+        if not folder.is_dir():
+            typer.echo(f"the {label} folder does not exist: {folder}", err=True)
+            raise typer.Exit(2)
+    with _backfill_session() as session:
+        result = run_import(session, ideas_repo, docs_repo, utc_now(), dry_run=dry_run)
+    typer.echo(
+        f"scanned {result.files} file(s), found {result.found} video(s), {result.known} already have a page, "
+        f"{result.new} new in the backlog ({result.pending} pending in all)"
+    )
+    if result.unreadable:
+        typer.echo(f"skipped {result.unreadable} unreadable file(s)")
+
+
+@youtube_app.command("backlog")
+def youtube_backlog(
+    limit: Annotated[int, typer.Option("--limit", min=1, help="show the oldest N pending videos")] = 20,
+) -> None:
+    """Show the backfill backlog: the count per status and the oldest pending videos. Read-only.
+
+    Exit codes: 0 done; 2 DATABASE_URL is malformed, the database cannot be reached or has no tables."""
+    with _backfill_session() as session:
+        counts = backfill_store.counts(session)
+        oldest = [(row.video_id, row.found_in) for row in backfill_store.pending(session, limit)]
+    typer.echo(f"pending {counts['pending']}, released {counts['released']}")
+    for vid, found_in in oldest:
+        typer.echo(f"{vid}  {found_in}")
 
 
 def _log_gate_unavailable(error: GateUnavailable) -> None:
