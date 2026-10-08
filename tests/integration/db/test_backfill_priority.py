@@ -12,6 +12,7 @@ from catcher.core.frontmatter import load
 from catcher.modules.backfill import store
 from catcher.modules.backfill.release import release
 from catcher.modules.pipeline.doctypes import YOUTUBE
+from catcher.modules.queue.items import set_item_status
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.worker.handlers import Done
 from catcher.modules.worker.handlers_pipeline import (
@@ -184,3 +185,86 @@ def test_a_note_without_the_marker_or_with_a_false_one_is_staged_as_inbox(harnes
         item = _item(harness, doc_id)
         assert item.origin == "inbox"
         assert [j.priority for j in _jobs(harness, "youtube.fetch", item.calculated_name)] == [0]
+
+
+# ---- retry_deferred: a stuck backfill item is not retried for ever (B8 final review I2) ------------------
+
+
+def _pipeline_run(harness, **params) -> Done:
+    job_id = harness.add_job("pipeline.run", **params)
+    with session_scope(harness.ctx.engine) as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        result = handle_pipeline_run(harness.ctx, job)
+        session.execute(update(Job).where(Job.id == job_id).values(status="succeeded"))
+    assert isinstance(result, Done)
+    return result
+
+
+def _left_in(harness, doc_id: str, status: str) -> JobItem:
+    """The item's jobs are over and it is left in `status` (as a dead link's fetch leaves it)."""
+    item = _item(harness, doc_id)
+    with session_scope(harness.ctx.engine) as session:
+        session.execute(
+            update(Job)
+            .where(Job.params["calculated_name"].astext == item.calculated_name)
+            .values(status="succeeded")
+        )
+        set_item_status(
+            session, item.calculated_name, status, now=harness.clock(), reason="video unavailable"
+        )
+    return item
+
+
+def _queued_fetches(harness, name: str) -> list[Job]:
+    return [j for j in _jobs(harness, "youtube.fetch", name) if j.status == "queued"]
+
+
+def test_a_stuck_backfill_item_is_not_retried_by_retry_deferred(harness, caplog) -> None:
+    _release(harness)
+    _stage(harness, CLIP)
+    item = _left_in(harness, BACK, "stuck")
+    harness.clock.advance(60)
+
+    with caplog.at_level("WARNING", logger="catcher.worker"):
+        result = _pipeline_run(harness, retry_deferred=True, only=[CLIP])
+
+    assert _queued_fetches(harness, item.calculated_name) == []
+    assert _item(harness, BACK).status == "stuck"
+    assert result.result["names"]["backfill_not_retried"] == [item.calculated_name]
+    assert "1 stuck backfill item(s) not retried: requeue them by hand" in caplog.text
+    assert harness.fetch_calls == []
+
+
+def test_a_deferred_backfill_item_is_still_retried(harness) -> None:
+    _release(harness)
+    _stage(harness, CLIP)
+    item = _left_in(harness, BACK, "deferred")
+    harness.clock.advance(60)
+
+    result = _pipeline_run(harness, retry_deferred=True, only=[CLIP])
+
+    assert [j.priority for j in _queued_fetches(harness, item.calculated_name)] == [-10]
+    assert result.result["names"].get("backfill_not_retried", []) == []
+
+
+def test_a_stuck_inbox_item_is_still_retried(harness) -> None:
+    _stage(harness, "yt")
+    item = _left_in(harness, VID, "stuck")
+    harness.clock.advance(60)
+
+    _pipeline_run(harness, retry_deferred=True, only=["yt"])
+
+    assert [j.priority for j in _queued_fetches(harness, item.calculated_name)] == [0]
+
+
+def test_a_stuck_backfill_item_can_be_requeued_by_hand(harness) -> None:
+    _release(harness)
+    _stage(harness, CLIP)
+    item = _left_in(harness, BACK, "stuck")
+    harness.clock.advance(60)
+
+    _pipeline_run(harness, requeue=[CLIP])
+
+    assert [j.priority for j in _queued_fetches(harness, item.calculated_name)] == [-10]
+    assert _item(harness, BACK).status == "waiting_youtube"

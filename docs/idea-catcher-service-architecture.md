@@ -1034,6 +1034,8 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - *Wording (offline check):* the import line says `N already have a page` but counts every known id (backlog rows, job items, clips), so a rerun says `9 already have a page` when 2 have one; `--dry-run` says `N new in the backlog` although nothing is stored; `--limit N` caps all releases of the last 24 hours, so raising N the same day releases the difference at once (documented).
 - *Not seen live:* with `YOUTUBE_OFFLINE=1` a fetch defers its item at once, so a backfill fetch waiting in the queue for the gate was seen only in the tests (`tests/integration/db/test_backfill_priority.py`).
 - *Tests:* the store's concurrency test commits the first session before the second inserts, so it never exercises an in-flight conflict.
+- *Stuck backfill items* (final review I2): `retry_deferred` no longer retries a `stuck` item of origin `backfill` (a dead link is tried for about `STUCK_AFTER_DAYS` daily runs); they wait for a requeue by hand and `catcher items list --status stuck` shows them. Nothing tells you about them beyond that list and the run's warning; a summary or a final "gave up" status is open.
+- *Channel listing and the gap* (final review I1): a listing must fit in half of `YOUTUBE_MIN_GAP_S` (checked before any slot, `--max-videos` at most 100); the gap still counts from the start of a listing (the gate has no "end of call" step), which that rule keeps safe.
 
 **Done when:** jobs added by hand or by the schedule process the inbox exactly like stage A, failures defer and recover, the YouTube gap holds with more than one worker, and the metrics tables answer the questions in [Database & Metrics](#mvp-database).
 

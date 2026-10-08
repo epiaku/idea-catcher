@@ -456,15 +456,22 @@ def _from_working_copy(
     return True
 
 
-def _retry(ctx: HandlerContext, params: RunParams, job_id: uuid.UUID | None) -> tuple[list[str], list[str]]:
-    """`retry_deferred`: the calculated names to requeue from `archive/` (for `_requeue`), and the names of
-    the items re-queued from their working copy instead. The items are those whose status is `deferred` or
-    `stuck`, and those left `waiting_youtube`, `waiting_llm` or `ready` that no queued or running job carries
+def _retry(
+    ctx: HandlerContext, params: RunParams, job_id: uuid.UUID | None
+) -> tuple[list[str], list[str], list[str]]:
+    """`retry_deferred`: the calculated names to requeue from `archive/` (for `_requeue`), the names of the
+    items re-queued from their working copy instead, and the stuck backfill items left alone. The items are
+    those whose status is `deferred` or `stuck` (but not a `stuck` item of origin `backfill`: an old link
+    that keeps failing, a private or removed video, would otherwise cost a YouTube call every day for ever;
+    it is tried until it is stuck, about `stuck_after_days` daily runs, then waits for a requeue by hand),
+    and those left `waiting_youtube`, `waiting_llm` or `ready` that no queued or running job carries
     (`live_job_carries`; e.g. rows `reconcile` made: `_requeue` marks them `stuck` leftovers). The database is
     the truth, not the frontmatter in `output/`. An item with no archive copy is re-queued from its working
     copy (`_from_working_copy`); with neither, it is left as it is and a warning names it."""
     with session_scope(ctx.engine) as session:
-        rows = [(i.calculated_name, i.status) for i in items_in_status(session, "deferred", "stuck")]
+        retryable = items_in_status(session, "deferred", "stuck")
+        left_alone = [i.calculated_name for i in retryable if i.status == "stuck" and i.origin == "backfill"]
+        rows = [(i.calculated_name, i.status) for i in retryable if i.calculated_name not in left_alone]
         rows += [
             (i.calculated_name, i.status)
             for i in items_in_status(session, *_RECOVERABLE_ACTIVE)
@@ -482,7 +489,14 @@ def _retry(ctx: HandlerContext, params: RunParams, job_id: uuid.UUID | None) -> 
             log.warning("not retried: %s is still being processed by a job (status %s)", name, status)
         elif _from_working_copy(ctx, name, status, params, job_id):
             recovered.append(name)
-    return archived, recovered
+    if left_alone:
+        log.warning(
+            "%d stuck backfill item(s) not retried: requeue them by hand "
+            "(catcher run pipeline --requeue NAME): %s",
+            len(left_alone),
+            ", ".join(left_alone[:NAMES_MAX]),
+        )
+    return archived, recovered, left_alone
 
 
 def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
@@ -518,7 +532,7 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
             counts["errors"] += 1
 
     explicit = params.requeue or []
-    retried, recovered = _retry(ctx, params, job.id) if params.retry_deferred else ([], [])
+    retried, recovered, backfill_left = _retry(ctx, params, job.id) if params.retry_deferred else ([], [], [])
     counts["adopted"] += len(recovered)  # re-queued from the working copy, as a crash leftover is adopted
     adopted += recovered
     requeue = _requeue(ctx, [*explicit, *retried], job.id)
@@ -594,6 +608,8 @@ def handle_pipeline_run(ctx: HandlerContext, job: Job) -> HandlerResult:
         "same_id": same_id,
         "artifacts": [_artifact(item) for item in report.items],
     }
+    if backfill_left:  # only when there are some: the result of an ordinary run keeps its shape
+        names["backfill_not_retried"] = backfill_left
     return Done({**counts, "names": _bounded(names)})
 
 

@@ -328,7 +328,7 @@ On the worker path **the database is the truth** for every document: its row in 
 | `ready`           | allowed in the table, but the worker does not use it yet (`waiting_llm` goes straight to `published`) |
 | `published`       | done: the page is in `epiaku-docs` and the working copy in `output/` is that page                     |
 | `deferred`        | stalled for a while (LLM down, a budget or usage limit, no facts); retried by `retry_deferred`        |
-| `stuck`           | `deferred` for more than `STUCK_AFTER_DAYS` (3) days; still retried                                   |
+| `stuck`           | `deferred` for more than `STUCK_AFTER_DAYS` (3) days; still retried, except a backfill item (below)   |
 | `failed`          | failed for good: the file is in `failed/` with an `.error.txt`                                        |
 | `duplicate`       | an earlier snapshot of a longer clip, in `duplicates/`                                                |
 
@@ -437,6 +437,8 @@ and the row becomes `released`. The note is written atomically and never over an
 3. **Raise `YOUTUBE_MIN_GAP_S` before you raise the limit**, not after a block. The gate allows **about 290 fetches a day at most** with the defaults (a 2-minute gap plus on average 2.5 minutes of jitter, an _estimate_), shared with the new clips, so a big backlog takes days by design. Each released video also costs one LLM call, like any clip (OpenAI; about $0.024 for a short video by the estimate in the YouTube page, more for a long one; the OpenAI key has its own budget cap).
 
 There is **no daily automation**: nothing releases by itself. Run the release once a day by hand for now.
+
+**A dead link is tried for about 3 days, then waits for you.** The cap limits releases, not retries: an old link is often a private or removed video, or one without captions, and its item is `deferred`. A scheduled run (`retry_deferred=true`) retries it once a day, but only until it becomes `stuck` (`STUCK_AFTER_DAYS`, 3): a **`stuck` backfill item is not retried any more**, so dead links do not cost a YouTube call every day for ever. The run logs `N stuck backfill item(s) not retried: requeue them by hand` (and lists them as `backfill_not_retried` in its result); `catcher items list --status stuck` shows them. Requeue one by hand with `catcher run pipeline --requeue NAME` (or `jobs add pipeline.run --param requeue=NAME`). A stuck item from the inbox (a normal clip) is still retried as before.
 
 **Exit codes of `catcher youtube import`:** `0` done (also when a note could not be written); `1` `--channel` was stopped by the gate, a block, `YOUTUBE_OFFLINE` or a listing error (the channels listed before it are kept; with `--limit`/`--release` the release is skipped and it says so); `2` a folder is missing, a `--channel` URL is not a channel or playlist, `DATABASE_URL` is malformed, the database cannot be reached or has no tables (`run catcher db upgrade`). `catcher youtube backlog`: `0`, or `2` for the database.
 
