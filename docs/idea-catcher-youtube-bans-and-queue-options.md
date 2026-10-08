@@ -20,7 +20,7 @@ The protections of Step 1 are in the code and tested (no network). How they diff
 | Hardening added on 2026-10-02 (review fixes) | **A damaged gate state fails closed:** the gate closes for the block hours (then a damaged file, since 2026-10-04 a damaged or missing row in Postgres). A value from the far future is capped at 24 hours. A fetch that started before a newer block cannot close the breaker (`blocked_at`, `started_at`). Two fetches that both get a 429 count as one block. **A dry run never calls YouTube** and does not use the gap (`would_fetch`). A clip whose gap closed after its check, or that got a 429, goes **back to `inbox/`** as `waiting`. A private or removed video is remembered for a day. The Stage B gate has to do all of this too |
 | A guard against live calls in development | `YOUTUBE_OFFLINE=1` (saved facts still work). `catcher youtube facts` goes through the same gap and breaker |
 
-**Built since in Stage B:** the Postgres queue (B2, B3) and the gate in Postgres (B4; since B4b, 2026-10-04, the only gate: the gate file and `CATCHER_STATE_DIR` are gone). **Built since then:** the pull, run and publish schedules (B6, 2026-10-07). **Not built yet:** the backfill import. The text below is the analysis and the design that led here.
+**Built since in Stage B:** the Postgres queue (B2, B3) and the gate in Postgres (B4; since B4b, 2026-10-04, the only gate: the gate file and `CATCHER_STATE_DIR` are gone). **Built since then:** the pull, run and publish schedules (B6, 2026-10-07). **And:** the backfill import (B8, 2026-10-08): `catcher youtube import` releases the old links a few a day at a low priority (see [Backfill YouTube links](../idea-catcher-how-to-run-stage-b/#backfill)). The text below is the analysis and the design that led here.
 
 ## Short answer
 
@@ -256,7 +256,7 @@ The existing behaviour stays for hand runs: `run pipeline` commits at the end, a
 
 Today there are many YouTube links that were never analysed (in `epiaku-docs` and elsewhere). After that first batch, the number of new videos a day drops. The design handles both with the same machinery:
 
-- **Getting them in:** a one-time import (a command such as `catcher youtube import`, to be designed) finds the YouTube links in the docs, skips the video ids that already have a page, and adds the rest as **low-priority** jobs. New clips keep their normal priority and go first. The backlog uses the quiet time slots.
+- **Getting them in (built in B8, 2026-10-08):** `catcher youtube import` finds the YouTube links in the docs, skips the video ids that already have a page (or a job item, a clip or a backlog row), and keeps the rest in the table `backfill_videos`. `--limit N` releases at most N of them per rolling 24 hours as clip notes marked `backfill: true`, whose jobs run at `BACKFILL_PRIORITY` (`-10`), so new clips (`0`) go first. See [Backfill YouTube links](../idea-catcher-how-to-run-stage-b/#backfill).
 - **How long it takes:** a cycle is about the gap (2 minutes), plus an average of 2.5 minutes of jitter, plus about 30 seconds for the fetch, so about 5 minutes. That is **about 290 fetches a day at most** (_estimate_; with a 10 minute gap it would be about 110):
 
 | Backlog | Days to finish (_estimate_) | LLM cost at the video 1 rate (about $0.024 each) |
@@ -265,8 +265,8 @@ Today there are many YouTube links that were never analysed (in `epiaku-docs` an
 | 500 videos | about 1.7 days | about $12 |
 | 1,000 videos | about 3.5 days | about $24 |
 
-  Longer videos cost more (the whole transcript goes to the LLM), and the OpenAI key has a **budget cap**, so a big backfill should have a budget or a `--limit` per day. The YouTube gap is the bottleneck, not the LLM.
-- **All the videos of a channel:** this is **riskier than one video**. Listing a channel makes many requests (yt-dlp's own guidance says hundreds of index pages are what trigger a 429). So list it **once**, with yt-dlp's flat playlist mode, **paced**, store the ids in the database, and only then add the videos as low-priority jobs. Try it by hand on a small channel first; I have not measured how many requests a listing needs.
+  Longer videos cost more (the whole transcript goes to the LLM), and the OpenAI key has a **budget cap**, so a big backfill should have a budget or a `--limit` per day. The YouTube gap is the bottleneck, not the LLM. **Built:** the `--limit` per rolling 24 hours (default `BACKFILL_DAILY_LIMIT=10`), with a staged start (5, then 20, then 50); no money budget beyond it and the per-backend budget block.
+- **All the videos of a channel:** this is **riskier than one video**. Listing a channel makes many requests (yt-dlp's own guidance says hundreds of index pages are what trigger a 429). So list it **once**, with yt-dlp's flat playlist mode, **paced**, store the ids in the database, and only then add the videos as low-priority jobs. **Built in B8:** `catcher youtube import --channel URL --max-videos N` (at most 500 per run, one gate slot per channel, no retry). Try it by hand on a small channel first (`--max-videos 20`); it has not been run against YouTube yet, so how many requests a listing needs is still not measured.
 - **Nothing changes later.** When the backlog is done, the same gap, breaker and cache just see less traffic.
 
 ## Your questions, explained
@@ -330,12 +330,12 @@ Both tools can use one: yt-dlp has a `proxy` option, and the transcript library 
 4. **No proxy.** The Data API is not needed now.
 5. **Queue:** our **own** queue on Postgres, with Procrastinate only as the fallback if it gets big or buggy.
 6. **State:** Postgres for the state and the queue, the frontmatter as a readable mirror written on status changes only.
-7. **Backfill:** low-priority jobs behind new clips, with a budget.
+7. **Backfill:** low-priority jobs behind new clips, with a budget. **Built in B8 (2026-10-08)** with a cap per rolling 24 hours as the budget.
 
 **Still open**
 - ~~When to build the Step 1 protections~~ **Done (2026-10-01)**, see the status at the top. Still to do by hand: try `YOUTUBE_SKIP_MANIFESTS=1` once.
-- The import command and the channel listing (a small design and a hand test).
-- A budget for the backfill.
+- ~~The import command and the channel listing~~ **Built in B8 (2026-10-08).** Still to do by hand: the first channel listing on a small channel.
+- ~~A budget for the backfill~~ **The `--limit` cap per rolling 24 hours (B8).** A money budget beyond it and a daily schedule for the release are not built.
 - The default times for the pull and publish schedules (the suggested values above can be changed in `.env`).
 
 ## Sources

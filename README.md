@@ -10,7 +10,7 @@ Obsidian -> idea-bucket/inbox -> catcher run pipeline -> epiaku-docs (page)
                                       |-> output/ (the working copy), failed/, duplicates/
 ```
 
-**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it), and so are the item states and metrics (B5); since B5b `catcher run pipeline` is the worker path in one process (the Stage A loop is gone); since B6 `catcher worker` queues the pull, the run and the publish on three cron schedules (`catcher schedules` shows them, `catcher publish` commits by hand). since B7 (2026-10-07) `docker compose up -d --build` runs the worker next to the database in Docker, with the repos cloned on first start (see [Run it in Docker](docs/idea-catcher-how-to-run-stage-b.md#docker)). The backfill import (B8) and the API (Stage C) come next.
+**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it), and so are the item states and metrics (B5); since B5b `catcher run pipeline` is the worker path in one process (the Stage A loop is gone); since B6 `catcher worker` queues the pull, the run and the publish on three cron schedules (`catcher schedules` shows them, `catcher publish` commits by hand). Since B7 (2026-10-07) `docker compose up -d --build` runs the worker next to the database in Docker, with the repos cloned on first start (see [Run it in Docker](docs/idea-catcher-how-to-run-stage-b.md#docker)). Since B8 (2026-10-08) `catcher youtube import` finds the YouTube links in the docs that have no page yet and releases a few a day (`--limit N` per rolling 24 hours) as low-priority clips behind the new ones (see [Backfill YouTube links](docs/idea-catcher-how-to-run-stage-b.md#backfill)). The API (Stage C) comes next.
 
 ## 📑 Table of contents
 
@@ -54,6 +54,8 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 | `catcher items list` | List the documents the worker handles: state, since when and why (`--status stuck`, `--limit N`; Stage B) |
 | `catcher reconcile` | Rebuild the item rows from the idea-bucket folders after a lost or new database; never deletes a file or a row, and closes the YouTube gate (`--dry-run` first, `--keep-gate`; Stage B) |
 | `catcher youtube gate` | Show the YouTube gate in Postgres, shared by the worker and the CLI (open, the next allowed call, or a block) |
+| `catcher youtube import` | Find the YouTube links in the docs that have no page and add them to the backfill backlog; `--limit N` (or `--release`) releases at most N per rolling 24 hours as low-priority clip notes; `--dry-run` writes nothing (Stage B8) |
+| `catcher youtube backlog` | Show the backfill backlog: pending and released counts, the oldest pending videos (Stage B8) |
 | `catcher testdata reset` | Make fresh test repos in `tmp/ic` (`--fresh-llm-and-youtube`: without the saved LLM replies and YouTube facts, so a run calls both for real) |
 | `catcher version` | Print the version |
 

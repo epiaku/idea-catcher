@@ -1,7 +1,7 @@
 ---
 title: "Idea Catcher: How to Run Stage B"
 linkTitle: "Idea Catcher: Run Stage B"
-description: "How to run the Stage B worker and job queue: start Postgres, add jobs, run the worker on the test repos and on your real repos, schedule it, publish, stop it, and read the exit codes."
+description: "How to run the Stage B worker and job queue: start Postgres, add jobs, run the worker on the test repos and on your real repos, schedule it, publish, backfill old YouTube links, stop it, and read the exit codes."
 weight: 41
 type: docs
 ---
@@ -16,7 +16,7 @@ This page shows how to run what Stage B built: a **Postgres job queue** and a **
 4. Look at the jobs: `catcher jobs list`.
 5. Commit and push the result: `catcher jobs add pipeline.publish`, then the worker again.
 
-Since B6 (2026-10-07) the worker can also queue these jobs itself on a cron schedule (see [Scheduling](#scheduling)), and since B7 (2026-10-07) it runs in Docker Compose (see [Run it in Docker](#docker)); without the `SCHEDULE_*` variables nothing is scheduled and you add the jobs by hand. Try it first on the test repos (see [Worker, jobs and exit codes](#worker)); that costs nothing.
+Since B6 (2026-10-07) the worker can also queue these jobs itself on a cron schedule (see [Scheduling](#scheduling)), since B7 (2026-10-07) it runs in Docker Compose (see [Run it in Docker](#docker)), and since B8 (2026-10-08) `catcher youtube import` releases the old YouTube links of the docs a few a day (see [Backfill YouTube links](#backfill)); without the `SCHEDULE_*` variables nothing is scheduled and you add the jobs by hand. Try it first on the test repos (see [Worker, jobs and exit codes](#worker)); that costs nothing.
 
 ## Run it on test repos
 
@@ -92,7 +92,7 @@ uv run catcher db downgrade -1   # roll back one migration; REVISION is required
 
 `catcher db downgrade base` drops **every table with all its rows**, so it asks for confirmation first (`--yes` skips the question). Without a REVISION the command fails and changes nothing.
 
-After `upgrade` the tables are `jobs`, `job_items`, `job_events`, `resources`, `schedules` and Alembic's `alembic_version`, and `resources` holds the row `youtube`, open (the [YouTube gate](#youtube-gate)); after `downgrade base` only `alembic_version` is left.
+After `upgrade` (head revision `0006`) the tables are `jobs`, `job_items`, `job_events`, `resources`, `schedules`, `backfill_videos` (since B8: the [backfill backlog](#backfill)) and Alembic's `alembic_version`, and `resources` holds the row `youtube`, open (the [YouTube gate](#youtube-gate)); after `downgrade base` only `alembic_version` is left.
 
 **Run the database tests:**
 
@@ -393,3 +393,69 @@ What you see (checked on 2026-10-04, on a throwaway database with a fake block):
 - **The database cannot be reached during a fetch decision:** no fetch is made, the job waits 60 seconds and tries again, and the document stays `waiting_youtube`.
 - **A 429 that cannot be written to the row** (the database fails right then): the worker makes no YouTube call for the first breaker step (`YOUTUBE_BLOCK_HOURS`, 6 hours) and keeps that block in memory. As soon as the gate answers again, the worker writes the block into the row (before anything else), and from then on `catcher youtube gate` shows it and a restart keeps it. Until then only the log (`YouTube is blocking us, and the gate could not record the block`) shows it, and a restart forgets it: read the log before you restart a worker after a database failure.
 - **Exit codes of `catcher youtube gate`:** `0` done; `2` `DATABASE_URL` is malformed (`DATABASE_URL is not a valid database URL`), or the database cannot be reached (`cannot reach the database in DATABASE_URL`).
+
+## Backfill YouTube links {#backfill}
+
+Since B8 (2026-10-08) `catcher youtube import` catches up on the old YouTube links: the videos that are linked somewhere in `epiaku-docs` but never got a page of their own. It is a **gap finder** (which linked videos have no page yet) plus a **throttled catch-up** (a few of them a day go through the normal pipeline, behind the new clips and through the same YouTube gate). Nothing new talks to YouTube or the LLM: the release only writes clip notes, and the pipeline does the rest as for any clip. The one exception is `--channel` (below), which you run by hand.
+
+```bash
+uv run catcher youtube import --dry-run        # 1. what it would find and add; writes nothing
+uv run catcher youtube import                  # 2. fill the backlog (the table backfill_videos); writes no files
+uv run catcher youtube backlog                 # 3. pending and released counts, the oldest pending videos
+uv run catcher youtube import --limit 5        # 4. release at most 5 per rolling 24 hours as clip notes
+uv run catcher youtube import --release        #    the same with BACKFILL_DAILY_LIMIT (default 10) as the cap
+```
+
+**The options.** `catcher youtube import [--docs PATH] [--ideas PATH] [--dry-run] [--limit N | --release] [--channel URL ... --max-videos N]`. `--docs` and `--ideas` default to `DOCS_REPO` and `IDEAS_REPO` (a missing folder: exit 2). Without `--limit` or `--release` it only scans and stores. `catcher youtube backlog [--limit N]` shows `pending N, released M` and the oldest N pending videos (default 20) with the page they were found in; it is read-only. Neither command takes the worker's lock, so they work while a worker runs.
+
+**What is found.** Every markdown file under the docs repo (`.git` skipped; a symlink that points outside the repo skipped) is read, frontmatter and body, for YouTube video links: `watch?v=` (also with `&list=`), `youtu.be/` (also with `?t=`), `/shorts/`, `/embed/`, `/live/`. A playlist or channel link has no video id and is not a video. A video linked on several pages, or twice on one page, is one video; its row remembers the first page (`found_in`, relative to the repo).
+
+**When a video counts as known** (it is not added): it is the `video_id:` of a page in the docs (or the base id of an `id: <id>-gemini` page), it is the `doc_id` of a `job_items` row (in flight or done), it is already a YouTube or Gemini clip anywhere in the idea bucket (`inbox/`, `archive/`, `output/`, `failed/`, `duplicates/`), or it is already in the backlog. The output line counts all of these as "already have a page", so after the first import a rerun says `0 new` and counts the backlog rows there too.
+
+**What a release writes.** For each of the oldest pending videos (oldest `found_at` first, then by id) a clip note `inbox/clippings/youtube source - <id>.md`, exactly:
+
+```markdown
+---
+source: https://www.youtube.com/watch?v=<id>
+tags: [clippings]
+backfill: true
+created: 2026-10-08
+---
+![](https://www.youtube.com/watch?v=<id>)
+```
+
+and the row becomes `released`. The note is written atomically and never over an existing file: when that note already exists, or the video is already a clip in the idea bucket, the row is marked `released` without a write (`N video(s) already had a clip note: marked released`). A note that cannot be written leaves its row `pending` for the next release (the error is only logged; the command still exits 0). **The idea bucket is not committed by the import**: the next `pipeline.run` stages the notes, and the next publish commits them (with the archive and working copies) like any capture.
+
+**Low priority: new clips go first.** The marker `backfill: true` gives the item `origin = backfill`, and every job of that item (`youtube.fetch`, `llm.reason`, a fetch queued again) gets `BACKFILL_PRIORITY` (default `-10`); a normal clip's jobs stay at `0`. The queue takes the highest priority first, so a new clip never waits behind the backlog, and the YouTube gate still paces every fetch (a backfill fetch waits for the gap like any other). The marker stays on the archive and working copies (so a retry stays low priority) and never reaches the page. `catcher jobs list` shows the priority column; `catcher items list` shows the backfill items like any clip. One exception: an item that `catcher reconcile` rebuilds without an archive copy gets `origin = inbox`, so its jobs run at `0`.
+
+**The cap is per rolling 24 hours.** `--limit N` compares N with **all** releases of the last 24 hours, whatever number you gave before: with 3 released, `--limit 3` again releases nothing (`daily allowance already used (3 per 24 hours)`), and `--limit 5` right after releases 2 more. So running it twice a day never goes over N, but raising N the same day releases the difference at once. `--release` uses `BACKFILL_DAILY_LIMIT` (default 10). A video marked `released` by a repair counts against the cap too. `--dry-run` with `--limit` or `--release` lists `would release <id>` and writes nothing.
+
+**A staged start (recommended for the first big backfill).** A ban came from bursts before (see [YouTube IP bans and the queue](../idea-catcher-youtube-bans-and-queue-options/)), so start small and watch:
+
+1. Day one: `catcher youtube import --dry-run`, then `catcher youtube import`, then `catcher youtube import --limit 5`. Let the worker (or `run pipeline`) work through them, and watch `catcher youtube gate` and the log for `YouTube is blocking us`.
+2. No block after a day: `--limit 20` for a few days, then `--limit 50` (or set `BACKFILL_DAILY_LIMIT` and use `--release`).
+3. **Raise `YOUTUBE_MIN_GAP_S` before you raise the limit**, not after a block. The gate allows **about 290 fetches a day at most** with the defaults (a 2-minute gap plus on average 2.5 minutes of jitter, an _estimate_), shared with the new clips, so a big backlog takes days by design. Each released video also costs one LLM call, like any clip (OpenAI; about $0.024 for a short video by the estimate in the YouTube page, more for a long one; the OpenAI key has its own budget cap).
+
+There is **no daily automation**: nothing releases by itself. Run the release once a day by hand for now.
+
+**Exit codes of `catcher youtube import`:** `0` done (also when a note could not be written); `1` `--channel` was stopped by the gate, a block, `YOUTUBE_OFFLINE` or a listing error (the channels listed before it are kept; with `--limit`/`--release` the release is skipped and it says so); `2` a folder is missing, a `--channel` URL is not a channel or playlist, `DATABASE_URL` is malformed, the database cannot be reached or has no tables (`run catcher db upgrade`). `catcher youtube backlog`: `0`, or `2` for the database.
+
+### The channel listing (hand test only) {#backfill-channel}
+
+`--channel URL` (repeatable) also lists the videos of a channel (`/@handle`, `/channel/ID`, `/c/name`, `/user/name`) or a playlist (`/playlist?list=...`) and adds the unknown ones to the backlog (`source channel`, `found_in` the URL as given). It is **the only part that calls YouTube**: one flat yt-dlp listing (no video page is opened) of at most `--max-videos` videos (default 200, at most 500), every request paced by `YOUTUBE_REQUEST_DELAY_S`, without retries, cookies or login. It goes through the gate: one gate slot per channel, a short gap is waited for (at most `YOUTUBE_WAIT_MAX_S`), a block or a longer gap stops it before any call (`nothing was listed`, exit 1), and a block during the listing opens the breaker like a failed fetch. `YOUTUBE_OFFLINE=1` refuses it. With `--dry-run` nothing is listed and no slot is taken. A bigger channel is listed over several runs, on different days; known videos are skipped.
+
+**Not tried against YouTube yet** (the agents never run it). Try it by hand like this:
+
+```bash
+uv run catcher youtube gate                                                        # open?
+uv run catcher youtube import --channel https://www.youtube.com/@SomeSmallChannel --max-videos 20 --dry-run
+uv run catcher youtube import --channel https://www.youtube.com/@SomeSmallChannel --max-videos 20
+uv run catcher youtube gate                                                        # still open, no block?
+uv run catcher youtube backlog
+```
+
+Pick a **small** channel. Untried live: a bare channel URL gets `/videos` appended (without a tab yt-dlp lists the tabs, not the videos), and how many page requests one listing takes. If the result has no videos, try the URL with `/videos` yourself and look at the log.
+
+**What was seen** (checked on 2026-10-08, offline: a throwaway Postgres, copies of the test repos with six extra pages of links in the docs copy, `YOUTUBE_OFFLINE=1`, no LLM key): the dry run printed `scanned 6 file(s), found 9 video(s), 3 already have a page, 6 new in the backlog` and wrote no row and no file; the import stored the 6; `--limit 3` wrote the three notes above and printed `released 3 video(s) into inbox/clippings/ (3 still pending)`; again `--limit 3` released nothing; `--limit 5` released 2. A normal clip dropped in afterwards and `catcher run pipeline`: the five backfill fetches had priority `-10`, the normal one `0`, and the normal one was taken first although it was queued last; offline the fetch defers the item at once (`YOUTUBE_OFFLINE is on and there are no saved facts`), so a fetch waiting in the queue for the gate was not seen here (the tests pin it). A backfill clip with saved facts went straight to `llm.reason` at `-10`. No page had a `backfill` key.
+
+**Not built in B8:** a schedule that releases every day, a money budget beyond the cap and the per-backend budget block of B5, and the backfill origin for items that `catcher reconcile` rebuilds without an archive copy (they run at `0`).
