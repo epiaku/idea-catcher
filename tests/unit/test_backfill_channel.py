@@ -198,3 +198,15 @@ def test_access_call_offline_calls_nothing() -> None:
 
     assert called == []
     assert gate.state.next_allowed_at == 0
+
+
+def test_how_long_a_listing_takes_and_the_largest_that_fits() -> None:
+    assert channel.listing_seconds(1, 10.0) == 10.0
+    assert channel.listing_seconds(30, 10.0) == 10.0
+    assert channel.listing_seconds(31, 10.0) == 20.0
+    assert channel.listing_seconds(100, 10.0) == 40.0
+    assert channel.listing_seconds(100, 0.0) == 0.0
+    assert channel.largest_listing(60.0, 10.0) == 180
+    assert channel.largest_listing(59.0, 10.0) == 150
+    assert channel.largest_listing(5.0, 10.0) == 0
+    assert channel.largest_listing(0.0, 0.0) > 100

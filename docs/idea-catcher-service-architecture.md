@@ -1022,7 +1022,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 4. **Release writes a clip note** into `inbox/clippings/` with `backfill: true` (the same pipeline, visible in the system), atomically and never overwriting.
 5. **`--limit N` is a cap per rolling 24 hours** (against a YouTube ban on the first big backfill); `--release` uses `BACKFILL_DAILY_LIMIT` (10); without either the command only scans and stores; a staged start (5, 20, 50) is recommended and `YOUTUBE_MIN_GAP_S` is raised before the limit.
 6. **Priority:** `backfill: true` -> `origin = 'backfill'` -> every job of the item at `BACKFILL_PRIORITY` (-10), whoever stages the note.
-7. **Channel listing:** `--channel URL` (repeatable), `--max-videos N` (default 200, at most 500), one flat listing per channel through one gate slot, a closed gate stops it with exit 1, a block opens the breaker, no retry.
+7. **Channel listing:** `--channel URL` (repeatable), `--max-videos N` (default 50, at most 100, and `ceil(N/30) x YOUTUBE_REQUEST_DELAY_S` at most half of `YOUTUBE_MIN_GAP_S`, so a listing ends inside its gap), one flat listing per channel through one gate slot, a closed gate stops it with exit 1, a block opens the breaker, no retry.
 8. **No LLM money budget in B8** beyond `--limit` and the per-backend budget block of B5.
 
 **Open items after B8** (minors from the B8 reviews and the offline check):

@@ -666,10 +666,10 @@ def reconcile_cmd(
         typer.echo(gate_line)
 
 
-DEFAULT_CHANNEL_VIDEOS = 200  # --max-videos without a value
-MAX_CHANNEL_VIDEOS = (
-    500  # one listing (one gate slot) never asks for more: a bigger channel takes several runs
-)
+DEFAULT_CHANNEL_VIDEOS = 50  # --max-videos without a value
+# One listing (one gate slot) never asks for more: about 4 paced pages, a bigger channel takes several runs.
+# The settings may lower it further (`_check_the_listing_fits_the_gap`).
+MAX_CHANNEL_VIDEOS = 100
 
 youtube_app = typer.Typer(no_args_is_help=True, help="YouTube helpers.")
 app.add_typer(youtube_app, name="youtube")
@@ -781,15 +781,18 @@ def youtube_import(
     YOUTUBE_WAIT_MAX_S), a block or a closed gate stops it before any call, and a block during the listing
     opens the breaker as a failed fetch does. No retry. Try the first listing by hand on a SMALL channel
     with a small --max-videos (say 20) and look at `catcher youtube gate` afterwards. --max-videos is at
-    most 500 (one gate slot covers about one paced page request per 30 videos, and hundreds of pages bring a
-    429): a bigger channel is listed over several runs, on different days, and the videos already in the
-    backlog are skipped. With --dry-run nothing
-    is listed and no gate slot is taken. YOUTUBE_OFFLINE=1 refuses --channel.
+    most 100 (default 50): one gate slot covers one paced page request per 30 videos, and a listing must end
+    well inside the gap its slot started, so it never overlaps a fetch or the next listing: ceil(N / 30) x
+    YOUTUBE_REQUEST_DELAY_S must be at most half of YOUTUBE_MIN_GAP_S, else it stops (exit 2) and names the
+    largest --max-videos the settings allow. A bigger channel is listed over several runs, on different days,
+    and the videos already in the backlog are skipped. The channels of one command are listed one after
+    another, each with its own slot, so the gate's gap separates them. With --dry-run nothing is listed and
+    no gate slot is taken. YOUTUBE_OFFLINE=1 refuses --channel.
 
     Exit codes: 0 done; 1 --channel stopped by the gate, a block, YOUTUBE_OFFLINE or a listing error (the
     channels listed before it are kept); 2 a folder is missing, a --channel URL is not a channel or
-    playlist, DATABASE_URL is malformed, the database cannot be reached or has no tables (run `catcher db
-    upgrade`)."""
+    playlist, --max-videos does not fit the gap, DATABASE_URL is malformed, the database cannot be reached
+    or has no tables (run `catcher db upgrade`)."""
     settings = Settings()
     ideas_repo, docs_repo = ideas or settings.ideas_repo, docs or settings.docs_repo
     for label, folder in (("docs", docs_repo), ("ideas", ideas_repo)):
@@ -805,6 +808,8 @@ def youtube_import(
     if max_videos is not None and not channel_urls:
         typer.echo("--max-videos has no effect without --channel", err=True)
     videos = max_videos if max_videos is not None else DEFAULT_CHANNEL_VIDEOS
+    if channel_urls:
+        _check_the_listing_fits_the_gap(settings, videos)
     access = None
     if channel_urls and not dry_run:
         _check_database_url(settings.database_url)
@@ -838,6 +843,29 @@ def youtube_import(
             lines = _release_backlog(session, ideas_repo, cap, utc_now(), result.new_ids if dry_run else None)
     for line in lines:
         typer.echo(line)
+
+
+def _check_the_listing_fits_the_gap(settings: Settings, videos: int) -> None:
+    """Exit 2 (nothing done) when a listing of `videos` could outlast half the gap its gate slot starts: a
+    listing longer than the gap would overlap a worker's fetch or the next listing."""
+    gap_s, delay_s = settings.youtube_min_gap_s, settings.youtube_request_delay_s
+    if backfill_channel.listing_seconds(videos, delay_s) <= gap_s / 2:
+        return
+    largest = backfill_channel.largest_listing(gap_s / 2, delay_s)
+    if largest < 1:
+        typer.echo(
+            f"no channel listing fits half of YOUTUBE_MIN_GAP_S={gap_s:g} s with YOUTUBE_REQUEST_DELAY_S="
+            f"{delay_s:g} s per page: raise the gap (nothing was done)",
+            err=True,
+        )
+    else:
+        typer.echo(
+            f"--max-videos {videos} takes about {backfill_channel.listing_seconds(videos, delay_s):g} s, "
+            f"more than half of YOUTUBE_MIN_GAP_S={gap_s:g} s: use at most --max-videos {largest} with these "
+            "settings (nothing was done)",
+            err=True,
+        )
+    raise typer.Exit(2)
 
 
 def _skip_the_release_on_a_stop(cap: int | None, step: Callable[[], None]) -> None:

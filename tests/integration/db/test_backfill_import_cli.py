@@ -321,7 +321,7 @@ def test_dry_run_with_a_channel_takes_no_gate_slot(runner, engine, repos, listin
     result = _import(runner, repos, "--dry-run", "--channel", CHANNEL, "--channel", "https://youtube.com/@b")
 
     assert result.exit_code == 0, result.output
-    assert "would list 2 channel(s), up to 200 video(s) each" in result.output
+    assert "would list 2 channel(s), up to 50 video(s) each" in result.output
     assert listing.calls == [] and listing.built == []
     assert _gate(engine).snapshot().next_allowed_at == 0
     assert _rows(engine) == {}
@@ -339,17 +339,17 @@ def test_import_channel_with_an_unreachable_gate_calls_nothing(runner, repos, li
     assert listing.calls == []
 
 
-def test_max_videos_is_capped_at_500_and_warns_without_a_channel(runner, engine, repos, listing) -> None:
-    for wrong in ("501", "0"):
+def test_max_videos_is_capped_at_100_and_warns_without_a_channel(runner, engine, repos, listing) -> None:
+    for wrong in ("101", "0"):
         result = _import(runner, repos, "--channel", CHANNEL, "--max-videos", wrong)
         assert result.exit_code == 2, result.output
     assert listing.calls == []
     assert _gate(engine).snapshot().next_allowed_at == 0
 
     listing.ids = [A]
-    most = _import(runner, repos, "--channel", CHANNEL, "--max-videos", "500")
+    most = _import(runner, repos, "--channel", CHANNEL, "--max-videos", "100")
     assert most.exit_code == 0, most.output
-    assert listing.calls == [(f"{CHANNEL}/videos", 500)]
+    assert listing.calls == [(f"{CHANNEL}/videos", 100)]
 
     alone = _import(runner, repos, "--max-videos", "20")
     assert alone.exit_code == 0, alone.output
@@ -366,3 +366,35 @@ def test_a_stopped_listing_says_the_release_was_skipped(runner, engine, repos, l
     assert result.exit_code == 1, result.output
     assert "the release (--limit/--release) was skipped" in result.output
     assert {r.status for r in _rows(engine).values()} == {"pending"}  # the docs scan kept, nothing released
+
+
+def test_a_listing_longer_than_half_the_gap_is_refused_before_any_slot(
+    runner, engine, repos, listing, monkeypatch
+) -> None:
+    """ceil(N/30) paced pages x YOUTUBE_REQUEST_DELAY_S must fit in half of YOUTUBE_MIN_GAP_S, so a listing
+    ends long before the gap it started does: no fetch and no next listing can overlap it."""
+    listing.ids = [A]
+    monkeypatch.setenv("YOUTUBE_MIN_GAP_S", "60")  # half: 30 s = 3 pages of 10 s = at most 90 videos
+    monkeypatch.setenv("YOUTUBE_REQUEST_DELAY_S", "10")
+
+    for extra in ([], ["--dry-run"]):
+        result = _import(runner, repos, *extra, "--channel", CHANNEL, "--max-videos", "91")
+        assert result.exit_code == 2, result.output
+        assert "at most --max-videos 90" in result.output
+    assert listing.calls == []
+    assert _gate(engine).snapshot().next_allowed_at == 0
+    assert _rows(engine) == {}
+
+    fits = _import(runner, repos, "--channel", CHANNEL, "--max-videos", "90")
+    assert fits.exit_code == 0, fits.output
+    assert listing.calls == [(f"{CHANNEL}/videos", 90)]
+
+
+def test_no_listing_fits_a_gap_of_zero(runner, engine, repos, listing, monkeypatch) -> None:
+    monkeypatch.setenv("YOUTUBE_MIN_GAP_S", "0")
+
+    result = _import(runner, repos, "--channel", CHANNEL)
+
+    assert result.exit_code == 2, result.output
+    assert "no channel listing fits" in result.output
+    assert listing.calls == []

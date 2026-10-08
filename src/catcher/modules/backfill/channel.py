@@ -9,6 +9,8 @@ imported only inside a call of the real extractor, so importing this module or b
 touches nothing.
 """
 
+import math
+import sys
 from collections.abc import Callable
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -20,6 +22,8 @@ Extractor = Callable[..., dict[str, Any]]
 
 _CHANNEL_HOSTS = YOUTUBE_HOSTS - {"youtu.be"}  # youtu.be has video links only
 _CHANNEL_PREFIXES = {"channel", "c", "user"}
+PAGE_SIZE = 30  # videos per page of a flat channel listing: one paced request each
+
 _TABS = {"videos", "shorts", "streams", "live", "playlists", "featured"}
 
 
@@ -76,6 +80,18 @@ def ydl_options(max_videos: int, request_delay_s: float) -> dict[str, Any]:
         "retries": 1,
         "extractor_retries": 1,
     }
+
+
+def listing_seconds(max_videos: int, request_delay_s: float) -> float:
+    """About how long a listing of `max_videos` takes: one paced request per page (response times aside)."""
+    return math.ceil(max_videos / PAGE_SIZE) * max(0.0, request_delay_s)
+
+
+def largest_listing(budget_s: float, request_delay_s: float) -> int:
+    """The largest `max_videos` whose listing takes at most `budget_s`; 0 when not even one page fits."""
+    if request_delay_s <= 0:
+        return sys.maxsize
+    return max(0, math.floor(budget_s / request_delay_s)) * PAGE_SIZE
 
 
 def build_extractor(request_delay_s: float) -> Extractor:
