@@ -9,7 +9,8 @@ from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from catcher import __version__
@@ -58,7 +59,9 @@ class CatchAll:
 
         try:
             await self.app(scope, receive, tracking_send)
-        except Exception as error:
+        except ClientDisconnect:  # the client went away mid-request: nobody to answer, not our error
+            log.info("client disconnected in %s %s", scope.get("method"), scope.get("path"))
+        except Exception as error:  # BaseException (CancelledError, KeyboardInterrupt) passes through
             log.error(
                 "internal error in %s %s: %s", scope.get("method"), scope.get("path"), type(error).__name__
             )
@@ -67,9 +70,18 @@ class CatchAll:
             await JSONResponse({"detail": "internal error"}, status_code=500)(scope, receive, send)
 
 
-def _database_unavailable(request: Request, error: Exception) -> JSONResponse:
-    log.warning("database unavailable in %s %s: %s", request.method, request.url.path, type(error).__name__)
-    return JSONResponse({"detail": "database unavailable"}, status_code=503)
+def _database_error(request: Request, error: Exception) -> JSONResponse:
+    """A database that is down or dropped the connection is `503 database unavailable`; any other database
+    error is an internal error. Only the exception class is logged (its text may hold SQL or a host)."""
+    where = f"{request.method} {request.url.path}"
+    lost = isinstance(error, OperationalError | InterfaceError) or (
+        isinstance(error, DBAPIError) and error.connection_invalidated
+    )
+    if lost:
+        log.warning("database unavailable in %s: %s", where, type(error).__name__)
+        return JSONResponse({"detail": "database unavailable"}, status_code=503)
+    log.error("internal error in %s: %s", where, type(error).__name__)
+    return JSONResponse({"detail": "internal error"}, status_code=500)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -96,7 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url=None,
     )
     app.state.api_keys = keys
-    app.add_exception_handler(OperationalError, _database_unavailable)
+    app.add_exception_handler(DBAPIError, _database_error)
     app.add_middleware(CatchAll)
     app.include_router(routes_health.router)
 

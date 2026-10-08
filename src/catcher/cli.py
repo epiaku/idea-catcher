@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from catcher import __version__
 from catcher.core.config import Settings
 from catcher.core.db import alembic_config, make_worker_engine, session_scope, utc_now
-from catcher.core.log import configure_logging
+from catcher.core.log import configure_logging, share_project_handlers
 from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError, reset_test_repos
 from catcher.modules.backfill import channel as backfill_channel
 from catcher.modules.backfill import store as backfill_store
@@ -1258,7 +1258,14 @@ def api_command(
         )
         raise typer.Exit(2)
     _check_database_url(settings.database_url)
-    uvicorn.run(create_app(settings), host=host, port=port, log_config=None)
+    server_app = create_app(settings)
+    # log_config=None: uvicorn leaves logging alone; its own records (start, stop, errors) go through the
+    # project's handlers, format and level instead.
+    share_project_handlers("uvicorn")
+    logging.getLogger("catcher.api").info("listening on %s:%s", host, port)
+    # access_log=False on purpose: an access line holds the full query string, and the plan wants nothing
+    # a client sends to end up in the logs.
+    uvicorn.run(server_app, host=host, port=port, log_config=None, access_log=False)
 
 
 jobs_app = typer.Typer(no_args_is_help=True, help="The job queue: add jobs by hand and look at them.")

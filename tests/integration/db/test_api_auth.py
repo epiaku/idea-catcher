@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import Iterator
 from typing import Annotated
@@ -7,9 +8,11 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import Engine, text
+from sqlalchemy.exc import DBAPIError, IntegrityError, InterfaceError
 from sqlalchemy.orm import Session
+from starlette.requests import ClientDisconnect
 
-from catcher.api.app import create_app
+from catcher.api.app import CatchAll, create_app
 from catcher.api.auth import ApiKey, require
 from catcher.api.deps import get_session
 from catcher.core.config import Settings
@@ -58,6 +61,20 @@ def _with_test_routes(app: FastAPI) -> FastAPI:
     @app.get("/test/crash")
     def crash_route(_: Annotated[ApiKey, Depends(require("read"))]) -> None:
         raise RuntimeError(f"secret detail {BOTH}")
+
+    def _raiser(error: Exception):
+        def route(_: Annotated[ApiKey, Depends(require("read"))]) -> None:
+            raise error
+
+        return route
+
+    failures = {
+        "interface": InterfaceError("select 1", {}, Exception(f"gone {BOTH}")),
+        "invalidated": DBAPIError("select 1", {}, Exception(f"gone {BOTH}"), connection_invalidated=True),
+        "integrity": IntegrityError("insert", {}, Exception(f"duplicate {BOTH}")),
+    }
+    for name, error in failures.items():
+        app.add_api_route(f"/test/db-{name}", _raiser(error))
 
     return app
 
@@ -211,3 +228,38 @@ def test_docs_are_served_and_can_be_turned_off(pg_engine):
         assert client.get("/openapi.json").status_code == 404
         assert client.get("/redoc").status_code == 404
         assert client.get("/health").status_code in (200, 503)  # the API itself still answers
+
+
+def test_a_dropped_connection_is_503_and_another_database_error_is_500(client, caplog):
+    caplog.set_level(logging.DEBUG)
+    for name in ("interface", "invalidated"):
+        response = client.get(f"/test/db-{name}", headers=_bearer(READER))
+        assert response.status_code == 503, name
+        assert response.json() == {"detail": "database unavailable"}
+
+    response = client.get("/test/db-integrity", headers=_bearer(READER))
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal error"}
+    assert "IntegrityError" in caplog.text
+    assert BOTH not in caplog.text and "gone" not in caplog.text and "duplicate" not in caplog.text
+
+
+def test_a_client_that_disconnects_is_not_logged_as_an_internal_error(caplog):
+    caplog.set_level(logging.DEBUG)
+    sent = []
+
+    async def leaving_client_app(scope, receive, send):
+        raise ClientDisconnect()
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "GET", "path": "/test/slow"}
+    asyncio.run(CatchAll(leaving_client_app)(scope, receive, send))
+
+    assert sent == []  # nobody to answer
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert "client disconnected in GET /test/slow" in caplog.text

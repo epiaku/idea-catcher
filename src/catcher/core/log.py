@@ -37,3 +37,16 @@ def configure_logging(level: str = "INFO", file: Path | None = None) -> None:
         handler.setFormatter(formatter)
         logger.addHandler(handler)
     logger.setLevel(numeric)
+
+
+def share_project_handlers(name: str) -> None:
+    """Send the records of a library's logger `name` (and its children) through the `catcher` logger's
+    handlers, format and level, and not on to the root logger. Call after `configure_logging`."""
+    project = logging.getLogger("catcher")
+    logger = logging.getLogger(name)
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+    for handler in project.handlers:
+        logger.addHandler(handler)
+    logger.setLevel(project.level)
+    logger.propagate = False
