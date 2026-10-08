@@ -96,3 +96,48 @@ def _named(name: str) -> list[tuple[str, str]]:
                 ):
                     found.append((rel, function.name))
     return sorted(set(found))
+
+
+def test_only_the_fetcher_and_the_channel_listing_import_yt_dlp():
+    """A direct yt-dlp call anywhere else in src would bypass the gate: only these two modules import it."""
+    importers: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+                if isinstance(node, ast.ImportFrom)
+                else []
+            )
+            if any(name == "yt_dlp" or name.startswith("yt_dlp.") for name in names):
+                importers.append(path.relative_to(SRC).as_posix())
+    allowed = ["modules/backfill/channel.py", "modules/youtube/facts.py"]
+    assert sorted(set(importers)) == allowed
+    # no way around the import statement either (importlib, __import__, a string): the name itself
+    mentions = [
+        p.relative_to(SRC).as_posix() for p in sorted(SRC.rglob("*.py")) if "yt_dlp" in p.read_text("utf-8")
+    ]
+    assert mentions == allowed
+
+
+def test_the_listing_runs_only_inside_access_call():
+    """In cli.py, `list_channel` is called only inside the callable handed to `access.call` (the gate)."""
+    tree = ast.parse((SRC / "cli.py").read_text(encoding="utf-8"))
+    inside: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "call"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "access"
+        ):
+            inside.extend(ast.walk(node.args[0]))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "list_channel"
+    ]
+    assert calls and all(any(c is n for n in inside) for c in calls)

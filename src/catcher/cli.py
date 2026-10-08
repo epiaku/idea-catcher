@@ -666,6 +666,11 @@ def reconcile_cmd(
         typer.echo(gate_line)
 
 
+DEFAULT_CHANNEL_VIDEOS = 200  # --max-videos without a value
+MAX_CHANNEL_VIDEOS = (
+    500  # one listing (one gate slot) never asks for more: a bigger channel takes several runs
+)
+
 youtube_app = typer.Typer(no_args_is_help=True, help="YouTube helpers.")
 app.add_typer(youtube_app, name="youtube")
 
@@ -746,8 +751,16 @@ def youtube_import(
         ),
     ] = None,
     max_videos: Annotated[
-        int, typer.Option("--max-videos", min=1, help="with --channel: list at most N videos per channel")
-    ] = 200,
+        int | None,
+        typer.Option(
+            "--max-videos",
+            min=1,
+            max=MAX_CHANNEL_VIDEOS,
+            help=f"with --channel: list at most N videos per channel (default {DEFAULT_CHANNEL_VIDEOS}, "
+            f"at most {MAX_CHANNEL_VIDEOS}: a bigger channel is listed over several runs, known videos are "
+            "skipped)",
+        ),
+    ] = None,
 ) -> None:
     """Scan the docs for YouTube links that have no page and add them to the backfill backlog.
 
@@ -767,7 +780,10 @@ def youtube_import(
     through the same gate as a fetch: one gate slot per channel, a short gap is waited for (at most
     YOUTUBE_WAIT_MAX_S), a block or a closed gate stops it before any call, and a block during the listing
     opens the breaker as a failed fetch does. No retry. Try the first listing by hand on a SMALL channel
-    with a small --max-videos (say 20) and look at `catcher youtube gate` afterwards. With --dry-run nothing
+    with a small --max-videos (say 20) and look at `catcher youtube gate` afterwards. --max-videos is at
+    most 500 (one gate slot covers about one paced page request per 30 videos, and hundreds of pages bring a
+    429): a bigger channel is listed over several runs, on different days, and the videos already in the
+    backlog are skipped. With --dry-run nothing
     is listed and no gate slot is taken. YOUTUBE_OFFLINE=1 refuses --channel.
 
     Exit codes: 0 done; 1 --channel stopped by the gate, a block, YOUTUBE_OFFLINE or a listing error (the
@@ -786,13 +802,18 @@ def youtube_import(
             typer.echo(f"not a YouTube channel or playlist URL: {url!r} (nothing was done)", err=True)
             raise typer.Exit(2)
     cap = limit if limit is not None else settings.backfill_daily_limit if release_ else None
+    if max_videos is not None and not channel_urls:
+        typer.echo("--max-videos has no effect without --channel", err=True)
+    videos = max_videos if max_videos is not None else DEFAULT_CHANNEL_VIDEOS
     access = None
     if channel_urls and not dry_run:
         _check_database_url(settings.database_url)
         access = build_access(settings, clock=_gate_clock)
     try:
         if access is not None:
-            _refuse_a_closed_gate(access)  # before anything is written
+            _skip_the_release_on_a_stop(
+                cap, lambda: _refuse_a_closed_gate(access)
+            )  # before anything is written
         now = utc_now()
         lines: list[str] = []
         with _backfill_session() as session:
@@ -804,9 +825,11 @@ def youtube_import(
         if result.unreadable:
             typer.echo(f"skipped {result.unreadable} unreadable file(s)")
         if channel_urls and dry_run:
-            typer.echo(f"would list {len(channel_urls)} channel(s), up to {max_videos} video(s) each")
+            typer.echo(f"would list {len(channel_urls)} channel(s), up to {videos} video(s) each")
         if access is not None:
-            _list_channels(access, settings, channel_urls, max_videos, ideas_repo, docs_repo)
+            _skip_the_release_on_a_stop(
+                cap, lambda: _list_channels(access, settings, channel_urls, videos, ideas_repo, docs_repo)
+            )
     finally:
         if access is not None and isinstance(access.gate, PostgresGate):
             access.gate.engine.dispose()
@@ -815,6 +838,20 @@ def youtube_import(
             lines = _release_backlog(session, ideas_repo, cap, utc_now(), result.new_ids if dry_run else None)
     for line in lines:
         typer.echo(line)
+
+
+def _skip_the_release_on_a_stop(cap: int | None, step: Callable[[], None]) -> None:
+    """Run a --channel step; when it stops the command and a release was asked for, say it was skipped."""
+    try:
+        step()
+    except typer.Exit:
+        if cap is not None:
+            typer.echo(
+                "the release (--limit/--release) was skipped: the channel listing stopped; run the command "
+                "again later",
+                err=True,
+            )
+        raise
 
 
 def _refuse_a_closed_gate(access: YoutubeAccess) -> None:

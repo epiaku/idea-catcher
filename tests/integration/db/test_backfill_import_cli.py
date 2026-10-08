@@ -337,3 +337,32 @@ def test_import_channel_with_an_unreachable_gate_calls_nothing(runner, repos, li
     assert "nothing was listed" in result.output
     assert "s3cr3t-pw" not in result.output
     assert listing.calls == []
+
+
+def test_max_videos_is_capped_at_500_and_warns_without_a_channel(runner, engine, repos, listing) -> None:
+    for wrong in ("501", "0"):
+        result = _import(runner, repos, "--channel", CHANNEL, "--max-videos", wrong)
+        assert result.exit_code == 2, result.output
+    assert listing.calls == []
+    assert _gate(engine).snapshot().next_allowed_at == 0
+
+    listing.ids = [A]
+    most = _import(runner, repos, "--channel", CHANNEL, "--max-videos", "500")
+    assert most.exit_code == 0, most.output
+    assert listing.calls == [(f"{CHANNEL}/videos", 500)]
+
+    alone = _import(runner, repos, "--max-videos", "20")
+    assert alone.exit_code == 0, alone.output
+    assert "--max-videos has no effect without --channel" in alone.output
+
+
+def test_a_stopped_listing_says_the_release_was_skipped(runner, engine, repos, listing) -> None:
+    docs, _ = repos
+    _write(docs / "a.md", _link(D))
+    listing.error = RuntimeError("ERROR: [youtube:tab] @small: HTTP Error 429: Too Many Requests")
+
+    result = _import(runner, repos, "--channel", CHANNEL, "--limit", "5")
+
+    assert result.exit_code == 1, result.output
+    assert "the release (--limit/--release) was skipped" in result.output
+    assert {r.status for r in _rows(engine).values()} == {"pending"}  # the docs scan kept, nothing released
