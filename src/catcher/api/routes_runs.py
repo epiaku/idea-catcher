@@ -2,7 +2,8 @@
 
 `POST /pipeline/runs` and `/pipeline/publish` answer `200` with the oldest `pipeline.run` (or
 `pipeline.publish`) that is queued or running, whoever queued it (the scheduler, the CLI or the API), and
-otherwise insert one and answer `202`. The insert carries the dedupe key `api:<type>`, so of two requests at
+otherwise insert one and answer `202`. A `pipeline.run` with `requeue` or `only` works on those names alone
+and is never the existing run. The insert carries the dedupe key `api:<type>`, so of two requests at
 the same moment only one inserts (the partial unique index on active dedupe keys); the other gets that job
 back.
 A preview (`dry_run: true`, job `pipeline.preview`) is read-only and dedupes only against a queued or running
@@ -58,8 +59,12 @@ class Enqueued(BaseModel):
 
 
 def active_job(session: Session, job_type: str, params: dict[str, Any] | None = None) -> Job | None:
-    """The oldest queued or running job of `job_type` (with exactly `params`, when given), or None."""
+    """The oldest queued or running job of `job_type` (with exactly `params`, when given), or None. For a
+    `pipeline.run`, only a run of the whole inbox counts: a job with `requeue` or `only` (a requeue from this
+    API, `catcher jobs add ... only=`) works on its names alone, so it is never the existing run."""
     statement = select(Job).where(Job.type == job_type, Job.status.in_(ACTIVE))
+    if job_type == RUN:
+        statement = statement.where(~(Job.params.has_key("requeue") | Job.params.has_key("only")))
     if params is not None:
         statement = statement.where(Job.params == params)
     return session.scalars(statement.order_by(Job.created_at, Job.id).limit(1)).first()

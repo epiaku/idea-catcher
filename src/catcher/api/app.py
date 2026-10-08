@@ -70,6 +70,27 @@ class CatchAll:
             await JSONResponse({"detail": "internal error"}, status_code=500)(scope, receive, send)
 
 
+MAX_BODY_BYTES = 64 * 1024  # the trigger bodies are a few fields
+
+
+class BodyLimit:
+    """`413` for a request that announces a body over MAX_BODY_BYTES, before any route (or the auth) reads or
+    parses it. A chunked body without a Content-Length is not measured here (the routes take tiny bodies)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            lengths = [v for k, v in scope.get("headers", []) if k == b"content-length"]
+            if any(v.isdigit() and int(v) > MAX_BODY_BYTES for v in lengths):
+                await JSONResponse({"detail": "request body too large"}, status_code=413)(
+                    scope, receive, send
+                )
+                return
+        await self.app(scope, receive, send)
+
+
 def _database_error(request: Request, error: Exception) -> JSONResponse:
     """A database that is down or dropped the connection is `503 database unavailable`; any other database
     error is an internal error. Only the exception class is logged (its text may hold SQL or a host)."""
@@ -110,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.api_keys = keys
     app.state.youtube_block_hours = settings.youtube_block_hours
     app.add_exception_handler(DBAPIError, _database_error)
+    app.add_middleware(BodyLimit)
     app.add_middleware(CatchAll)
     app.include_router(routes_health.router)
     app.include_router(routes_jobs.router)

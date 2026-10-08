@@ -110,6 +110,79 @@ def test_a_scheduled_pipeline_run_counts_as_existing(client, pg_engine):
     assert len(_jobs(pg_engine)) == 3
 
 
+def test_a_requeue_or_only_job_is_not_the_existing_run(client, pg_engine):
+    with session_scope(pg_engine) as session:
+        stage_item(
+            session,
+            calculated_name="notes/walks.md",
+            doc_id="walks",
+            doc_class="note",
+            now=NOW,
+            inbox_path=None,
+            original_filename=None,
+        )
+        only, _ = enqueue(session, type="pipeline.run", now=NOW, params={"only": ["walks"]})  # CLI style
+        only_id = str(only.id)
+    requeued = client.post("/api/v1/items/notes/walks.md/requeue").json()
+
+    answer = client.post("/api/v1/pipeline/runs")
+
+    assert answer.status_code == 202 and answer.json()["existing"] is False
+    assert answer.json()["job_id"] not in (only_id, requeued["job_id"])
+    full = _jobs(pg_engine)[-1]
+    assert (full.params, full.dedupe_key) == ({}, "api:pipeline.run")
+    again = client.post("/api/v1/pipeline/runs")  # the full run is the existing one now
+    assert again.status_code == 200 and again.json() == {"job_id": answer.json()["job_id"], "existing": True}
+    assert len(_jobs(pg_engine)) == 3
+
+
+def test_a_scheduled_run_with_retry_deferred_still_counts_beside_a_requeue(client, pg_engine):
+    with session_scope(pg_engine) as session:
+        enqueue(session, type="pipeline.run", now=NOW, params={"requeue": ["notes/x.md"]})
+        scheduled, _ = enqueue(
+            session,
+            type="pipeline.run",
+            now=NOW.replace(minute=5),
+            params={"retry_deferred": True},
+            dedupe_key="schedule:pipeline_run",
+        )
+        scheduled_id = str(scheduled.id)
+
+    answer = client.post("/api/v1/pipeline/runs")
+
+    assert answer.status_code == 200 and answer.json() == {"job_id": scheduled_id, "existing": True}
+
+
+def test_two_simultaneous_posts_after_a_requeue_make_one_run(client, pg_engine, monkeypatch):
+    with session_scope(pg_engine) as session:
+        enqueue(session, type="pipeline.run", now=NOW, params={"requeue": ["notes/x.md"]})
+    barrier = threading.Barrier(2)
+    looked_up = routes_runs.active_job
+
+    def both_look_first(*args):
+        found = looked_up(*args)
+        barrier.wait(timeout=10)
+        return found
+
+    monkeypatch.setattr(routes_runs, "active_job", both_look_first)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        answers = list(pool.map(lambda _: client.post("/api/v1/pipeline/runs"), range(2)))
+
+    assert sorted(a.status_code for a in answers) == [200, 202]
+    assert answers[0].json()["job_id"] == answers[1].json()["job_id"]
+    assert [j.params for j in _jobs(pg_engine)] == [{"requeue": ["notes/x.md"]}, {}]
+
+
+@pytest.mark.parametrize("path", ["/api/v1/pipeline/runs", "/api/v1/pipeline/publish"])
+def test_a_body_over_64_kb_is_413_before_it_is_parsed(client, pg_engine, path):
+    big = b'{"profile": "' + b"p" * (64 * 1024) + b'"}'
+    answer = client.post(path, content=big, headers={"Content-Type": "application/json"})
+    assert answer.status_code == 413 and answer.json() == {"detail": "request body too large"}
+    unauthenticated = client.post(path, content=big, headers={"Authorization": ""})
+    assert unauthenticated.status_code == 413
+    assert _jobs(pg_engine) == []
+
+
 def test_two_simultaneous_posts_make_one_job(client, pg_engine, monkeypatch):
     barrier = threading.Barrier(2)
     looked_up = routes_runs.active_job
