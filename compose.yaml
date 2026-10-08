@@ -4,8 +4,10 @@
 #   docker compose logs -f worker  follow the worker
 #   docker compose down            stop and remove the containers, keep the data
 #   docker compose down -v         stop and delete the data too (queue and the cloned repos)
-# Only one worker may hold the lock: run `docker compose stop worker` before running
-# `catcher run pipeline` or `catcher publish` by hand, and `docker compose start worker` after.
+# Only one worker may hold the lock: run `docker compose stop worker api` before running
+# `catcher run pipeline` or `catcher publish` by hand, and `docker compose start worker api` after.
+# Stop the api too: a by-hand run drains ANY queued job, so an API POST during it would run inside it (a publish
+# would push). A POST while no worker runs only queues the job (202) and makes the next by-hand run refuse (exit 2).
 # Settings come from .env (optional: environment variables work too); the api reads only the three it is given. DATABASE_URL, IDEAS_REPO and DOCS_REPO
 # are set below, so the host values in .env are ignored inside the containers. See .env.example.
 # The database defaults match the host DATABASE_URL: postgresql+psycopg://catcher:catcher@localhost:5432/catcher

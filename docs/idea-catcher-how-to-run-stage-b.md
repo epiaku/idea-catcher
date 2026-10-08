@@ -264,17 +264,17 @@ docker compose exec worker catcher health      # "worker running", exit 0
 
 **One stack per pair of remotes.** Run one stack against the real `idea-bucket` and `epiaku-docs`: not a Mac stack and a server stack at the same time (two databases, two locks: both process the same inbox, pay the LLM twice and make conflicting commits), and remember that `restart: unless-stopped` brings a Mac stack back whenever Docker Desktop starts (`docker compose down` it when the server takes over). Do not mix the host's clones and the stack's clones against one database either: the queue and the item states would describe one clone while the files move in the other.
 
-**Running by hand: inside the stack.** One worker or run at a time holds the lock, so `catcher run pipeline` and `catcher publish` refuse while the worker runs (exit 2, `another worker or run is already running`; the smoke run saw this message from `docker compose exec worker catcher run pipeline`). While the stack runs, work on the stack's clones, not the host's: stop the worker, run the command in a one-off worker container (same environment, the same `repos` volume; the entrypoint finds the clones and does not clone again), then start the worker:
+**Running by hand: inside the stack.** One worker or run at a time holds the lock, so `catcher run pipeline` and `catcher publish` refuse while the worker runs (exit 2, `another worker or run is already running`; the smoke run saw this message from `docker compose exec worker catcher run pipeline`). While the stack runs, work on the stack's clones, not the host's: stop the worker **and the api**, run the command in a one-off worker container (same environment, the same `repos` volume; the entrypoint finds the clones and does not clone again), then start the worker:
 
 ```bash
-docker compose stop worker
+docker compose stop worker api
 docker compose run --rm worker catcher publish --push     # pull (new captures) and push
 docker compose run --rm worker catcher run pipeline       # process the inbox (add --push to push as well)
 docker compose run --rm worker catcher publish --push     # commit and push the result
-docker compose start worker
+docker compose start worker api
 ```
 
-The smoke run does exactly this (step (i)): with the worker stopped, a capture pushed to the remote was pulled by `publish --push`, `run pipeline` exited 0 and the next `publish --push` pushed the commit; `--rm` leaves no container behind, and the worker was healthy again after `up -d worker`. If a by-hand command says an earlier run's job is still queued, a scheduled job had not run yet when you stopped the worker: `docker compose start worker`, wait for it to finish, then stop it again (or `docker compose run --rm worker catcher worker --once`).
+The smoke run does exactly this (step (i)): with the worker stopped, a capture pushed to the remote was pulled by `publish --push`, `run pipeline` exited 0 and the next `publish --push` pushed the commit; `--rm` leaves no container behind, and the worker was healthy again after `up -d worker`. If a by-hand command says an earlier run's job is still queued, a job was queued earlier and had not run yet: the schedule, `catcher jobs add` or the API (`POST /api/v1/...`, which queues a job even when no worker runs, answer `202`). Start the worker (`docker compose start worker`), wait for it to finish, then stop it again (or `docker compose run --rm worker catcher worker --once`). **Stop the api too** (`docker compose stop worker api`): a by-hand run runs any job in the queue, so an API publish during it would run with `push: true` and push, and an API run would run inside it with its own parameters.
 
 Or do not stop anything: queue the work and let the worker run it, `docker compose exec worker catcher jobs add pipeline.run` (or `pipeline.publish`); from the host `uv run catcher jobs add ...` does the same, as it only writes the queue.
 

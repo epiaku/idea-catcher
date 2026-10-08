@@ -38,7 +38,7 @@ API_KEYS="mac:read,run:PASTE-THE-KEY-HERE phone:read:PASTE-ANOTHER-KEY"
 
 **Never commit a key** (`.env` is in `.gitignore`; `.env.example` holds only a placeholder). The API never logs a key, never puts one in an error message and never shows one in `/openapi.json`. An empty `API_KEYS`, a malformed entry, a short key or a duplicate makes `catcher api` stop with **exit code 2** before it listens; the message names the entry number (and the name once it is valid), never the key.
 
-To change or remove a key: edit `API_KEYS` and restart the API (`docker compose up -d api`, see below). Keys are read at start.
+To change or remove a key: edit `API_KEYS` and restart the API (`docker compose up -d api`, see below). Keys are read at start. **A key must not contain `$`**: compose interpolates `$` in `.env` values, so such a key would differ inside the container (`secrets.token_urlsafe` and `openssl rand -hex` never make one). Note that the `worker` and `migrate` containers also get `API_KEYS` in real use, because they read the whole `.env` through `env_file`; only the api is limited the other way, to the three variables.
 
 ## Start the API {#start}
 
@@ -62,6 +62,7 @@ This starts `db`, `migrate`, `worker` and `api` (see [Run it in Docker](../idea-
 - **Without `API_KEYS` in `.env` the `api` container restarts in a loop** (it exits with code 2 each time); `db`, `migrate` and `worker` are not affected. Add the key and run `docker compose up -d api`.
 - **Port:** `API_PORT` (default `8000`) is the host port. **Address:** `API_BIND` defaults to `127.0.0.1`, so only this machine can reach the API. To reach it from other devices on the LAN set `API_BIND=0.0.0.0`, on purpose, and see [What is not built](#not-built) (no HTTPS).
 - **`API_DOCS` cannot be set in Docker:** the `api` container gets only `DATABASE_URL`, `API_KEYS` and `LOG_LEVEL` from compose, so `/docs` is always on there. On the host, `API_DOCS=false` turns `/docs` and `/openapi.json` off.
+- **By-hand runs: stop the api too.** `docker compose stop worker api` before `catcher run pipeline` or `catcher publish` by hand, `docker compose start worker api` after (see [Running by hand](../idea-catcher-how-to-run-stage-b/#docker)). A by-hand run runs any job in the queue, so an API publish during it would push. A POST while no worker runs only queues the job (`202`) until a worker starts, and a queued job makes the next by-hand run refuse (exit 2, an earlier run's job is still queued: the schedule, `catcher jobs add` or the API).
 - **The `api` container holds no GitHub token, no LLM key and no repos.** It has no `env_file`. It only reads and writes Postgres, so a leaked API container cannot publish to GitHub or spend LLM budget; the worker, which has those, is not reachable from the API. The smoke run checks this (see [The smoke run](#smoke)).
 - The container healthcheck treats any `/health` answer (`200` or `503`) as alive, so the `api` stays healthy while the worker is down.
 
@@ -79,6 +80,8 @@ export CATCHER_URL="http://127.0.0.1:8000"
 ```
 
 All endpoints are under `/api/v1`, except `/health`. Times are ISO 8601 (UTC). The response bodies below show the real field names; the values are examples.
+
+Two small things: a request with a trailing slash (`/api/v1/jobs/`) gets a `307` redirect before the key check (no data), and `HEAD /health` is `405` (use `GET` in an uptime monitor).
 
 ### `GET /health` (no key) {#ep-health}
 
@@ -215,7 +218,7 @@ curl -s -X POST -H "Authorization: Bearer $CATCHER_KEY" -H "Content-Type: applic
 | `limit` | Process at most this many documents. |
 | `retry_deferred` | `true`: also retry deferred items now. |
 
-Types are strict (`"3"` is not a limit). The values are checked by the same code the worker uses, so a refusal is `422` with the reason.
+Types are strict (`"3"` is not a limit). Values are checked by the worker's own parameter check, and a refusal is `422` with the reason. That check does not know your profiles: an unknown `profile` name is accepted (`202`) and the job then fails in the worker, so look at the job's `status` and `error`.
 
 **Dry run.** `{"dry_run": true}` queues a read-only `pipeline.preview` job that the worker runs, because the worker holds the repos. It changes nothing (no files, items or gate) and calls no model and no YouTube. Its answer is in the job's `result`:
 
@@ -267,7 +270,7 @@ Queues a `pipeline.run` with `{"requeue": ["notes/walks.md"]}`: the worker takes
 | `404` | Unknown job id (a malformed id is the same), or `requeue` of an unknown item. |
 | `413` | A request whose `Content-Length` is over 64 KB. |
 | `422` | A bad query value (an unknown `status`, `limit` over 200), a bad body (an unknown or wrongly typed field), or a value the worker's own check refuses (the reason is in `detail`). |
-| `503` | Postgres is not reachable (every endpoint, `/health` included). `{"detail": "database unavailable"}`; the pool recovers when the database returns. On `/health` also a missing worker lock. |
+| `503` | Postgres is not reachable (every endpoint, `/health` included). `{"detail": "database unavailable"}` on `/api/v1`; the pool recovers when the database returns. `/health` answers its own body instead: `{"api": "ok", "database": "down", "worker": "unknown"}`, or `"worker": "none"` with the database up. |
 
 **The existing-run rule.** A request to start a run answers `200` when *any* whole-inbox `pipeline.run` is `queued` or `running`, queued by the schedule, `catcher jobs add` or the API. A run that works on named items only (a `requeue` from the API, or `only=` from the CLI) is **not** counted as the existing run: starting a run while only such a job is active queues a new full run (`202`). A scheduled run with `retry_deferred` and a run with `limit` do count. Two simultaneous requests make one job: of two POSTs at the same moment one gets `202` and the other `200` with the same id.
 
@@ -298,6 +301,6 @@ Also true today: `result`, `params` and `error` of a job are returned as the wor
 
 ## The smoke run {#smoke}
 
-`bash scripts/compose-smoke` (about 8 minutes, needs Docker, no GitHub, LLM or YouTube) runs the whole stack on throwaway copies and, since Stage C, also covers the API (step j). On 2026-10-08 it passed (63 PASS, 0 FAIL). It checks that the `api` container is healthy and published on `127.0.0.1`; `/health` is `200` with the worker up and `503` (`"worker": "none"`) with the worker stopped while the container stays healthy; no key and a wrong key are `401`, also on a POST; a key lists the jobs; two POSTs to `pipeline/runs` give `202` and then `200` with the same id, and that job can be read; the container's environment is exactly `DATABASE_URL`, `API_KEYS` and `LOG_LEVEL`, with no token, LLM key or repo variable; an empty `API_KEYS` makes the container exit with code 2; no key appears in any log, image history or image config; and teardown leaves nothing behind. It uses a dummy key and random ports, so it never touches your `.env` or a running `catcher-db`.
+`bash scripts/compose-smoke` (about 8 minutes, needs Docker, no GitHub, LLM or YouTube) runs the whole stack on throwaway copies and, since Stage C, also covers the API (step j). On 2026-10-08 it passed (63 PASS, 0 FAIL). It checks that the `api` container is healthy and published on `127.0.0.1` (checked on the smoke file's port binding, not on `compose.yaml`'s `${API_BIND:-127.0.0.1}`); `/health` is `200` with the worker up and `503` (`"worker": "none"`) with the worker stopped while the container stays healthy; no key and a wrong key are `401`, also on a POST; a key lists the jobs; two POSTs to `pipeline/runs` give `202` and then `200` with the same id, and that job can be read; the container's environment is exactly `DATABASE_URL`, `API_KEYS` and `LOG_LEVEL`, with no token, LLM key or repo variable; an empty `API_KEYS` makes the container exit with code 2; no key appears in any log, image history or image config; and teardown leaves nothing behind. It uses a dummy key and random ports, so it never touches your `.env` or a running `catcher-db`.
 
 It does not cover `API_BIND=0.0.0.0` from another device, the publish and requeue endpoints in Docker, or a real `dry_run` preview against the compose repos (the tests cover the endpoints and the preview handler on a real Postgres, not an API-queued preview in a running worker).
