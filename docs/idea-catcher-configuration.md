@@ -177,6 +177,6 @@ It should print validated JSON and a `backend=openai` line.
 These do not exist yet in Stage A. They are listed so you know where they will go.
 
 - **Stage B, Postgres and queue:** the database URL and password go in `.env` (secret). `DATABASE_URL` exists since B1 (see above). The retry settings go in `profiles.yaml`, where they already are.
-- **Stage C, API:** API keys for the callers (`Authorization: Bearer …`), one per device, as `name:scopes:key` in `.env` (secret).
+- **Stage C, API (built 2026-10-08):** `API_KEYS` for the callers (`Authorization: Bearer …`), one per device, as `name:scope[,scope]:key` in `.env` (secret); `API_PORT`, `API_BIND` and `API_DOCS` are optional. See [How to Run the API](../idea-catcher-how-to-run-api/).
 - **Proxmox:** the GitHub fine-grained token, `OPENAI_API_KEY` and the schedule go in `.env` on the LXC, not in Git.
 - **Future:** a monthly budget guard per provider, with a warning at 80%, in `profiles.yaml`.

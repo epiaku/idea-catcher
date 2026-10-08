@@ -10,7 +10,7 @@ Obsidian -> idea-bucket/inbox -> catcher run pipeline -> epiaku-docs (page)
                                       |-> output/ (the working copy), failed/, duplicates/
 ```
 
-**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it), and so are the item states and metrics (B5); since B5b `catcher run pipeline` is the worker path in one process (the Stage A loop is gone); since B6 `catcher worker` queues the pull, the run and the publish on three cron schedules (`catcher schedules` shows them, `catcher publish` commits by hand). Since B7 (2026-10-07) `docker compose up -d --build` runs the worker next to the database in Docker, with the repos cloned on first start (see [Run it in Docker](docs/idea-catcher-how-to-run-stage-b.md#docker)). Since B8 (2026-10-08) `catcher youtube import` finds the YouTube links in the docs that have no page yet and releases a few a day (`--limit N` per rolling 24 hours) as low-priority clips behind the new ones (see [Backfill YouTube links](docs/idea-catcher-how-to-run-stage-b.md#backfill)). The API (Stage C) comes next.
+**Status:** Stage A, the local pipeline you run by hand, is done. Stage B (a Postgres queue, schedules) is in progress: the queue, the worker and its jobs, and the YouTube gate and the run lock in Postgres are built (B0 to B4b; Postgres is the only truth, so nothing runs without it), and so are the item states and metrics (B5); since B5b `catcher run pipeline` is the worker path in one process (the Stage A loop is gone); since B6 `catcher worker` queues the pull, the run and the publish on three cron schedules (`catcher schedules` shows them, `catcher publish` commits by hand). Since B7 (2026-10-07) `docker compose up -d --build` runs the worker next to the database in Docker, with the repos cloned on first start (see [Run it in Docker](docs/idea-catcher-how-to-run-stage-b.md#docker)). Since B8 (2026-10-08) `catcher youtube import` finds the YouTube links in the docs that have no page yet and releases a few a day (`--limit N` per rolling 24 hours) as low-priority clips behind the new ones (see [Backfill YouTube links](docs/idea-catcher-how-to-run-stage-b.md#backfill)). Since Stage C (2026-10-08) `catcher api` and the `api` container start runs, publishes and requeues by queueing jobs and read jobs, items and the YouTube gate over HTTP, behind scoped API keys (see [How to run the API](docs/idea-catcher-how-to-run-api.md)).
 
 ## 📑 Table of contents
 
@@ -47,6 +47,7 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 | `catcher reason`, `catcher render` | Try the LLM step, or write one page, on a single document |
 | `catcher youtube facts` | Print the facts of one YouTube video (it goes through the YouTube gate in Postgres, so it needs the database) |
 | `catcher db upgrade`, `catcher db downgrade REVISION` (for example `-1`) | Create or roll back the Postgres tables (Stage B; needs `DATABASE_URL`, see [How to run Stage B](docs/idea-catcher-how-to-run-stage-b.md)) |
+| `catcher api` | Serve the HTTP API (Swagger UI at `/docs`); needs `API_KEYS` and `DATABASE_URL` (Stage C; see [How to run the API](docs/idea-catcher-how-to-run-api.md)) |
 | `catcher worker` | Run the jobs in the queue, one at a time, until Ctrl-C (`--once`: run what is due, then exit). One worker at a time (Stage B) |
 | `catcher jobs add TYPE`, `catcher jobs list` | Put a job on the queue (`pipeline.run`, `pipeline.publish`, `ideas.pull`, with `--param KEY=VALUE`), list the jobs (Stage B) |
 | `catcher schedules` | Show the three schedules of the worker (`SCHEDULE_IDEAS_PULL`, `SCHEDULE_PIPELINE_RUN`, `SCHEDULE_PUBLISH`): cron, timezone, last fired (UTC), next due (Stage B) |
@@ -78,6 +79,7 @@ Everything is in the [`docs/`](docs/) folder.
 | --- | --- |
 | [How to run it](docs/idea-catcher-how-to-run.md) | Every command and option, with recipes on test data and on the real repos |
 | [How to run Stage B](docs/idea-catcher-how-to-run-stage-b.md) | The Postgres queue and the worker: start Postgres, add jobs, run the worker on test and real repos, publish, stop it, exit codes |
+| [How to run the API](docs/idea-catcher-how-to-run-api.md) | Stage C: API keys, start the API on the host or in Docker, Swagger UI, a `curl` example for every endpoint, status codes and scopes |
 | [Configuration](docs/idea-catcher-configuration.md) | `.env`, `profiles.yaml`, and every setting |
 
 ### Design

@@ -6,7 +6,7 @@ weight: 41
 type: docs
 ---
 
-This page shows how to run what Stage B built: a **Postgres job queue** and a **worker** that does the work of the pipeline as jobs. Since B5b (2026-10-06) `run pipeline` is that same worker path in one process: it queues `pipeline.run`, runs the worker until nothing is due, then queues and runs `pipeline.publish` (see [`run pipeline`](../idea-catcher-how-to-run/#run-pipeline-the-whole-flow)). The Stage A commands are on the [How to Run page](../idea-catcher-how-to-run/). The settings are on the [configuration page](../idea-catcher-configuration/), the design in the [service architecture](../idea-catcher-service-architecture/).
+This page shows how to run what Stage B built: a **Postgres job queue** and a **worker** that does the work of the pipeline as jobs. Since B5b (2026-10-06) `run pipeline` is that same worker path in one process: it queues `pipeline.run`, runs the worker until nothing is due, then queues and runs `pipeline.publish` (see [`run pipeline`](../idea-catcher-how-to-run/#run-pipeline-the-whole-flow)). The Stage A commands are on the [How to Run page](../idea-catcher-how-to-run/). Since Stage C (2026-10-08) the API starts and reads the same jobs over HTTP: [How to Run the API](../idea-catcher-how-to-run-api/). The settings are on the [configuration page](../idea-catcher-configuration/), the design in the [service architecture](../idea-catcher-service-architecture/).
 
 ## In short
 
@@ -313,7 +313,7 @@ Or do not stop anything: queue the work and let the worker run it, `docker compo
 - A stop while a long job is running: the smoke stop hits an idle worker (it proves SIGTERM reaches the worker and exit code 0). Finishing the current job inside the 120 s grace period is covered only by the runner's own tests, not by a live container.
 - `catcher health` only proves that a worker holds the lock. It does not prove that the scheduler thread keeps ticking. The unhealthy case (the lock lost) was not run live.
 - No ssh deploy key: the clones use https and the token only.
-- No `deploy.sh` and no `api` service yet (a later stage).
+- No `deploy.sh` (a later stage). The `api` service came with Stage C (2026-10-08): see [How to Run the API](../idea-catcher-how-to-run-api/).
 - A real YouTube fetch from the container: `yt-dlp` and Deno are in the image, but nothing in B7 fetched a video (see the open items in the [service architecture](../idea-catcher-service-architecture/#mvp-stage-b)).
 
 ## Item states, stuck and reconcile {#item-states}

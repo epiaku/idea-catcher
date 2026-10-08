@@ -104,7 +104,7 @@ Requirements carried over from the pipeline page still apply: raw captures are n
 | LLM backends    | `freellmapi`, `openai`, `fake` (tests)                                                     | `anthropic-api`, `gemini-api` (videos without captions), budgets                                        |
 | Profiles        | In a config file (`profiles.yaml`)                                                         | Stored in the DB, editable from the dashboard                                                            |
 | Schedules       | In `.env` (cron expressions)                                                               | Stored in the DB, editable from the dashboard                                                            |
-| API             | Health, start a run, list runs and items. Polling for progress.                           | Metrics, replay, cancel, YouTube, profiles, schedules, keys. Live progress stream.                      |
+| API             | Built (Stage C): health, start a run, publish, requeue, list jobs and items, the YouTube gate. Polling for progress. | Metrics, replay, cancel, YouTube, profiles, schedules, keys. Live progress stream.                      |
 | API keys        | Listed in `.env` with scopes                                                               | Stored hashed in the DB, managed from the API                                                            |
 | Metrics         | Stored: runs, items, events, tokens                                                        | Aggregation endpoints + React dashboards                                                                 |
 | YouTube         | Facts (counts, transcript) for direct **clips** only, then the LLM step (`youtube-gemini` makes no YouTube API call at all) | Endpoint, cache, extra verify checks, Gemini for videos without captions                                |
@@ -194,7 +194,7 @@ The `llm` block is optional. It is passed down to the `llm.reason` job the run c
 
 - **Enqueue:** insert a row with `status='queued'` and `run_after` (now, or later for a deferred job). The API returns `202 Accepted` + `{ "job_id": … }`.
 - **Claim:** the worker runs `SELECT … WHERE status='queued' AND run_after <= now() ORDER BY priority DESC, run_after, created_at FOR UPDATE SKIP LOCKED LIMIT 1`. `SKIP LOCKED` keeps this correct when more workers are added later.
-- **Wake-up:** the API sends `NOTIFY jobs` after inserting, and the worker `LISTEN`s, so an API-triggered run starts within a second. A 30-second poll picks up delayed jobs whose time has come.
+- **Wake-up:** the worker `LISTEN`s for `NOTIFY jobs`, and a 30-second poll picks up delayed jobs whose time has come. *As built in Stage C the API does not send a `NOTIFY`* (it only inserts the job), so an API-triggered job waits for the worker's next poll; see the open items after Stage C.
 - **One pipeline run at a time.** A second trigger while a `pipeline.run` is queued or running returns the **existing** `job_id`. This is enforced with a partial unique index on `(type) WHERE type = 'pipeline.run' AND status IN ('queued','running')` (only for the run, not for every job type), and an insert uses `ON CONFLICT DO NOTHING` followed by a select, so two simultaneous triggers cannot both win. The CLI's `run pipeline` takes the worker's Postgres lock (B4b), so it never runs next to a worker. Note that a second request is answered with the existing run, whatever its options: a real run asked for while a dry run is queued must not be silently satisfied by it, so the dedupe key has to include the run's parameters (decide in B2).
 - **Heartbeat:** a running job updates `heartbeat_at` every ~15 s. On start, the worker resets jobs with an old heartbeat (it crashed mid-job) to `queued`. Every step is idempotent (overwrite by ID), so re-running is safe.
 - **Progress:** handlers write `job_events` (level, message) and update `progress_done/total`. Clients **poll** `GET /jobs/{id}`. A live stream is a [future feature](#f-frontend).
@@ -413,17 +413,20 @@ Backups: a nightly `pg_dump` to a mounted folder, plus the Proxmox backup (vzdum
 
 ### 🔌 API {#mvp-api}
 
-A minimal API under `/api/v1`. FastAPI generates the OpenAPI schema, and the **Swagger UI at `/docs`** is the MVP's user interface.
+A minimal API under `/api/v1` (built in Stage C, 2026-10-08; how to use it: [How to Run the API](../idea-catcher-how-to-run-api/)). FastAPI generates the OpenAPI schema, and the **Swagger UI at `/docs`** is the MVP's user interface.
 
 | Method & path                    | Scope  | Purpose                                                                                     | Response                           |
 | -------------------------------- | ------ | ------------------------------------------------------------------------------------------- | ---------------------------------- |
-| `GET /health`                    | none   | Liveness, and whether the worker's heartbeat is recent                                      | `200` / `503`                      |
-| `POST /api/v1/pipeline/runs`     | `run`  | Start a run: `{ dry_run?, llm? }`                                                           | `202 {job_id}`, or `200` + the existing `job_id` if one is already queued or running |
-| `GET /api/v1/jobs?type=&status=&from=&to=` | `read` | List jobs (runs, LLM jobs, publishes)                                             | Paged list                         |
-| `GET /api/v1/jobs/{id}`          | `read` | Status, progress, timings, events, and for a run: item counts per class and status          | Job                                |
-| `GET /api/v1/items?doc_class=&status=&from=` | `read` | Processed notes: status, profile, model, tokens, warnings, output path          | Paged list                         |
+| `GET /health`                    | none   | The database answers and a worker holds the one-worker lock (not that the scheduler ticks)   | `200` / `503` `{api, database, worker}` |
+| `POST /api/v1/pipeline/runs`     | `run`  | Start a run: `{ dry_run?, profile?, limit?, retry_deferred? }`; `dry_run` queues `pipeline.preview` | `202 {job_id, existing: false}`, or `200` + the existing `job_id` (`existing: true`) if a run is already queued or running |
+| `POST /api/v1/pipeline/publish`  | `run`  | Commit, pull and push (`pipeline.publish`)                                                  | `202`, or `200` for a publish already queued or running |
+| `POST /api/v1/items/{name}/requeue` | `run` | Run one item again from `archive/` (`pipeline.run` with `requeue`); `name` holds a `/`   | `202` (always its own job), `404` for an unknown item |
+| `GET /api/v1/jobs?type=&status=&from=&to=&limit=&offset=` | `read` | List jobs (runs, LLM jobs, publishes)                             | Paged list                         |
+| `GET /api/v1/jobs/{id}`          | `read` | Status, params, result, error, timings, events, and for a run: item counts per class and status | Job                            |
+| `GET /api/v1/items?doc_class=&status=&from=&limit=&offset=` | `read` | Items: status, profile, model, tokens, origin, output path (`status=stuck` works) | Paged list                |
+| `GET /api/v1/youtube/gate`       | `read` | The state `catcher youtube gate` shows: open, gap or blocked                                | Gate state                         |
 
-Callers poll `GET /jobs/{id}` for progress. Metrics aggregation, replay, cancel, profiles and the YouTube endpoint are [future features](#future).
+Callers poll `GET /jobs/{id}` for progress. Metrics aggregation, replay, cancel, profiles and a YouTube summary endpoint are [future features](#future).
 
 ### 🔐 Security {#mvp-security}
 
@@ -768,9 +771,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 - *Settled in B3:* `job_items.doc_id` and `doc_class` are NOT NULL: both are set by `_analyse` before staging, so every staged row (also `waiting_youtube`) has them.
 - The drift test reads `information_schema.data_type`, which hides USER-DEFINED/ARRAY detail (irrelevant for the current text/json columns).
 - The architecture's database section also lists `progress_done/total/message`, `trigger`, `queue` and `failed_days`, which the B1 tables leave out.
-- Stage C's image must copy `alembic.ini` and `migrations/` (`alembic_config` uses `PROJECT_ROOT`).
 - `migrations/` and `tests/` are not type-checked (pyright `include` is `src` only).
-- `Settings.database_url` has a development password as its default: a deployed Stage C must fail loudly when `DATABASE_URL` is not set.
 - The dedupe predicate text is defined twice (`_ACTIVE_DEDUPE` in `queue.py` and in `models.py`): make it one shared constant.
 
 *Queue behaviour*
@@ -1045,12 +1046,46 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 | Step | What we build | How we test it |
 | ---- | ------------- | -------------- |
-| C1   | FastAPI app with `/health` (including the worker's heartbeat), API keys + scopes from `.env` | Swagger UI at `http://localhost:8000/docs`. A request without a key must fail |
-| C2   | `POST /api/v1/pipeline/runs` (with dedupe: no second run while one is queued or running) and `GET /api/v1/jobs/{id}` | Start a run with `curl`, poll the job until it's done |
-| C3   | `GET /jobs` and `GET /items` (filters for class, status, `stuck`), the manual **publish** and **requeue** triggers, and the YouTube gate state | Compare the answers with direct SQL queries |
-| C4   | The `api` container in Compose | `docker compose up`: the full stack (`db`, `api`, `worker`) on the Mac |
+| C1 (built 2026-10-08) | FastAPI app with `/health` (including the worker's heartbeat), API keys + scopes from `.env` | Swagger UI at `http://localhost:8000/docs`. A request without a key must fail |
+| C2 (built 2026-10-08) | `POST /api/v1/pipeline/runs` (with dedupe: no second run while one is queued or running) and `GET /api/v1/jobs/{id}` | Start a run with `curl`, poll the job until it's done |
+| C3 (built 2026-10-08) | `GET /jobs` and `GET /items` (filters for class, status, `stuck`), the manual **publish** and **requeue** triggers, and the YouTube gate state | Compare the answers with direct SQL queries |
+| C4 (built 2026-10-08) | The `api` container in Compose | `docker compose up`: the full stack (`db`, `api`, `worker`) on the Mac |
 
 **Done when:** the whole MVP runs locally with `docker compose up`, and everything can be started and checked through the API.
+
+**Built (2026-10-08): C1 to C4, the API.** What exists (how to use it: [How to Run the API](../idea-catcher-how-to-run-api/)):
+
+- **`src/catcher/api/`**: `create_app` (FastAPI, sync endpoints in the thread pool, one SQLAlchemy engine per app with `pool_pre_ping`), `auth.py` (`ApiKey`, `parse_api_keys`, `require(scope)`), `schemas.py`, and one router per area. `catcher api [--host 127.0.0.1] [--port 8000]` serves it with uvicorn; it exits 2 before listening when `API_KEYS` is missing or invalid or `DATABASE_URL` is not set in the environment or in a loaded `.env`. uvicorn logs through the project handlers; the access log is off on purpose (it would print the query string). `fastapi` and `uvicorn` are new dependencies, `httpx` a dev one.
+- **The endpoints as built** are the table in [API](#mvp-api). They differ from the first spec table: the run body has `profile` instead of `llm` (the existing run parameter; there is no per-request backend), and there are the extra endpoints `POST /pipeline/publish`, `POST /items/{name}/requeue` and `GET /youtube/gate`. `dry_run` does not run in the API and does not stay a CLI-only thing: it queues a new read-only job type **`pipeline.preview`** that the worker runs (it holds the repos); the result is the preview report (`counts` and bounded `names`). It takes no lock and changes no file, item or gate row.
+- **Keys and scopes:** `Authorization: Bearer <key>` on every `/api/v1` endpoint; a missing, malformed or unknown key (or two `Authorization` headers) is `401`, a key without the scope `403`. Keys are compared by sha256 digest with `hmac.compare_digest` against every key, and appear in no log, error body or OpenAPI schema. `bearer` as a lowercase scheme or with several spaces is accepted (RFC 6750).
+- **`/health`** needs no key: `200 {api, database, worker}` when the database answers and a worker holds the lock (`worker_running`); `503` otherwise, with `worker: none`, or `database: down` and `worker: unknown`. Any other `OperationalError`, `InterfaceError` or invalidated connection is `503 database unavailable` on every endpoint; any other error is `500 internal error` and logs only the class.
+- **The run triggers enqueue and answer; the worker works.** `POST /pipeline/runs` answers `202` or `200` with the oldest queued or running whole-inbox `pipeline.run` (any origin). A run with `requeue` or `only` is never the existing run. The insert carries the dedupe key `api:pipeline.run`, so of two simultaneous POSTs one wins (a race test with a barrier proves it). A preview dedupes only against a preview with the same params (key `api:pipeline.preview:<hash>`), a publish against a publish (`api:pipeline.publish`), a requeue never. Params go through `check_job` first; a refusal is `422` with the handler's message. The body fields are strict (no coercion, no unknown field); a request over 64 KB (by `Content-Length`) is `413`.
+- **The reads** list with `limit` 1 to 200 (default 50), `offset`, newest first. `ItemOut` names its fields: file contents, inbox and failed paths and LLM replies are not served. `GET /jobs/{id}` returns the first 200 events and, for a `pipeline.run`, `item_counts`. The gate endpoint uses the same `PostgresGate.snapshot` and rules as the CLI.
+- **The `api` container** (`compose.yaml`): same image, `catcher api --host 0.0.0.0 --port 8000`, **no `env_file`, no volumes**, environment exactly `DATABASE_URL`, `API_KEYS` and `LOG_LEVEL`, so no GitHub token and no LLM key; waits for `migrate`; published as `${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000`. The healthcheck counts `200` and `503` from `/health` as alive. `compose.test.yaml` gives the smoke run a dummy key and a random port.
+- **The stack smoke run** (`scripts/compose-smoke`, step j) passed on 2026-10-08 (63 PASS, 0 FAIL): the api healthy and on `127.0.0.1`, `/health` 200 and 503, 401 without and with a wrong key, a key lists jobs, `POST` `202` then `200` with the same id, the environment limited to the three variables, exit 2 without keys, no key in any log, image history or image config, and the api healthy with the worker stopped.
+
+**Decisions made in Stage C** (plan defaults, accepted by the user on 2026-10-08):
+
+1. **Keys:** one setting `API_KEYS`, entries separated by whitespace, `name:scope[,scope]:key`; names `[a-z0-9_-]{1,32}`, keys of at least 24 characters, scopes `read` and `run`. A bad entry, a short key or a duplicate stops `catcher api` with exit 2, naming the problem and never the key.
+2. **`catcher api` refuses the development `DATABASE_URL`:** it needs `DATABASE_URL` set in the environment (a loaded `.env` counts). This settles the old note about failing loudly.
+3. **`/health`:** database plus a worker holding the lock; no key, no secrets in the body.
+4. **`/docs` and `/openapi.json` are public**; `API_DOCS=false` turns them off (on the host; the compose `api` does not get the variable).
+5. **`dry_run` is a `pipeline.preview` job**; the body has `profile` (not `llm`), `limit` and `retry_deferred`; dedupe as above.
+6. **Other triggers:** `pipeline/publish` and `items/{name}/requeue` (`404` for an unknown item; a requeue is its own job).
+7. **Reads:** jobs, one job, items, the gate; `{items, total, limit, offset}` pages.
+8. **The `api` container is internal-first:** `API_BIND` defaults to `127.0.0.1`; the LAN needs `API_BIND=0.0.0.0` on purpose.
+9. **Not built:** metrics aggregation, replay, cancel, profiles endpoints, keys in the database, a live progress stream, rate limiting, HTTPS (LAN/VPN only).
+
+**Open items after Stage C** (minors from the reviews of C1 to C4 and the smoke run):
+
+- *Auth and errors:* a lowercase `bearer` or extra spaces are accepted (RFC 6750), not refused; the OpenAPI helper would drop a `description` or `servers` set later; a comment on `surrogatepass` is missing; Starlette 1.7 warns that `httpx` with its test client is deprecated (`httpx2`); `/health` reports `worker: unknown` when the database is down (the plan names no value).
+- *Reads:* `GET /youtube/gate` can write (the gate repairs a damaged row to closed, like the CLI: fail closed, kept); the events cap of 200 keeps the **oldest** 200 and drops the newest, with no `truncated` flag; a malformed job id is `404`, not `422`; items are ordered by `updated_at`, the CLI by `stage_since`; the CLI's gate wording is not reproduced.
+- *Raw fields:* `params`, `result` and `error` of a job are returned as the worker stored them (a `result.names` list or a preview or `Fail` message can hold absolute paths, and `ItemOut.output_path` is absolute), so a `read` key is private. The schemas docstring says error texts stay out; that holds for the item rows only.
+- *Triggers:* the API lookup and the scheduler's insert are not atomic (the dedupe keys differ), so if the schedule inserts a run between the API's lookup and its insert, two full runs are queued; the worker runs them in turn and the second finds little to do. A chunked request body without `Content-Length` bypasses the 64 KB guard (`413`). A malformed JSON body without a key gets `422`, not `401` (FastAPI parses the body before the router's key check). The `200` for an existing job does not say that the caller's params differ. No wake-up: the API sends no `NOTIFY`, so a job waits for the worker's next poll.
+- *Tests:* no test runs an API-enqueued preview in a real worker (the handler test uses `harness.add_job`, the same row shape); the live smoke run does not cover `API_BIND=0.0.0.0`, publish, requeue or a preview in Docker.
+- *Compose:* without `API_KEYS` in `.env` the `api` container restarts in a loop (exit 2; documented); `API_DOCS` cannot be set for the compose `api`; the first Stage C commits carry the trailer "Claude Opus 5.5".
+
+**Done when (checked 2026-10-08):** the whole MVP runs locally with `docker compose up`, and everything can be started and checked through the API: the smoke run starts the stack, answers `/health`, refuses a missing key, lists jobs and starts a run through `POST` (`202` then `200`); publish and requeue are covered by the integration tests on a real Postgres, not yet by a Docker run.
 
 #### Then: Proxmox {#mvp-stage-deploy}
 

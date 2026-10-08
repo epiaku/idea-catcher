@@ -6,7 +6,7 @@ weight: 40
 type: docs
 ---
 
-This page shows how to **run** the Idea Catcher: the local CLI of Stage A, and the worker and job queue of Stage B (see [How to Run Stage B](../idea-catcher-how-to-run-stage-b/)). The settings it needs are on the [configuration page](../idea-catcher-configuration/), the flow on the [pipeline page](../idea-catcher-pipeline/).
+This page shows how to **run** the Idea Catcher: the local CLI of Stage A, and the worker and job queue of Stage B (see [How to Run Stage B](../idea-catcher-how-to-run-stage-b/)), and the HTTP API of Stage C (see [How to Run the API](../idea-catcher-how-to-run-api/)). The settings it needs are on the [configuration page](../idea-catcher-configuration/), the flow on the [pipeline page](../idea-catcher-pipeline/).
 
 ## Before you start
 
