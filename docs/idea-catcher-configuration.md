@@ -93,6 +93,9 @@ If an `OPENAI_MODEL_*` is empty, the note is **deferred with a configuration `ER
   - `YOUTUBE_WAIT_MAX_S` (default `1800`): with `--wait-youtube`, the longest sleep for the gap inside a run.
   - `YOUTUBE_NEGATIVE_TTL_H` (default `24`): a video without captions is asked about again only after this many hours.
   - The gate state (the gap and a block) lives in Postgres, in the `resources` row `youtube` of `DATABASE_URL` (see [The YouTube gate](../idea-catcher-how-to-run-stage-b/#youtube-gate)). The worker, `run pipeline` and `youtube facts` share it, and the settings above apply to all of them. `CATCHER_STATE_DIR` is gone (2026-10-04): an old line in `.env` is ignored.
+- Backfill (`catcher youtube import`):
+  - `BACKFILL_PRIORITY` (default `-10`): the priority of every job of a released backfill video (a clip note with `backfill: true`). New clips run at `0`, so they are claimed first; the YouTube gate paces backfill fetches like any other.
+  - `BACKFILL_DAILY_LIMIT` (default `10`, 0 or more): the cap per rolling 24 hours that `--release` uses when no `--limit` is given. Start small (5, then 20, then 50) and raise `YOUTUBE_MIN_GAP_S` before raising it.
 - `TRANSCRIPT_LANGUAGES` (default `en`): preferred YouTube transcript languages, comma-separated, for example `en, nl`.
 - `GIT_AUTHOR_NAME` (default `idea-catcher`): author name on the commits the pipeline makes.
 - `GIT_AUTHOR_EMAIL` (default `idea-catcher@users.noreply.github.com`): author email on those commits.

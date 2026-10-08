@@ -1,6 +1,6 @@
 """Fill the backfill backlog: the YouTube links in the docs that have no page yet."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +18,7 @@ class ImportResult:
     new: int  # stored in the backlog (with dry_run: would be stored)
     pending: int  # pending in all, after the new ones
     unreadable: int
+    new_ids: list[str] = field(default_factory=list)  # the new ones, sorted (as the backlog orders them)
 
 
 def run_import(session: Session, ideas: Path, docs: Path, now: datetime, *, dry_run: bool) -> ImportResult:
@@ -34,4 +35,5 @@ def run_import(session: Session, ideas: Path, docs: Path, now: datetime, *, dry_
         new=added,
         pending=pending,
         unreadable=scanned.unreadable,
+        new_ids=sorted(fresh),
     )

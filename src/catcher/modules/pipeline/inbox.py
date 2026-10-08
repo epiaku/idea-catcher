@@ -28,6 +28,7 @@ STAGE_FOLDERS = ("inbox", "output", "archive", "failed", "duplicates")
 ORIGINAL_KEY = "original_filename"
 CALCULATED_KEY = "calculated_filename"
 DESTINATION_KEY = "destination"  # notes, youtube or web-clips: the epiaku-docs folder the page goes to
+BACKFILL_KEY = "backfill"  # `backfill: true`: a clip note `catcher youtube import` released (low priority)
 
 STAGE_ANALYZED = "analyzed"  # the working copy in output/ while the document is being worked on
 STAGE_DEFERRED = "deferred"  # an error stalled it (LLM down, budget used up): overwritten by the next run
@@ -59,6 +60,11 @@ class Note:
 
     def output_path(self, ideas_repo: Path) -> Path:
         return ideas_repo / "output" / self.target_rel
+
+    @property
+    def backfill(self) -> bool:
+        """True for a clip note the backfill released (`backfill: true`, a YAML true only)."""
+        return self.doc.fm.get(BACKFILL_KEY) is True
 
     @property
     def destination(self) -> str:

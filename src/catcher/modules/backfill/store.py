@@ -53,6 +53,13 @@ def mark_released(session: Session, video_id: str, now: datetime) -> bool:
     return session.execute(statement).first() is not None
 
 
+def released_since(session: Session, since: datetime) -> int:
+    """How many videos were released at or after `since` (the rolling 24 h cap of the release)."""
+    require_aware(since)
+    statement = select(func.count()).select_from(BackfillVideo).where(BackfillVideo.released_at >= since)
+    return session.execute(statement).scalar_one()
+
+
 def counts(session: Session) -> dict[str, int]:
     grouped = select(BackfillVideo.status, func.count()).group_by(BackfillVideo.status)
     found = dict(session.execute(grouped).all())

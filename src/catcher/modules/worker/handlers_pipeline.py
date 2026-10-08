@@ -125,6 +125,7 @@ from catcher.modules.youtube.urls import video_id
 log = logging.getLogger("catcher.worker.pipeline")
 
 NO_DOCUMENT = "staging row without a document"
+BACKFILL_ORIGIN = "backfill"  # the item origin of a note with `backfill: true` (its jobs run at low priority)
 DEFER_FALLBACK_S = 600  # a FactsDeferred without a time (a gate that does not say): ask again in 10 minutes
 # the `stage` of a working copy still being worked on: the Stage A names and the item statuses the mirror
 # writes; any other (`published`) is the finished page
@@ -215,6 +216,13 @@ def _facts_saved(ctx: HandlerContext, vid: str) -> bool:
     return cache is not None and cache.get(vid) is not None
 
 
+def _priority(ctx: HandlerContext, item: JobItem | None) -> int:
+    """The priority of a job queued for `item`: `BACKFILL_PRIORITY` when the item came from the backfill
+    (`origin='backfill'`), else 0. Read from the row, so it holds for every job of the item and every path
+    that queues one (staging, adoption, retry, the fetch hand-off, a fetch queued again)."""
+    return ctx.settings.backfill_priority if item is not None and item.origin == BACKFILL_ORIGIN else 0
+
+
 def _queue_next(
     ctx: HandlerContext, name: str, note: Note, params: RunParams, job_id: uuid.UUID | None
 ) -> None:
@@ -245,6 +253,7 @@ def _queue_next(
             session,
             type=job_type,
             now=now,
+            priority=_priority(ctx, item),
             params=job_params,
             dedupe_key=key,
             resource=YOUTUBE_RESOURCE if fetch else None,
@@ -635,6 +644,7 @@ def _stage(ctx: HandlerContext, job: Job, note: Note) -> str | None:
                 inbox_path=f"inbox/{note.rel.as_posix()}",
                 original_filename=note.original_name,
                 root_job_id=job.id,
+                origin=BACKFILL_ORIGIN if note.backfill else "inbox",
             )
     except ItemExists as e:
         log.warning("%s: %s; it stays in inbox/", note_label(note), e)
@@ -735,6 +745,7 @@ def _wait_for_youtube(
             session,
             type="youtube.fetch",
             now=now,
+            priority=_priority(ctx, item),
             params=job_params,
             dedupe_key=f"fetch:{name}",
             resource=YOUTUBE_RESOURCE,
@@ -949,6 +960,7 @@ def _wait_for_llm(
             session,
             type="llm.reason",
             now=now,
+            priority=_priority(ctx, item),
             params=_next_params(name, params),
             dedupe_key=f"reason:{name}",
         )

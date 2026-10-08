@@ -30,6 +30,7 @@ from catcher.core.log import configure_logging
 from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError, reset_test_repos
 from catcher.modules.backfill import store as backfill_store
 from catcher.modules.backfill.importer import run_import
+from catcher.modules.backfill.release import daily_allowance, release
 from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import UnknownProfile, load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
@@ -722,11 +723,29 @@ def youtube_import(
     ideas: IdeasOpt = None,
     docs: DocsOpt = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="print the counts, write nothing")] = False,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            min=0,
+            help="then release at most N videos per rolling 24 hours as clip notes into inbox/clippings/",
+        ),
+    ] = None,
+    release_: Annotated[
+        bool, typer.Option("--release", help="release with BACKFILL_DAILY_LIMIT as the limit (default 10)")
+    ] = False,
 ) -> None:
     """Scan the docs for YouTube links that have no page and add them to the backfill backlog.
 
     A video counts as known when it has a page in the docs, a job item, a clip in the idea bucket or a row
     in the backlog. It takes no worker lock and asks YouTube and the LLM for nothing.
+
+    With --limit N (or --release, which uses BACKFILL_DAILY_LIMIT) it then releases the oldest pending
+    videos as clip notes (`inbox/clippings/youtube source - <id>.md`, marked `backfill: true`): the next
+    pipeline run makes their pages, at a priority below new clips, through the same YouTube gate. N is a cap
+    per rolling 24 hours: running it twice in a day never releases more than N. Start small (5, then 20,
+    then 50) and raise YOUTUBE_MIN_GAP_S before raising the limit. The idea bucket is not committed here
+    (publish does). With --dry-run it prints what it would release and writes nothing.
 
     Exit codes: 0 done; 2 a folder is missing, DATABASE_URL is malformed, the database cannot be reached or
     has no tables (run `catcher db upgrade`)."""
@@ -736,14 +755,41 @@ def youtube_import(
         if not folder.is_dir():
             typer.echo(f"the {label} folder does not exist: {folder}", err=True)
             raise typer.Exit(2)
+    cap = limit if limit is not None else settings.backfill_daily_limit if release_ else None
+    now = utc_now()
+    lines: list[str] = []
     with _backfill_session() as session:
-        result = run_import(session, ideas_repo, docs_repo, utc_now(), dry_run=dry_run)
+        result = run_import(session, ideas_repo, docs_repo, now, dry_run=dry_run)
+        if cap is not None:
+            lines = _release_backlog(session, ideas_repo, cap, now, result.new_ids if dry_run else None)
     typer.echo(
         f"scanned {result.files} file(s), found {result.found} video(s), {result.known} already have a page, "
         f"{result.new} new in the backlog ({result.pending} pending in all)"
     )
     if result.unreadable:
         typer.echo(f"skipped {result.unreadable} unreadable file(s)")
+    for line in lines:
+        typer.echo(line)
+
+
+def _release_backlog(
+    session: Session, ideas: Path, cap: int, now: datetime, dry_new: list[str] | None
+) -> list[str]:
+    """Release what the rolling 24 h cap allows; the lines to print. `dry_new` (a dry run: the new ids the
+    scan would have stored) means nothing is written and the lines say what would be released."""
+    allowance = daily_allowance(session, cap, now)
+    lines = [] if allowance else [f"daily allowance already used ({cap} per 24 hours)"]
+    if dry_new is not None:
+        pending = [row.video_id for row in backfill_store.pending(session)] + dry_new
+        would = pending[:allowance]
+        lines += [f"would release {vid}" for vid in would]
+        left = len(pending) - len(would)
+        return [*lines, f"would release {len(would)} video(s) into inbox/clippings/ ({left} still pending)"]
+    done = release(session, ideas, allowance, now)
+    if done.repaired:
+        lines.append(f"{len(done.repaired)} video(s) already had a clip note: marked released")
+    left = backfill_store.counts(session)["pending"]
+    return [*lines, f"released {len(done.released)} video(s) into inbox/clippings/ ({left} still pending)"]
 
 
 @youtube_app.command("backlog")

@@ -102,7 +102,7 @@ def page_ids(docs_repo: Path) -> set[str]:
     return _page_ids(_walk(docs_repo)[0])
 
 
-def _clip_ids(ideas_repo: Path) -> set[str]:
+def clip_ids(ideas_repo: Path) -> set[str]:
     ids: set[str] = set()
     for folder in _CLIP_FOLDERS:
         for path in _markdown_files(ideas_repo / folder) if (ideas_repo / folder).is_dir() else ():
@@ -120,4 +120,4 @@ def _clip_ids(ideas_repo: Path) -> set[str]:
 
 def known_ids(session: Session, ideas_repo: Path, docs_repo: Path) -> set[str]:
     job_ids = {_base_id(doc_id) for doc_id in session.scalars(select(JobItem.doc_id))}
-    return page_ids(docs_repo) | job_ids | _clip_ids(ideas_repo) | store.known(session)
+    return page_ids(docs_repo) | job_ids | clip_ids(ideas_repo) | store.known(session)

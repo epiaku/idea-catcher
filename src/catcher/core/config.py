@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     youtube_skip_manifests: bool = False  # skip the video-format request (try by hand before turning on)
     youtube_wait_max_s: float = 1800.0  # with --wait-youtube: the longest wait for the gap inside a run
     youtube_negative_ttl_h: float = 24.0  # a video without captions is asked about again after this long
+    # backfill (`catcher youtube import`): the priority of every job of a released backfill video (below the
+    # 0 of a new clip, so new clips go first) and the most videos `--release` lets into inbox/ per 24 hours
+    backfill_priority: int = -10
+    backfill_daily_limit: int = Field(default=10, ge=0)
     # scheduler (in `catcher worker`): five-field cron strings in `schedule_timezone`; empty = off
     schedule_ideas_pull: str = ""
     schedule_pipeline_run: str = ""
