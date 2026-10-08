@@ -15,7 +15,7 @@ from catcher.modules.queue.models import Base
 
 pytestmark = pytest.mark.db
 
-TABLES = {"jobs", "job_items", "job_events", "resources", "schedules"}
+TABLES = {"jobs", "job_items", "job_events", "resources", "schedules", "backfill_videos"}
 NOW = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
 
 
@@ -27,7 +27,7 @@ def _tables(url: str) -> set[str]:
         engine.dispose()
 
 
-def test_upgrade_from_empty_creates_the_five_tables(fresh_database_url):
+def test_upgrade_from_empty_creates_the_six_tables(fresh_database_url):
     assert _tables(fresh_database_url) == set()
     command.upgrade(alembic_config(fresh_database_url), "head")
     assert _tables(fresh_database_url) == TABLES
@@ -193,7 +193,7 @@ def test_downgrade_minus_one_steps_back_one_migration_without_asking(fresh_datab
     result = runner.invoke(app, ["db", "downgrade", "-1"])
     assert result.exit_code == 0, result.output
     assert _version(fresh_database_url) not in (head, None)
-    assert _tables(fresh_database_url) == TABLES
+    assert _tables(fresh_database_url) == TABLES - {"backfill_videos"}
 
 
 def test_a_bad_item_status_is_rejected(session):
@@ -352,3 +352,25 @@ def test_upgrade_adds_stage_since_and_reason_and_downgrade_removes_them(fresh_da
     command.downgrade(config, "0004")
     assert "stage_since" not in _columns(fresh_database_url, "job_items")
     assert "reason" not in _columns(fresh_database_url, "resources")
+
+
+def test_the_migration_upgrades_from_head_and_downgrades(fresh_database_url):
+    config = alembic_config(fresh_database_url)
+    command.upgrade(config, "0005")
+    assert "backfill_videos" not in _tables(fresh_database_url)
+    command.upgrade(config, "0006")
+    assert _version(fresh_database_url) == "0006"
+    assert "backfill_videos" in _tables(fresh_database_url)
+    assert _columns(fresh_database_url, "backfill_videos") == {
+        "video_id",
+        "source",
+        "found_in",
+        "status",
+        "found_at",
+        "released_at",
+    }
+    command.downgrade(config, "0005")
+    assert _version(fresh_database_url) == "0005"
+    assert "backfill_videos" not in _tables(fresh_database_url)
+    command.upgrade(config, "head")
+    assert _version(fresh_database_url) == "0006"

@@ -168,3 +168,30 @@ class Schedule(Base):
 
     name: Mapped[str] = mapped_column(Text, primary_key=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(_timestamp())
+
+
+BACKFILL_SOURCES = ("docs", "channel")
+BACKFILL_STATUSES = ("pending", "released")
+
+
+class BackfillVideo(Base):
+    """A YouTube video found in the old links, waiting to be released into the queue."""
+
+    __tablename__ = "backfill_videos"
+    __table_args__ = (
+        CheckConstraint(_in("source", BACKFILL_SOURCES), name="ck_backfill_videos_source"),
+        CheckConstraint(_in("status", BACKFILL_STATUSES), name="ck_backfill_videos_status"),
+        Index(
+            "ix_backfill_videos_pending",
+            "found_at",
+            "video_id",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    video_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    source: Mapped[str] = mapped_column(Text)
+    found_in: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, default="pending", server_default=text("'pending'"))
+    found_at: Mapped[datetime] = mapped_column(_timestamp())
+    released_at: Mapped[datetime | None] = mapped_column(_timestamp())
