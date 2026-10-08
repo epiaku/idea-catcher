@@ -34,3 +34,8 @@ def find_youtube_url(text: str) -> str | None:
         if video_id(match.group(0)):
             return match.group(0)
     return None
+
+
+def find_youtube_urls(text: str) -> list[str]:
+    """Every YouTube video link in the text, in order (a playlist or channel link is not one)."""
+    return [m.group(0) for m in _YOUTUBE_URL.finditer(text.replace("\\", "")) if video_id(m.group(0))]
