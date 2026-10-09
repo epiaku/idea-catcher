@@ -15,6 +15,8 @@ This page shows how to run what Stage C built (2026-10-08): a small **HTTP API**
 3. Open `http://127.0.0.1:8000/docs`, click **Authorize**, paste the key.
 4. Or use `curl` with `Authorization: Bearer <key>` (see [Every endpoint](#endpoints)).
 
+**First time?** Follow [The first local test](../idea-catcher-first-local-test/): it resets the test folders, starts everything on your Mac and calls every endpoint from a page in VS Code (`tests/manual/catcher-api.http`).
+
 ## Set up API keys {#keys}
 
 Every endpoint except `/health` (and the public `/docs` pages) needs a key. Keys live in one setting, `API_KEYS`, in `.env` (secret, never committed).

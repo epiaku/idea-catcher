@@ -1,0 +1,156 @@
+# Idea Catcher API: a test page for VS Code (extension "REST Client", id humao.rest-client).
+#
+# Open this file, click "Send Request" above a request (or Cmd+Alt+R on the line). The answer opens
+# beside it. Requests are separated by ###. Named requests (# @name x) can be used by later ones.
+#
+# SETUP (the first local test, see docs/idea-catcher-first-local-test.md):
+#   1. uv run catcher testdata reset                                          (fresh test repos in tmp/ic)
+#   2. docker compose -f compose.yaml -f compose.local-test.yaml up --build   (db, migrate, worker, api)
+#   3. Send the requests below, in order. Nothing else to set up: the two keys below are the test keys
+#      of compose.local-test.yaml (public, only for that file). Another stack needs its own keys.
+#
+# The order matters: 7 and 8 read the jobs and items that the run in 6 made, and 10 requeues the first
+# item of 8a. tmp/ic has no git remote, so the publish request (9) is EXPECTED to fail (the job ends failed).
+# Started the stack with API_PORT=8001? Change the port in @baseUrl.
+
+@baseUrl = http://127.0.0.1:8000
+@key = local-test-key-not-a-secret-0001
+@readonlyKey = local-test-readonly-not-a-secret-02
+
+### 1. Health: no key needed. 200 when a worker runs, 503 + "worker": "none" when it does not
+GET {{baseUrl}}/health
+
+### 2a. No key: 401
+GET {{baseUrl}}/api/v1/jobs
+
+### 2b. Wrong key: 401
+GET {{baseUrl}}/api/v1/jobs
+Authorization: Bearer this-is-not-a-valid-key-0000000
+
+### 3a. Jobs, newest first (empty on a fresh stack)
+GET {{baseUrl}}/api/v1/jobs
+Authorization: Bearer {{key}}
+
+### 3b. Jobs: filters and paging (status, type, from, limit, offset)
+GET {{baseUrl}}/api/v1/jobs?status=succeeded&type=pipeline.run&limit=5&offset=0
+Authorization: Bearer {{key}}
+
+### 3c. Jobs: bad values are 422 (limit 0), never a 500
+GET {{baseUrl}}/api/v1/jobs?limit=0
+Authorization: Bearer {{key}}
+
+### 3d. Jobs: an unknown status is 422
+GET {{baseUrl}}/api/v1/jobs?status=bogus
+Authorization: Bearer {{key}}
+
+### 4. The YouTube gate (open, gap or blocked)
+GET {{baseUrl}}/api/v1/youtube/gate
+Authorization: Bearer {{key}}
+
+### 5a. Start a DRY RUN: the worker runs a read-only preview job (202, then read the job below)
+# @name dryRun
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"dry_run": true}
+
+### 5b. The preview job: status, then "result.report" (counts and names) when it has succeeded
+GET {{baseUrl}}/api/v1/jobs/{{dryRun.response.body.$.job_id}}
+Authorization: Bearer {{key}}
+
+### 6a. Start a REAL run with the fake LLM profile (no cost; YouTube is offline). 202
+# @name startRun
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"profile": "fake"}
+
+### 6b. The same request again: 200 with "existing": true and the SAME job_id while 6a is queued or running
+# (the run takes a few seconds on the test data; once it has finished, this starts a new run: 202)
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"profile": "fake"}
+
+### 6c. Read the run: queued, running, succeeded (result holds the counts, item_counts the items)
+GET {{baseUrl}}/api/v1/jobs/{{startRun.response.body.$.job_id}}
+Authorization: Bearer {{key}}
+
+### 6d. Bad run options are 422: an unknown field
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"colour": "red"}
+
+### 6e. Bad run options are 422: a negative limit
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"limit": -1}
+
+### 7a. Jobs again: the run, one llm.reason job per document, and the preview
+GET {{baseUrl}}/api/v1/jobs
+Authorization: Bearer {{key}}
+
+### 7b. The newest pipeline.run, with its events and item counts per class and status (send 7b, then 7c)
+# @name lastRun
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.run&limit=1
+Authorization: Bearer {{key}}
+
+### 7c. The detail of that run
+GET {{baseUrl}}/api/v1/jobs/{{lastRun.response.body.$.items[0].id}}
+Authorization: Bearer {{key}}
+
+### 7d. An unknown job id is 404
+GET {{baseUrl}}/api/v1/jobs/00000000-0000-4000-8000-000000000000
+Authorization: Bearer {{key}}
+
+### 8a. Items (documents), most recently updated first
+# @name items
+GET {{baseUrl}}/api/v1/items?limit=20
+Authorization: Bearer {{key}}
+
+### 8b. Items: only the stuck ones (none on the test data)
+GET {{baseUrl}}/api/v1/items?status=stuck
+Authorization: Bearer {{key}}
+
+### 8c. Items: one document class (note, ai-chat, web-clip, youtube, youtube-gemini)
+GET {{baseUrl}}/api/v1/items?doc_class=youtube&limit=10
+Authorization: Bearer {{key}}
+
+### 9a. Publish (commit + pull + push). On tmp/ic there is no remote: the job is queued (202) and then FAILS
+# @name publish
+POST {{baseUrl}}/api/v1/pipeline/publish
+Authorization: Bearer {{key}}
+
+### 9b. Read the publish job (see "error": no git remote to push to)
+GET {{baseUrl}}/api/v1/jobs/{{publish.response.body.$.job_id}}
+Authorization: Bearer {{key}}
+
+### 10a. Requeue the first item of 8a (the name has a slash; that is fine in the path). 202
+# @name requeue
+POST {{baseUrl}}/api/v1/items/{{items.response.body.$.items[0].name}}/requeue
+Authorization: Bearer {{key}}
+
+### 10b. Read the requeue job: a pipeline.run with "requeue": [that name]
+GET {{baseUrl}}/api/v1/jobs/{{requeue.response.body.$.job_id}}
+Authorization: Bearer {{key}}
+
+### 10c. Requeue an unknown item: 404
+POST {{baseUrl}}/api/v1/items/clippings/does-not-exist.md/requeue
+Authorization: Bearer {{key}}
+
+### 11. A key with only the read scope cannot start anything: 403
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{readonlyKey}}
+Content-Type: application/json
+
+{}
+
+### 12. The OpenAPI description. The Swagger UI is at http://127.0.0.1:8000/docs: open that in a browser, click Authorize, paste the key
+GET {{baseUrl}}/openapi.json

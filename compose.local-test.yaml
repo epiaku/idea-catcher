@@ -1,0 +1,56 @@
+# The first local test: the whole stack on your Mac, working on the test repos in tmp/ic.
+#   uv run catcher testdata reset                                          # fresh test repos in tmp/ic
+#   docker compose -f compose.yaml -f compose.local-test.yaml up --build   # db, migrate, worker, api
+# Then open tests/manual/catcher-api.http in VS Code and send the requests. Stop with Ctrl-C and
+#   docker compose -f compose.yaml -f compose.local-test.yaml down -v      # also deletes the scratch database
+# See docs/idea-catcher-first-local-test.md. NEVER use this file for real work: the API keys below are public.
+#
+# What it changes compared with compose.yaml:
+#   - the worker works on the repos in ${LOCAL_TEST_DIR:-./tmp/ic} (mounted into the container), not on clones;
+#   - your real .env is NOT passed to the containers (no real LLM keys, no GitHub token); Compose still reads it
+#     for the ${...} values in compose.yaml, so the token and the remotes are blanked below; no LLM and no
+#     YouTube call is possible;
+#   - no schedule is on: nothing runs until you start a run from the API;
+#   - the database has no port on your Mac (so it never collides with a Postgres on 5432);
+#   - the API listens on 127.0.0.1:${API_PORT:-8000} with two fixed test keys (read+run, and read only).
+name: catcher-local
+
+x-local: &local
+  env_file: !reset []
+  environment:
+    OPENAI_API_KEY: ""
+    OPENAI_MODEL_CLIPPINGS: local-test-unused
+    OPENAI_MODEL_YOUTUBE: local-test-unused
+    OPENAI_BASE_URL: http://127.0.0.1:1/v1
+    FREELLMAPI_API_KEY: ""
+    FREELLMAPI_URL: http://127.0.0.1:1/v1
+    LLM_MAX_ATTEMPTS: "1"
+    YOUTUBE_OFFLINE: "1"
+    GIT_AUTHOR_NAME: idea-catcher-local-test
+    GIT_AUTHOR_EMAIL: idea-catcher-local-test@example.com
+    GIT_COMMITTER_NAME: idea-catcher-local-test
+    GIT_COMMITTER_EMAIL: idea-catcher-local-test@example.com
+    # compose.yaml fills these from .env (${GITHUB_TOKEN} etc.): blank them, whatever .env holds.
+    GITHUB_TOKEN: ""
+    IDEAS_REMOTE: ""
+    DOCS_REMOTE: ""
+
+services:
+  db:
+    ports: !reset []
+
+  migrate:
+    <<: *local
+
+  worker:
+    <<: *local
+    volumes: !override
+      - ${LOCAL_TEST_DIR:-./tmp/ic}/idea-bucket:/data/repos/idea-bucket
+      - ${LOCAL_TEST_DIR:-./tmp/ic}/epiaku-docs:/data/repos/epiaku-docs
+
+  # The api keeps its own few variables (no token, no LLM settings); only the keys are fixed test keys.
+  api:
+    environment:
+      API_KEYS: "me:read,run:local-test-key-not-a-secret-0001 ro:read:local-test-readonly-not-a-secret-02"
+    ports: !override
+      - "127.0.0.1:${API_PORT:-8000}:8000"

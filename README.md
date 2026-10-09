@@ -80,6 +80,7 @@ Everything is in the [`docs/`](docs/) folder.
 | [How to run it](docs/idea-catcher-how-to-run.md) | Every command and option, with recipes on test data and on the real repos |
 | [How to run Stage B](docs/idea-catcher-how-to-run-stage-b.md) | The Postgres queue and the worker: start Postgres, add jobs, run the worker on test and real repos, publish, stop it, exit codes |
 | [How to run the API](docs/idea-catcher-how-to-run-api.md) | Stage C: API keys, start the API on the host or in Docker, Swagger UI, a `curl` example for every endpoint, status codes and scopes |
+| [The first local test](docs/idea-catcher-first-local-test.md) | Reset `tmp/ic`, start a scratch Postgres, the worker and the API, and call every endpoint from the VS Code page `tests/manual/catcher-api.http` |
 | [Configuration](docs/idea-catcher-configuration.md) | `.env`, `profiles.yaml`, and every setting |
 
 ### Design
