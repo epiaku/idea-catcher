@@ -1,0 +1,62 @@
+# The LIVE local test: the stack on your Mac, working on the test repos in tmp/ic, WITH real LLM and YouTube calls.
+#   uv run catcher testdata reset --fresh-llm-and-youtube      # tmp/ic WITHOUT the saved LLM replies and YouTube facts
+#   docker compose -f compose.yaml -f compose.live-test.yaml up --build
+# Then send request 5 of tests/manual/catcher-recipe.http. Stop with Ctrl-C and
+#   docker compose -f compose.yaml -f compose.live-test.yaml down -v
+# NEVER use this file for real work: the API keys below are public (the API listens on 127.0.0.1 only).
+#
+# THIS COSTS MONEY AND USES YOUTUBE. A run on the test data calls the LLM for all 43 documents: 28 notes through
+# FreeLLMApi (free, but your FreeLLMApi must be reachable from the containers) and 15 documents through OpenAI
+# (4 AI chats, 1 web clip, 2 YouTube clips, 8 Gemini summaries: your OpenAI key and its budget cap apply). The
+# 2 YouTube clips make 2 real YouTube requests, paced by the gate (a gap of 2 minutes or more between two).
+#
+# Compared with compose.local-test.yaml (the offline test):
+#   - your .env IS passed to the worker, for the LLM settings: OPENAI_API_KEY, the OPENAI_MODEL_* values,
+#     FREELLMAPI_URL and so on (FREELLMAPI_URL must be an address the container can reach, not localhost);
+#   - YouTube is ON (YOUTUBE_OFFLINE=0);
+#   - nothing else from .env can do harm: the GitHub token and the remotes are blanked (no pull, no push) and
+#     every schedule is off, whatever .env holds;
+#   - the worker works on the repos in ${LOCAL_TEST_DIR:-./tmp/ic}, the database has no port on your Mac, and the
+#     API listens on 127.0.0.1:${API_PORT:-8000} with the same two fixed test keys.
+# The replies and facts the run fetches are saved in tmp/ic/idea-bucket/llm and facts. A later
+# `uv run catcher testdata reset` (without the flag) puts the committed saved ones back.
+name: catcher-live
+
+x-live: &live
+  environment:
+    YOUTUBE_OFFLINE: "0"
+    # compose.yaml fills these from .env: blank them, so the test can never push or pull, whatever .env holds.
+    GITHUB_TOKEN: ""
+    IDEAS_REMOTE: ""
+    DOCS_REMOTE: ""
+    # No schedule: a scheduled run would call the LLM by itself. Nothing runs until you send request 5.
+    SCHEDULE_IDEAS_PULL: ""
+    SCHEDULE_PIPELINE_RUN: ""
+    SCHEDULE_PUBLISH: ""
+    GIT_AUTHOR_NAME: idea-catcher-live-test
+    GIT_AUTHOR_EMAIL: idea-catcher-live-test@example.com
+    GIT_COMMITTER_NAME: idea-catcher-live-test
+    GIT_COMMITTER_EMAIL: idea-catcher-live-test@example.com
+
+services:
+  db:
+    ports: !reset []
+
+  # The migrations need no LLM settings: no .env for this container.
+  migrate:
+    <<: *live
+    env_file: !reset []
+
+  # The worker keeps the env_file of compose.yaml (.env): it needs the LLM keys and URLs from it.
+  worker:
+    <<: *live
+    volumes: !override
+      - ${LOCAL_TEST_DIR:-./tmp/ic}/idea-bucket:/data/repos/idea-bucket
+      - ${LOCAL_TEST_DIR:-./tmp/ic}/epiaku-docs:/data/repos/epiaku-docs
+
+  # The api keeps its own few variables (no token, no LLM keys); only the keys are fixed test keys.
+  api:
+    environment:
+      API_KEYS: "me:read,run:local-test-key-not-a-secret-0001 ro:read:local-test-readonly-not-a-secret-02"
+    ports: !override
+      - "127.0.0.1:${API_PORT:-8000}:8000"

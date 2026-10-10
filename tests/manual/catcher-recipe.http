@@ -49,7 +49,7 @@ Authorization: Bearer {{key}}
 # PROCESSES the data. The API again only writes one "queued" row in the table "jobs" (type pipeline.run) and
 # answers 202. The worker then picks it up and does the work: it stages every document of the inbox, creates
 # the document records (job_items) and one llm.reason job per document, and it writes the pages in
-# tmp/ic/epiaku-docs. The result is saved in the job row; read it with request 6.
+# tmp/ic/epiaku-docs. The result is saved in the job row; read it with request 7.
 # Still no LLM and no YouTube: "profile": "fake" makes the LLM step use the fake backend (no model is
 # called), YouTube is switched off in this stack and the test data holds the saved YouTube facts.
 # @name startRun
@@ -102,7 +102,7 @@ Content-Type: application/json
 # llm_saved true. If a document had no saved reply, the call would go to a dummy address that does not
 # answer (nothing leaves your machine) and that document would be deferred.
 #
-# What differs from 3: after the run the items (request 7a) show their normal profile (notes, clippings or
+# What differs from 3: after the run the items (request 8a) show their normal profile (notes, clippings or
 # youtube) and the backend and model of the saved reply (freellmapi or openai), not "fake".
 # @name startRunNormal
 POST {{baseUrl}}/api/v1/pipeline/runs
@@ -111,36 +111,72 @@ Content-Type: application/json
 
 {}
 
-### 5a. HOW MANY JOBS? Read "total" in each answer. Jobs waiting in the queue:
+### 5. ALTERNATIVE to 3 and 4: a LIVE run with the real LLM and the real YouTube (202). THIS COSTS MONEY
+# The same call as request 4 (an empty body {}: every document uses its normal profile), but on test data
+# WITHOUT the saved LLM replies and YouTube facts, so the worker really asks the LLMs and YouTube.
+# Use it INSTEAD of 3 and 4: the inbox can only be processed once.
+# What it calls: 28 notes go to FreeLLMApi (free, but it must be reachable from the container); 15 documents go
+# to OpenAI (4 AI chats, 1 web clip, 2 YouTube clips, 8 Gemini summaries: your OpenAI key and budget cap apply);
+# the 2 YouTube clips make 2 real YouTube requests, paced by the gate (2 minutes or more between two), so the
+# run takes several minutes. The 8 Gemini summaries make no YouTube request.
+# Set it up, in this order:
+#   1. Stop the running stack: Ctrl-C, then
+#        docker compose -f compose.yaml -f compose.local-test.yaml down -v
+#   2. Reset the test data WITHOUT the saved replies and facts (they are left out of the copy):
+#        uv run catcher testdata reset --fresh-llm-and-youtube
+#   3. Start the live stack. compose.live-test.yaml passes the LLM settings of your .env to the worker, turns
+#      YouTube on, and blanks the GitHub token, the remotes and every schedule (nothing can push or run by itself):
+#        docker compose -f compose.yaml -f compose.live-test.yaml up --build
+#   4. Look first with the preview (request 2a). It calls nothing and should now say would_call_llm (and
+#      would_fetch for the YouTube clips) instead of would_publish. Then send this request.
+# To try it small first, put {"limit": 3} in the body: only 3 documents are processed (the others stay in the
+# inbox for a later run) and only those calls are paid.
+# After it: the items (request 8a) show the real backend and model, and the replies and facts the run fetched
+# are saved in tmp/ic/idea-bucket/llm and facts. uv run catcher testdata reset (without the flag) puts the
+# committed saved ones back.
+# @name startRunLive
+POST {{baseUrl}}/api/v1/pipeline/runs&limit=1
+#POST {{baseUrl}}/api/v1/pipeline/runs&limit=1
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{}
+
+### 6a. HOW MANY JOBS? Read "total" in each answer. Jobs waiting in the queue:
 GET {{baseUrl}}/api/v1/jobs?status=queued&limit=1
 Authorization: Bearer {{key}}
 
-### 5b. Jobs running now:
+### 6b. Jobs running now:
 GET {{baseUrl}}/api/v1/jobs?status=running&limit=1
 Authorization: Bearer {{key}}
 
-### 5c. Jobs finished: about 44 on the test data (the run + one llm.reason job per document, 43)
+### 6c. Jobs finished: about 44 on the test data (the run + one llm.reason job per document, 43)
 GET {{baseUrl}}/api/v1/jobs?status=succeeded&limit=1
 Authorization: Bearer {{key}}
 
-### 5d. Jobs failed: 0
+### 6d. Jobs failed: 0
 GET {{baseUrl}}/api/v1/jobs?status=failed&limit=1
 Authorization: Bearer {{key}}
 
-### 6. This run: status, result with the counts, item_counts per class and status
+### 7. This run: status, result with the counts, item_counts per class and status
 # This reads the run of request 3. If you sent request 4 instead of 3, change startRun to startRunNormal in the
-# line below.
+# line below; if you sent request 5, change it to startRunLive.
 GET {{baseUrl}}/api/v1/jobs/{{startRun.response.body.$.job_id}}
 Authorization: Bearer {{key}}
 
-### 7a. The documents: "total" is 43 on the test data
-# Read "total": it is the number of ALL matching documents. "items" holds only ONE page: with limit=1 you see
-# 1 document, to keep the answer short. "limit" is the page size and "offset" where the page starts.
-# To see more documents, raise the limit (limit=50 shows all 43; the maximum is 200) or page through them
-# with a small limit and offset=1, offset=2, and so on.
-GET {{baseUrl}}/api/v1/items?limit=1
+### 8a. The documents: "total" is 43 on the test data
+# Read "total": it is the number of ALL matching documents. "items" holds only ONE page of them.
+# "limit" is the page size: how many documents the answer holds (limit=1 shows 1, to keep the answer short).
+# "offset" is where the page starts: how many documents to SKIP from the start of the list, which is sorted
+# newest first. offset=0 starts at the first (newest) document, offset=1 skips 1 and shows the second one,
+# and offset=42 shows the 43rd, the oldest. With limit=5 and offset=5 you get documents 6 to 10.
+# To see more at once, raise the limit (limit=50 shows all 43; the maximum is 200). To walk through them one
+# by one, keep limit=1 and send offset=0, 1, 2, and so on.
+# (This "limit" is the page size of a list. It is not the "limit" of request 5: there it is an option of the
+# run, how many documents to process.)
+GET {{baseUrl}}/api/v1/items?limit=1&offset=0
 Authorization: Bearer {{key}}
 
-### 7b. The documents that are published: "total" is 43 when the run has finished
+### 8b. The documents that are published: "total" is 43 when the run has finished
 GET {{baseUrl}}/api/v1/items?status=published&limit=1
 Authorization: Bearer {{key}}
