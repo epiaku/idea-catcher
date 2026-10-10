@@ -17,6 +17,15 @@
 GET {{baseUrl}}/health
 
 ### 2a. OPTIONAL: what would a run do? A read-only preview job; it processes nothing (202, then 2b)
+# What happens when you send this request:
+#   1. The API receives it. The API does no work itself: it only writes ONE row in the Postgres table "jobs"
+#      (type pipeline.preview, status "queued") and answers 202 with the job_id.
+#   2. The worker (a separate container) finds that queued row and picks it up. It sets the status to "running",
+#      reads the files in tmp/ic to work out what a real run would do, and then updates the SAME row to
+#      "succeeded", with the report in its "result" column.
+#   3. Request 2b reads that row back from Postgres.
+# Nothing else is written: no job_items, no job_events, the YouTube gate is untouched and no file in tmp/ic
+# changes. The row stays until the database is deleted (down -v). Sending 2a again makes another row.
 # @name preview
 POST {{baseUrl}}/api/v1/pipeline/runs
 Authorization: Bearer {{key}}
@@ -25,10 +34,24 @@ Content-Type: application/json
 {"dry_run": true}
 
 ### 2b. The preview job: status "succeeded" after a few seconds, then result.report.counts
+# This call only READS from Postgres and writes nothing. The API looks up the one row of the preview job
+# in the table "jobs" (by the job_id from 2a) and returns its properties: status, parameters, timings,
+# an error if there was one, and "result", the report the worker saved there.
+# The documents are in result.report.names.items: one entry per document in the inbox, with its name,
+# doc_id, doc_class, a status (for example would_publish) and llm_saved. They come from the saved report,
+# not from document records: a preview creates no job_items rows. "queued" or "running" in the status
+# means the worker is not done yet: send 2b again.
 GET {{baseUrl}}/api/v1/jobs/{{preview.response.body.$.job_id}}
 Authorization: Bearer {{key}}
 
 ### 3. QUEUE THE DATA without the LLM and without YouTube: one pipeline.run job with the fake profile (202)
+# This is the same call as 2a (POST /api/v1/pipeline/runs), but WITHOUT "dry_run": so it is a real run that
+# PROCESSES the data. The API again only writes one "queued" row in the table "jobs" (type pipeline.run) and
+# answers 202. The worker then picks it up and does the work: it stages every document of the inbox, creates
+# the document records (job_items) and one llm.reason job per document, and it writes the pages in
+# tmp/ic/epiaku-docs. The result is saved in the job row; read it with request 5.
+# Still no LLM and no YouTube: "profile": "fake" makes the LLM step use the fake backend (no model is
+# called), YouTube is switched off in this stack and the test data holds the saved YouTube facts.
 # @name startRun
 POST {{baseUrl}}/api/v1/pipeline/runs
 Authorization: Bearer {{key}}
@@ -37,6 +60,15 @@ Content-Type: application/json
 {"profile": "fake"}
 
 ### 3b. Send the same request again right away: 200, "existing": true, the SAME job_id (no second run is queued)
+# Purpose: to see that the API does not queue a second run while one is still waiting or running.
+# What it means: you start a run that is already queued or running. The API finds that run and answers
+#   200 (not 202) with "existing": true and the job_id of the FIRST run (the same id as in request 3).
+#   Nothing new is written in Postgres: no second row in the table "jobs". Any options in the body are ignored.
+# Why: two starts should not process the same inbox twice. It protects against a double click, two people or
+#   devices starting a run, and the API starting a run while a scheduled run is already waiting.
+# Timing: the run takes only a few seconds on the test data, so send 3b right after 3. If the run has already
+#   finished, nothing is waiting any more: 3b then starts a NEW run (202, a new job_id). That run finds an
+#   empty inbox and processes nothing.
 POST {{baseUrl}}/api/v1/pipeline/runs
 Authorization: Bearer {{key}}
 Content-Type: application/json
