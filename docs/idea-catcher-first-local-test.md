@@ -8,7 +8,7 @@ type: docs
 
 The first end-to-end test on your own machine, with the API. **Two commands, then click through a page in VS Code** (or follow the [recipe with `curl`](#recipe) below). Your real `idea-bucket`, your real `epiaku-docs` and your `catcher-db` container are not touched. No LLM and no YouTube call is made.
 
-## Recipe: The test {#test}
+## Recipe: The test {#recipe}
 
 **Once:** install the VS Code extension **REST Client** (id `humao.rest-client`) and make sure Docker is running.
 
@@ -47,7 +47,6 @@ So the test runs the same image and the same services as the real stack, and onl
 
 You must give **both** files every time you start, stop or look at the test stack (`up`, `stop`, `logs`, `down -v`, `ps`, `run`). With only `compose.yaml` you would get the real stack with its own settings and keys, not the test: that is why a `401` on every request usually means one of the commands was typed without the second file.
 
-
 ## What compose.local-test.yaml does {#what}
 
 - The worker works **directly on the repos in `tmp/ic`** (mounted into the container), so you see the pages appear in your own folders.
@@ -60,35 +59,43 @@ You must give **both** files every time you start, stop or look at the test stac
 
 Checked on 2026-10-09 against the committed test data (43 documents and one PDF in the inbox).
 
-| Request in the page | What you should see |
-| ------------------- | ------------------- |
-| 1 Health | `200`, `{"api": "ok", "database": "ok", "worker": "running"}` |
-| 2a, 2b No key, wrong key | `401` `not authenticated` for both |
-| 3a, 3b Jobs | `200` and an empty list (`"total": 0`) |
-| 3c, 3d Bad query values | `422` with a message naming the field, never a `500` |
-| 4 YouTube gate | `200`, state `open` |
-| 5a Dry run | `202` with a `job_id` and `"existing": false` (sent again while it waits: `200`, `"existing": true`, the same id) |
-| 5b Read the preview job | type `pipeline.preview`, status `succeeded` within a few seconds; `result.report.counts` is `{"would_publish": 43, "would_copy": 1}` and `result.report.names.items` lists each document with status `would_publish` and `llm_saved: true` |
-| 6a Real run, profile `fake` | `202`, a `job_id`, `"existing": false` |
-| 6b The same request again | `200`, `"existing": true` and **the same** `job_id`, if you send it right after 6a: the run takes only a few seconds. Once it has finished you get a new run: `202` |
-| 6c Read the run | `succeeded` (you may never see `queued` or `running`, it is that quick); `result` has `"staged": 43`, `"artifacts": 1`, `"errors": 0`; `item_counts` is `{"ai-chat": {"published": 4}, "note": {"published": 28}, "web-clip": {"published": 1}, "youtube": {"published": 2}, "youtube-gemini": {"published": 8}}`; one event per item state change |
-| 6d, 6e Bad options | `422`: `extra_forbidden` for `colour`; `limit must be a whole number of 0 or more, not -1` |
-| 7a Jobs again | 45 jobs: the `pipeline.run`, one `llm.reason` job per document (43) and the `pipeline.preview`, all `succeeded` |
-| 7b, 7c The newest run | the run of 6a with its events and `item_counts` |
-| 7d Unknown job id | `404` `job not found` |
-| 8a Items | `"total": 43`, every item `published`, with profile, backend and model `fake` |
-| 8b Stuck items | an empty list |
-| 8c One class (`youtube`) | 2 items |
-| 9a Publish | `202`, then job `9b` ends **`failed`** with `"error": "no git remote to push to in /data/repos/idea-bucket, /data/repos/epiaku-docs: ..."`. That is expected: the test repos have no remote. Nothing is committed |
-| 10a Requeue the first item of 8a | `202`, `"existing": false` |
-| 10b Read the requeue job | a `pipeline.run` with `"requeue": ["notes/..."]`, `succeeded`. A requeue has no profile option, so it uses the document's normal profile (`notes`, backend `freellmapi`); on the test data that answer comes from the saved LLM reply, so no call is made |
-| 10c Requeue an unknown item | `404` `item not found` |
-| 11 Read-only key | `403` `this key does not have the run scope` |
-| 12 OpenAPI | `200`, the description of every endpoint |
+| Request in the page              | What you should see                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 Health                         | `200`, `{"api": "ok", "database": "ok", "worker": "running"}`                                                                                                                                                                                                                                                                                      |
+| 2a, 2b No key, wrong key         | `401` `not authenticated` for both                                                                                                                                                                                                                                                                                                                 |
+| 3a, 3b Jobs                      | `200` and an empty list (`"total": 0`)                                                                                                                                                                                                                                                                                                             |
+| 3c, 3d Bad query values          | `422` with a message naming the field, never a `500`                                                                                                                                                                                                                                                                                               |
+| 4 YouTube gate                   | `200`, state `open`                                                                                                                                                                                                                                                                                                                                |
+| 5a Dry run                       | `202` with a `job_id` and `"existing": false` (sent again while it waits: `200`, `"existing": true`, the same id)                                                                                                                                                                                                                                  |
+| 5b Read the preview job          | type `pipeline.preview`, status `succeeded` within a few seconds; `result.report.counts` is `{"would_publish": 43, "would_copy": 1}` and `result.report.names.items` lists each document with status `would_publish` and `llm_saved: true`                                                                                                         |
+| 6a Real run, profile `fake`      | `202`, a `job_id`, `"existing": false`                                                                                                                                                                                                                                                                                                             |
+| 6b The same request again        | `200`, `"existing": true` and **the same** `job_id`, if you send it right after 6a: the run takes only a few seconds. Once it has finished you get a new run: `202`                                                                                                                                                                                |
+| 6c Read the run                  | `succeeded` (you may never see `queued` or `running`, it is that quick); `result` has `"staged": 43`, `"artifacts": 1`, `"errors": 0`; `item_counts` is `{"ai-chat": {"published": 4}, "note": {"published": 28}, "web-clip": {"published": 1}, "youtube": {"published": 2}, "youtube-gemini": {"published": 8}}`; one event per item state change |
+| 6d, 6e Bad options               | `422`: `extra_forbidden` for `colour`; `limit must be a whole number of 0 or more, not -1`                                                                                                                                                                                                                                                         |
+| 7a Jobs again                    | 45 jobs: the `pipeline.run`, one `llm.reason` job per document (43) and the `pipeline.preview`, all `succeeded`                                                                                                                                                                                                                                    |
+| 7b, 7c The newest run            | the run of 6a with its events and `item_counts`                                                                                                                                                                                                                                                                                                    |
+| 7d Unknown job id                | `404` `job not found`                                                                                                                                                                                                                                                                                                                              |
+| 8a Items                         | `"total": 43`, every item `published`, with profile, backend and model `fake`                                                                                                                                                                                                                                                                      |
+| 8b Stuck items                   | an empty list                                                                                                                                                                                                                                                                                                                                      |
+| 8c One class (`youtube`)         | 2 items                                                                                                                                                                                                                                                                                                                                            |
+| 9a Publish                       | `202`, then job `9b` ends **`failed`** with `"error": "no git remote to push to in /data/repos/idea-bucket, /data/repos/epiaku-docs: ..."`. That is expected: the test repos have no remote. Nothing is committed                                                                                                                                  |
+| 10a Requeue the first item of 8a | `202`, `"existing": false`                                                                                                                                                                                                                                                                                                                         |
+| 10b Read the requeue job         | a `pipeline.run` with `"requeue": ["notes/..."]`, `succeeded`. A requeue has no profile option, so it uses the document's normal profile (`notes`, backend `freellmapi`); on the test data that answer comes from the saved LLM reply, so no call is made                                                                                          |
+| 10c Requeue an unknown item      | `404` `item not found`                                                                                                                                                                                                                                                                                                                             |
+| 11 Read-only key                 | `403` `this key does not have the run scope`                                                                                                                                                                                                                                                                                                       |
+| 12 OpenAPI                       | `200`, the description of every endpoint                                                                                                                                                                                                                                                                                                           |
 
 You can also open `http://127.0.0.1:8000/docs` in a browser (Swagger UI): click **Authorize**, paste the key `local-test-key-not-a-secret-0001` and try the endpoints there.
 
-## Recipe: test the local ic data {#recipe}
+## What this test does not cover {#limits}
+
+- **Real LLMs, real YouTube and a git remote.** Those are your own hand tests, with your `.env`, one step at a time.
+- **Schedules.** They are off here on purpose. See [How to Run Stage B](../idea-catcher-how-to-run-stage-b/).
+- **Running the worker and the API on the host** instead of in Docker. See [How to Run the API](../idea-catcher-how-to-run-api/#start).
+
+The API itself, with every endpoint and status code, is described in [How to Run the API](../idea-catcher-how-to-run-api/).
+
+## Recipe: test the local ic data using curl {#curl}
 
 The same test with only a terminal and `curl`, so you can run it by hand, step by step, without VS Code. Nothing here calls an LLM or YouTube: the stack is offline, and the run uses the `fake` profile. Use two terminals: **A** for the stack, **B** for the commands.
 
@@ -205,21 +212,13 @@ git -C tmp/ic/idea-bucket log --stat -1        # the emptied inbox and the fille
 
 ## If something does not work {#problems}
 
-| Symptom | Cause and fix |
-| ------- | ------------- |
-| The worker stops at start with `... is not a git checkout and IDEAS_REMOTE is not set` | `tmp/ic` was missing when you started the stack. Docker then makes empty folders there, and `testdata reset` refuses to delete a `tmp/ic` it did not make. Run `down -v`, `rm -rf tmp/ic`, then the two commands again. |
-| `docker compose` says port 8000 is in use | Another program uses it. Start with `API_PORT=8001` and change `@baseUrl` at the top of the page to port 8001. |
-| Every request is `401` | The page holds the keys of `compose.local-test.yaml`. You started a different stack (for example without `-f compose.local-test.yaml`), which has other keys. |
-| `/health` is `503` with `"worker": "none"` | The worker is still starting, or it stopped. Check `docker compose -f compose.yaml -f compose.local-test.yaml logs worker`. |
-| A job stays `queued` | The worker is busy with another job or not running. Follow it with `logs -f worker`. |
-| The page shows `{{...}}` unresolved | A chained request ran before the one it needs (for example 6c before 6a, or 10a before 8a). Send the earlier request first. |
-| 7c or 10a works on the wrong job or item | Its source request (7b, 8a) was sent before the run. Send 7b or 8a again, then 7c or 10a. |
-| Git complains about "dubious ownership" on `tmp/ic` | Not on Docker Desktop for Mac (the files are yours). On Linux the container writes as user 1000: run `sudo chown -R "$(id -u):$(id -g)" tmp/ic`, or trust only that folder with `git config --global --add safe.directory "$PWD/tmp/ic/epiaku-docs"`. |
-
-## What this test does not cover {#limits}
-
-- **Real LLMs, real YouTube and a git remote.** Those are your own hand tests, with your `.env`, one step at a time.
-- **Schedules.** They are off here on purpose. See [How to Run Stage B](../idea-catcher-how-to-run-stage-b/).
-- **Running the worker and the API on the host** instead of in Docker. See [How to Run the API](../idea-catcher-how-to-run-api/#start).
-
-The API itself, with every endpoint and status code, is described in [How to Run the API](../idea-catcher-how-to-run-api/).
+| Symptom                                                                                | Cause and fix                                                                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The worker stops at start with `... is not a git checkout and IDEAS_REMOTE is not set` | `tmp/ic` was missing when you started the stack. Docker then makes empty folders there, and `testdata reset` refuses to delete a `tmp/ic` it did not make. Run `down -v`, `rm -rf tmp/ic`, then the two commands again.                               |
+| `docker compose` says port 8000 is in use                                              | Another program uses it. Start with `API_PORT=8001` and change `@baseUrl` at the top of the page to port 8001.                                                                                                                                        |
+| Every request is `401`                                                                 | The page holds the keys of `compose.local-test.yaml`. You started a different stack (for example without `-f compose.local-test.yaml`), which has other keys.                                                                                         |
+| `/health` is `503` with `"worker": "none"`                                             | The worker is still starting, or it stopped. Check `docker compose -f compose.yaml -f compose.local-test.yaml logs worker`.                                                                                                                           |
+| A job stays `queued`                                                                   | The worker is busy with another job or not running. Follow it with `logs -f worker`.                                                                                                                                                                  |
+| The page shows `{{...}}` unresolved                                                    | A chained request ran before the one it needs (for example 6c before 6a, or 10a before 8a). Send the earlier request first.                                                                                                                           |
+| 7c or 10a works on the wrong job or item                                               | Its source request (7b, 8a) was sent before the run. Send 7b or 8a again, then 7c or 10a.                                                                                                                                                             |
+| Git complains about "dubious ownership" on `tmp/ic`                                    | Not on Docker Desktop for Mac (the files are yours). On Linux the container writes as user 1000: run `sudo chown -R "$(id -u):$(id -g)" tmp/ic`, or trust only that folder with `git config --global --add safe.directory "$PWD/tmp/ic/epiaku-docs"`. |
