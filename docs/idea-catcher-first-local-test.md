@@ -22,7 +22,7 @@ docker compose -f compose.yaml -f compose.local-test.yaml up --build
 
 Wait until the log says the API is listening and `docker compose -f compose.yaml -f compose.local-test.yaml ps` (in another terminal) shows the worker as `healthy`. The first build takes a few minutes.
 
-3. Open **`tests/manual/catcher-recipe.http`** in VS Code and click **Send Request** above each request, **in order**: health, start a run (request 3, with the `fake` profile, so no LLM and no YouTube), count the jobs (4a to 4d), read the run (5) and the items (6a, 6b). Request 5 uses the job id that request 3 returned, so send 3 first. There is nothing to set up: the page holds the public test key that only works with `compose.local-test.yaml`.
+3. Open **`tests/manual/catcher-recipe.http`** in VS Code and click **Send Request** above each request, **in order**: health, start a run (request 3, with the `fake` profile, so no LLM and no YouTube; or request 4 **instead of** 3, the same run with the normal profiles, which still calls no LLM and no YouTube because the saved replies in `tmp/ic` are used), count the jobs (5a to 5d), read the run (6) and the items (7a, 7b). Request 6 uses the job id of request 3 (change it to `startRunNormal` if you sent request 4), so send the run first. There is nothing to set up: the page holds the public test key that only works with `compose.local-test.yaml`.
 
 4. **Stop the stack** when you are done. Press `Ctrl-C` in the terminal where it runs (skip this if you started it with `-d`), then:
 

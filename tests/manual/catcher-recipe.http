@@ -49,7 +49,7 @@ Authorization: Bearer {{key}}
 # PROCESSES the data. The API again only writes one "queued" row in the table "jobs" (type pipeline.run) and
 # answers 202. The worker then picks it up and does the work: it stages every document of the inbox, creates
 # the document records (job_items) and one llm.reason job per document, and it writes the pages in
-# tmp/ic/epiaku-docs. The result is saved in the job row; read it with request 5.
+# tmp/ic/epiaku-docs. The result is saved in the job row; read it with request 6.
 # Still no LLM and no YouTube: "profile": "fake" makes the LLM step use the fake backend (no model is
 # called), YouTube is switched off in this stack and the test data holds the saved YouTube facts.
 # @name startRun
@@ -75,30 +75,72 @@ Content-Type: application/json
 
 {"profile": "fake"}
 
-### 4a. HOW MANY JOBS? Read "total" in each answer. Jobs waiting in the queue:
+### 4. ALTERNATIVE to 3: the same run with the NORMAL profiles instead of the fake one (202)
+# Use this INSTEAD of request 3, not after it: the inbox can only be processed once. After 3 has finished the
+# inbox is empty, so request 4 would process nothing; while 3 is still queued or running, request 4 answers
+# like 3b with the job of 3 (the fake profile).
+# To use request 4: reset the test data and restart the docker compose 
+#
+# Press `Ctrl-C` in the terminal where the docker compose runs
+# docker compose -f compose.yaml -f compose.local-test.yaml down -v
+#
+# 1. fresh test repos in tmp/ic (deletes tmp/ic first: see the note below)
+# uv run catcher testdata reset
+# 
+# 2. build and start the whole stack: database, migrations, worker, API
+# docker compose -f compose.yaml -f compose.local-test.yaml up --build
+#
+# Why down -v and up: the reset deletes and recreates tmp/ic, and a running worker keeps looking at the old,
+# deleted folder (an empty inbox). Starting the stack again makes it see the new files.
+# The body is empty ({}): no "profile", so every document uses the profile it normally gets: notes use
+# freellmapi, AI chats and web clips use openai (clippings), YouTube clips use openai (youtube).
+#
+# Still no LLM call and no YouTube call: the worker first looks for a saved reply in tmp/ic/idea-bucket/llm
+# (same task, profile and document text) and finds one for every document, so no model is asked and no key is
+# needed; YouTube is switched off in this stack and the saved facts are in tmp/ic/idea-bucket/facts.
+# Checked with the preview (2a, which also uses the normal profiles): 43 documents would_publish, all with
+# llm_saved true. If a document had no saved reply, the call would go to a dummy address that does not
+# answer (nothing leaves your machine) and that document would be deferred.
+#
+# What differs from 3: after the run the items (request 7a) show their normal profile (notes, clippings or
+# youtube) and the backend and model of the saved reply (freellmapi or openai), not "fake".
+# @name startRunNormal
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{}
+
+### 5a. HOW MANY JOBS? Read "total" in each answer. Jobs waiting in the queue:
 GET {{baseUrl}}/api/v1/jobs?status=queued&limit=1
 Authorization: Bearer {{key}}
 
-### 4b. Jobs running now:
+### 5b. Jobs running now:
 GET {{baseUrl}}/api/v1/jobs?status=running&limit=1
 Authorization: Bearer {{key}}
 
-### 4c. Jobs finished: about 44 on the test data (the run + one llm.reason job per document, 43)
+### 5c. Jobs finished: about 44 on the test data (the run + one llm.reason job per document, 43)
 GET {{baseUrl}}/api/v1/jobs?status=succeeded&limit=1
 Authorization: Bearer {{key}}
 
-### 4d. Jobs failed: 0
+### 5d. Jobs failed: 0
 GET {{baseUrl}}/api/v1/jobs?status=failed&limit=1
 Authorization: Bearer {{key}}
 
-### 5. This run: status, result with the counts, item_counts per class and status
+### 6. This run: status, result with the counts, item_counts per class and status
+# This reads the run of request 3. If you sent request 4 instead of 3, change startRun to startRunNormal in the
+# line below.
 GET {{baseUrl}}/api/v1/jobs/{{startRun.response.body.$.job_id}}
 Authorization: Bearer {{key}}
 
-### 6a. The documents: "total" is 43 on the test data
+### 7a. The documents: "total" is 43 on the test data
+# Read "total": it is the number of ALL matching documents. "items" holds only ONE page: with limit=1 you see
+# 1 document, to keep the answer short. "limit" is the page size and "offset" where the page starts.
+# To see more documents, raise the limit (limit=50 shows all 43; the maximum is 200) or page through them
+# with a small limit and offset=1, offset=2, and so on.
 GET {{baseUrl}}/api/v1/items?limit=1
 Authorization: Bearer {{key}}
 
-### 6b. The documents that are published: "total" is 43 when the run has finished
+### 7b. The documents that are published: "total" is 43 when the run has finished
 GET {{baseUrl}}/api/v1/items?status=published&limit=1
 Authorization: Bearer {{key}}
