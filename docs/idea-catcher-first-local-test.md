@@ -6,9 +6,9 @@ weight: 43
 type: docs
 ---
 
-The first end-to-end test on your own machine, with the API. **Two commands, then click through a page in VS Code.** Your real `idea-bucket`, your real `epiaku-docs` and your `catcher-db` container are not touched. No LLM and no YouTube call is made.
+The first end-to-end test on your own machine, with the API. **Two commands, then click through a page in VS Code** (or follow the [recipe with `curl`](#recipe) below). Your real `idea-bucket`, your real `epiaku-docs` and your `catcher-db` container are not touched. No LLM and no YouTube call is made.
 
-## The test {#test}
+## Recipe: The test {#test}
 
 **Once:** install the VS Code extension **REST Client** (id `humao.rest-client`) and make sure Docker is running.
 
@@ -22,11 +22,31 @@ docker compose -f compose.yaml -f compose.local-test.yaml up --build
 
 Wait until the log says the API is listening and `docker compose -f compose.yaml -f compose.local-test.yaml ps` (in another terminal) shows the worker as `healthy`. The first build takes a few minutes.
 
-3. Open **`tests/manual/catcher-api.http`** in VS Code and click **Send Request** above each request, **in order**: the later requests read the jobs and items that the run (6a) made, and take job ids and the item name from earlier answers. There is nothing to set up: the page holds two public test keys that only work with `compose.local-test.yaml`.
+3. Open **`tests/manual/catcher-recipe.http`** in VS Code and click **Send Request** above each request, **in order**: health, start a run (request 3, with the `fake` profile, so no LLM and no YouTube), count the jobs (4a to 4d), read the run (5) and the items (6a, 6b). Request 5 uses the job id that request 3 returned, so send 3 first. There is nothing to set up: the page holds the public test key that only works with `compose.local-test.yaml`.
 
-To stop: press `Ctrl-C` in the terminal, then `docker compose -f compose.yaml -f compose.local-test.yaml down -v` (this also deletes the scratch database). To test again from the start, run the two commands again.
+4. **Stop the stack** when you are done. Press `Ctrl-C` in the terminal where it runs (skip this if you started it with `-d`), then:
+
+```bash
+docker compose -f compose.yaml -f compose.local-test.yaml down -v
+```
+
+`down -v` removes the containers **and** the scratch database. Use `down` without `-v` to keep the database (the jobs and items stay for the next start). The results in `tmp/ic` stay either way. To test again from the start, run the two commands of this recipe again.
+
+To try **every** endpoint, with the error cases (no key, wrong key, bad values, a read-only key, publish, requeue), use the longer page **`tests/manual/catcher-api.http`** instead; it is described under "What you should see" below.
 
 > **`testdata reset` deletes `tmp/ic`** and makes it again from the committed test data in `tests/data`. It only deletes a `tmp/ic` that a previous reset made. To keep your current `tmp/ic`, run `uv run catcher testdata reset --target tmp/ic2` and start the stack with `LOCAL_TEST_DIR=./tmp/ic2` in front of the `docker compose` command. Do not use `--fresh-llm-and-youtube`: it removes the saved LLM replies and YouTube facts.
+
+## Why two compose files {#two-files}
+
+The command has two `-f` options on purpose: `-f compose.yaml -f compose.local-test.yaml`. Docker Compose **merges** the files from left to right, and a later file changes what an earlier one says.
+
+- **`compose.yaml`** is the real stack: `db`, `migrate`, `worker` and `api`. It is what you run for real: it reads your `.env`, clones your repos from GitHub, and publishes the database on port 5432.
+- **`compose.local-test.yaml`** is a small **override** with only the differences the test needs (listed in the next section). Everything it does not mention (the image, the services, the healthchecks, the start order) comes unchanged from `compose.yaml`.
+
+So the test runs the same image and the same services as the real stack, and only the data and the settings differ. A single copy of `compose.yaml` for the test would drift away from the real one.
+
+You must give **both** files every time you start, stop or look at the test stack (`up`, `stop`, `logs`, `down -v`, `ps`, `run`). With only `compose.yaml` you would get the real stack with its own settings and keys, not the test: that is why a `401` on every request usually means one of the commands was typed without the second file.
+
 
 ## What compose.local-test.yaml does {#what}
 
@@ -67,6 +87,98 @@ Checked on 2026-10-09 against the committed test data (43 documents and one PDF 
 | 12 OpenAPI | `200`, the description of every endpoint |
 
 You can also open `http://127.0.0.1:8000/docs` in a browser (Swagger UI): click **Authorize**, paste the key `local-test-key-not-a-secret-0001` and try the endpoints there.
+
+## Recipe: test the local ic data {#recipe}
+
+The same test with only a terminal and `curl`, so you can run it by hand, step by step, without VS Code. Nothing here calls an LLM or YouTube: the stack is offline, and the run uses the `fake` profile. Use two terminals: **A** for the stack, **B** for the commands.
+
+The same calls are in the VS Code page `tests/manual/catcher-recipe.http`. Here they are with `curl`. Set these once in terminal B (the key and address are the public test ones of `compose.local-test.yaml`):
+
+```bash
+export KEY=local-test-key-not-a-secret-0001
+export URL=http://127.0.0.1:8000
+ic() { docker compose -f compose.yaml -f compose.local-test.yaml "$@"; }
+```
+
+`ic` is a short name for the compose command with both files (a function, so it also works in zsh): `ic up --build` means `docker compose -f compose.yaml -f compose.local-test.yaml up --build`. It exists only in this terminal.
+
+### 1. Reset the test data
+
+```bash
+uv run catcher testdata reset
+```
+
+Makes fresh test repos in `tmp/ic` (see the note above: it deletes the old `tmp/ic`). The inbox now holds 43 documents and one PDF, and none is processed.
+
+### 2. Run the docker compose
+
+Terminal A:
+
+```bash
+ic up --build
+```
+
+(Or `ic up -d --build` to run it in the background.) Wait until the worker is healthy, then check in terminal B:
+
+```bash
+ic ps                                  # db, worker and api: "healthy"
+curl -s $URL/health                          # {"api":"ok","database":"ok","worker":"running"}
+```
+
+### 3. Queue the data, without the LLM and without YouTube
+
+**The API call to make is `POST /api/v1/pipeline/runs` with the body `{"profile": "fake"}`.** It queues one `pipeline.run` job. The worker picks it up and processes every document in the inbox of `tmp/ic`:
+
+- `"profile": "fake"` makes the LLM step use the fake backend, so no model is called.
+- YouTube is switched off in the stack (`YOUTUBE_OFFLINE=1`) and the test data holds the saved YouTube facts, so no YouTube request is made.
+
+```bash
+curl -s -X POST $URL/api/v1/pipeline/runs \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"profile": "fake"}'
+# {"job_id":"<id>","existing":false}     (status 202)
+```
+
+Keep the `job_id`. If you send the same request again while the run is still queued or running, you get `200`, `"existing": true` and the same `job_id`: no second run is queued.
+
+To look first at what a run would do, without processing anything, queue a read-only preview: `-d '{"dry_run": true}'`. It makes a `pipeline.preview` job and changes no file.
+
+### 4. See how many jobs are queued or finished
+
+**The API call is `GET /api/v1/jobs?status=<status>&limit=1`.** Its answer has a `total` with the number of jobs in that status; `limit=1` keeps the answer short. The statuses are `queued`, `running`, `succeeded`, `failed` and `cancelled`. One line for all of them:
+
+```bash
+for s in queued running succeeded failed; do
+  printf "%-10s" $s
+  curl -s -H "Authorization: Bearer $KEY" "$URL/api/v1/jobs?status=$s&limit=1" \
+    | python3 -c 'import sys, json; print(json.load(sys.stdin)["total"])'
+done
+```
+
+The run needs only a few seconds on the test data. When it has finished you should see about `queued 0`, `running 0`, `succeeded 44` (the `pipeline.run` plus one `llm.reason` job per document: 43) and `failed 0`. Run the loop again while it works to watch `queued` go down and `succeeded` go up.
+
+More detail:
+
+```bash
+# this run: status, result with the counts, item_counts per class and status
+curl -s -H "Authorization: Bearer $KEY" $URL/api/v1/jobs/<job_id>
+
+# the documents and their status ("total": 43; every item "published")
+curl -s -H "Authorization: Bearer $KEY" "$URL/api/v1/items?limit=1"
+curl -s -H "Authorization: Bearer $KEY" "$URL/api/v1/items?status=published&limit=1"
+```
+
+The pages themselves are in `tmp/ic/epiaku-docs` (see "Look at the result in the files" below).
+
+### 5. Stop the docker compose
+
+In terminal A press `Ctrl-C` (if you started it with `-d`, skip that). Then:
+
+```bash
+ic down -v        # removes the containers AND the scratch database
+```
+
+Use `ic down` (without `-v`) to keep the database, so the jobs and items stay for the next start. The results in `tmp/ic` stay either way. To run the recipe again from the start, begin at step 1: `testdata reset` gives fresh folders and `down -v` gives a fresh database. (Running step 3 a second time on the same data finds an empty inbox and processes nothing.)
 
 ## Look at the result in the files {#files}
 

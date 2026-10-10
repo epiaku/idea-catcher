@@ -1,0 +1,72 @@
+# Idea Catcher API: the recipe calls, nothing else (VS Code extension "REST Client", id humao.rest-client).
+# The same calls as the curl recipe in docs/idea-catcher-first-local-test.md ("Recipe: test the local ic data").
+# For all the endpoints, with their error cases, use tests/manual/catcher-api.http.
+#
+# Before you send anything:
+#   1. uv run catcher testdata reset
+#   2. docker compose -f compose.yaml -f compose.local-test.yaml up --build     (wait until the worker is healthy)
+# When you are done:
+#   3. docker compose -f compose.yaml -f compose.local-test.yaml down -v          (also deletes the scratch database)
+#
+# Send the requests in order. The two keys belong to compose.local-test.yaml (public, only for that test).
+
+@baseUrl = http://127.0.0.1:8000
+@key = local-test-key-not-a-secret-0001
+
+### 1. Is the stack ready? 200 with {"api":"ok","database":"ok","worker":"running"}
+GET {{baseUrl}}/health
+
+### 2a. OPTIONAL: what would a run do? A read-only preview job; it processes nothing (202, then 2b)
+# @name preview
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"dry_run": true}
+
+### 2b. The preview job: status "succeeded" after a few seconds, then result.report.counts
+GET {{baseUrl}}/api/v1/jobs/{{preview.response.body.$.job_id}}
+Authorization: Bearer {{key}}
+
+### 3. QUEUE THE DATA without the LLM and without YouTube: one pipeline.run job with the fake profile (202)
+# @name startRun
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"profile": "fake"}
+
+### 3b. Send the same request again right away: 200, "existing": true, the SAME job_id (no second run is queued)
+POST {{baseUrl}}/api/v1/pipeline/runs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"profile": "fake"}
+
+### 4a. HOW MANY JOBS? Read "total" in each answer. Jobs waiting in the queue:
+GET {{baseUrl}}/api/v1/jobs?status=queued&limit=1
+Authorization: Bearer {{key}}
+
+### 4b. Jobs running now:
+GET {{baseUrl}}/api/v1/jobs?status=running&limit=1
+Authorization: Bearer {{key}}
+
+### 4c. Jobs finished: about 44 on the test data (the run + one llm.reason job per document, 43)
+GET {{baseUrl}}/api/v1/jobs?status=succeeded&limit=1
+Authorization: Bearer {{key}}
+
+### 4d. Jobs failed: 0
+GET {{baseUrl}}/api/v1/jobs?status=failed&limit=1
+Authorization: Bearer {{key}}
+
+### 5. This run: status, result with the counts, item_counts per class and status
+GET {{baseUrl}}/api/v1/jobs/{{startRun.response.body.$.job_id}}
+Authorization: Bearer {{key}}
+
+### 6a. The documents: "total" is 43 on the test data
+GET {{baseUrl}}/api/v1/items?limit=1
+Authorization: Bearer {{key}}
+
+### 6b. The documents that are published: "total" is 43 when the run has finished
+GET {{baseUrl}}/api/v1/items?status=published&limit=1
+Authorization: Bearer {{key}}
