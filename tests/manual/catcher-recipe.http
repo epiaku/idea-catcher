@@ -49,7 +49,7 @@ Authorization: Bearer {{key}}
 # PROCESSES the data. The API again only writes one "queued" row in the table "jobs" (type pipeline.run) and
 # answers 202. The worker then picks it up and does the work: it stages every document of the inbox, creates
 # the document records (job_items) and one llm.reason job per document, and it writes the pages in
-# tmp/ic/epiaku-docs. The result is saved in the job row; read it with request 7.
+# tmp/ic/epiaku-docs. The result is saved in the job row; read it with request 13.
 # Still no LLM and no YouTube: "profile": "fake" makes the LLM step use the fake backend (no model is
 # called), YouTube is switched off in this stack and the test data holds the saved YouTube facts.
 # @name startRun
@@ -102,7 +102,7 @@ Content-Type: application/json
 # llm_saved true. If a document had no saved reply, the call would go to a dummy address that does not
 # answer (nothing leaves your machine) and that document would be deferred.
 #
-# What differs from 3: after the run the items (request 8a) show their normal profile (notes, clippings or
+# What differs from 3: after the run the items (request 14a) show their normal profile (notes, clippings or
 # youtube) and the backend and model of the saved reply (freellmapi or openai), not "fake".
 # @name startRunNormal
 POST {{baseUrl}}/api/v1/pipeline/runs
@@ -131,40 +131,218 @@ Content-Type: application/json
 #      would_fetch for the YouTube clips) instead of would_publish. Then send this request.
 # To try it small first, put {"limit": 3} in the body: only 3 documents are processed (the others stay in the
 # inbox for a later run) and only those calls are paid.
-# After it: the items (request 8a) show the real backend and model, and the replies and facts the run fetched
+# After it: the items (request 14a) show the real backend and model, and the replies and facts the run fetched
 # are saved in tmp/ic/idea-bucket/llm and facts. uv run catcher testdata reset (without the flag) puts the
 # committed saved ones back.
 # @name startRunLive
-POST {{baseUrl}}/api/v1/pipeline/runs&limit=1
-#POST {{baseUrl}}/api/v1/pipeline/runs&limit=1
+POST {{baseUrl}}/api/v1/pipeline/runs
 Authorization: Bearer {{key}}
 Content-Type: application/json
 
-{}
+{"limit": 3}
+
+# ====================================================================================================
+# JOBS: ALL TYPES TOGETHER (6a to 6d)
+# Total per status, every job type counted: pipeline.run, llm.reason, youtube.fetch, pipeline.preview.
+# ====================================================================================================
 
 ### 6a. HOW MANY JOBS? Read "total" in each answer. Jobs waiting in the queue:
-GET {{baseUrl}}/api/v1/jobs?status=queued&limit=1
+#GET {{baseUrl}}/api/v1/jobs?status=queued&limit=1
+GET {{baseUrl}}/api/v1/jobs?status=queued
 Authorization: Bearer {{key}}
 
 ### 6b. Jobs running now:
-GET {{baseUrl}}/api/v1/jobs?status=running&limit=1
+#GET {{baseUrl}}/api/v1/jobs?status=running&limit=1
+GET {{baseUrl}}/api/v1/jobs?status=running
 Authorization: Bearer {{key}}
 
 ### 6c. Jobs finished: about 44 on the test data (the run + one llm.reason job per document, 43)
-GET {{baseUrl}}/api/v1/jobs?status=succeeded&limit=1
+#GET {{baseUrl}}/api/v1/jobs?status=succeeded&limit=1
+GET {{baseUrl}}/api/v1/jobs?status=succeeded
 Authorization: Bearer {{key}}
 
 ### 6d. Jobs failed: 0
-GET {{baseUrl}}/api/v1/jobs?status=failed&limit=1
+#GET {{baseUrl}}/api/v1/jobs?status=failed&limit=1
+GET {{baseUrl}}/api/v1/jobs?status=failed
 Authorization: Bearer {{key}}
 
-### 7. This run: status, result with the counts, item_counts per class and status
+# ====================================================================================================
+# JOBS PER TYPE (7 to 12)
+# Each type below has 5 requests: the total of the type, then the total per status.
+# ====================================================================================================
+
+# Count one type: add &type=<type> to any call of 6a to 6d. Requests 7 to 12 do it for each type.
+# The types (the worker's registry): pipeline.run, pipeline.preview, llm.reason, youtube.fetch,
+# pipeline.publish (pushes the pages) and ideas.pull (pulls the ideas repository).
+# After request 5 with {"limit": 3} you expect: 1 pipeline.run and 3 llm.reason (plus 1 youtube.fetch per
+# YouTube clip among them, plus 1 pipeline.preview if you sent 2a). Read "total" in each answer.
+# The first call lists ALL jobs of the type, whatever the status; the next four split it by status.
+
+# ====================================================================================================
+# 7. JOBS OF TYPE llm.reason  (total, then queued / running / succeeded / failed)
+# What: makes the page of ONE staged document (asks the LLM) and records the outcome on its item.
+# Purpose: the actual work per document. Queued by pipeline.run, or by youtube.fetch for a YouTube clip.
+# ====================================================================================================
+
+### 7a. llm.reason: one per document: asks the LLM and publishes the page
+GET {{baseUrl}}/api/v1/jobs?type=llm.reason
+Authorization: Bearer {{key}}
+
+### 7b. llm.reason, queued
+GET {{baseUrl}}/api/v1/jobs?type=llm.reason&status=queued
+Authorization: Bearer {{key}}
+
+### 7c. llm.reason, running
+GET {{baseUrl}}/api/v1/jobs?type=llm.reason&status=running
+Authorization: Bearer {{key}}
+
+### 7d. llm.reason, succeeded
+GET {{baseUrl}}/api/v1/jobs?type=llm.reason&status=succeeded
+Authorization: Bearer {{key}}
+
+### 7e. llm.reason, failed
+GET {{baseUrl}}/api/v1/jobs?type=llm.reason&status=failed
+Authorization: Bearer {{key}}
+
+# ====================================================================================================
+# 8. JOBS OF TYPE youtube.fetch  (total, then queued / running / succeeded / failed)
+# What: gets the facts (transcript) of ONE staged YouTube clip, paced by the YouTube gate, then queues its llm.reason.
+# Purpose: the YouTube step before the LLM step. Only clips need it; the saved facts make it unnecessary in tests.
+# ====================================================================================================
+
+### 8a. youtube.fetch: one per YouTube clip: fetches the transcript, paced by the YouTube gate
+GET {{baseUrl}}/api/v1/jobs?type=youtube.fetch
+Authorization: Bearer {{key}}
+
+### 8b. youtube.fetch, queued
+GET {{baseUrl}}/api/v1/jobs?type=youtube.fetch&status=queued
+Authorization: Bearer {{key}}
+
+### 8c. youtube.fetch, running
+GET {{baseUrl}}/api/v1/jobs?type=youtube.fetch&status=running
+Authorization: Bearer {{key}}
+
+### 8d. youtube.fetch, succeeded
+GET {{baseUrl}}/api/v1/jobs?type=youtube.fetch&status=succeeded
+Authorization: Bearer {{key}}
+
+### 8e. youtube.fetch, failed
+GET {{baseUrl}}/api/v1/jobs?type=youtube.fetch&status=failed
+Authorization: Bearer {{key}}
+
+# ====================================================================================================
+# 9. JOBS OF TYPE pipeline.run  (total, then queued / running / succeeded / failed)
+# What: stages every document of the inbox, creates the item records and queues one job per document.
+# Purpose: the start of the whole pipeline. One job per request 3, 4 or 5.
+# ====================================================================================================
+
+### 9a. pipeline.run: the run itself: one per request 3, 4 or 5
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.run
+Authorization: Bearer {{key}}
+
+### 9b. pipeline.run, queued
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.run&status=queued
+Authorization: Bearer {{key}}
+
+### 9c. pipeline.run, running
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.run&status=running
+Authorization: Bearer {{key}}
+
+### 9d. pipeline.run, succeeded
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.run&status=succeeded
+Authorization: Bearer {{key}}
+
+### 9e. pipeline.run, failed
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.run&status=failed
+Authorization: Bearer {{key}}
+
+# ====================================================================================================
+# 10. JOBS OF TYPE pipeline.preview  (total, then queued / running / succeeded / failed)
+# What: works out what a run would do now and saves the report in the job. Changes nothing.
+# Purpose: look before you run (and before a paid live run). One job per request 2a.
+# ====================================================================================================
+
+### 10a. pipeline.preview: the read-only preview of request 2a
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.preview
+Authorization: Bearer {{key}}
+
+### 10b. pipeline.preview, queued
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.preview&status=queued
+Authorization: Bearer {{key}}
+
+### 10c. pipeline.preview, running
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.preview&status=running
+Authorization: Bearer {{key}}
+
+### 10d. pipeline.preview, succeeded
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.preview&status=succeeded
+Authorization: Bearer {{key}}
+
+### 10e. pipeline.preview, failed
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.preview&status=failed
+Authorization: Bearer {{key}}
+
+# ====================================================================================================
+# 11. JOBS OF TYPE pipeline.publish  (total, then queued / running / succeeded / failed)
+# What: commits the managed folders of both repos, then pulls (rebase) and pushes.
+# Purpose: gets the generated pages into git. Queued by a schedule, the API or the CLI, never by this recipe,
+# so the totals are normally 0 here. This only LISTS them: it starts nothing.
+# ====================================================================================================
+
+### 11a. pipeline.publish
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.publish
+Authorization: Bearer {{key}}
+
+### 11b. pipeline.publish, queued
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.publish&status=queued
+Authorization: Bearer {{key}}
+
+### 11c. pipeline.publish, running
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.publish&status=running
+Authorization: Bearer {{key}}
+
+### 11d. pipeline.publish, succeeded
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.publish&status=succeeded
+Authorization: Bearer {{key}}
+
+### 11e. pipeline.publish, failed
+GET {{baseUrl}}/api/v1/jobs?type=pipeline.publish&status=failed
+Authorization: Bearer {{key}}
+
+# ====================================================================================================
+# 12. JOBS OF TYPE ideas.pull  (total, then queued / running / succeeded / failed)
+# What: commits the worker's folders locally, then pulls (rebase) the ideas repository.
+# Purpose: brings in new ideas. Queued by a schedule or the CLI, never by this recipe, so the totals are
+# normally 0 here. This only LISTS them: it starts nothing.
+# ====================================================================================================
+
+### 12a. ideas.pull
+GET {{baseUrl}}/api/v1/jobs?type=ideas.pull
+Authorization: Bearer {{key}}
+
+### 12b. ideas.pull, queued
+GET {{baseUrl}}/api/v1/jobs?type=ideas.pull&status=queued
+Authorization: Bearer {{key}}
+
+### 12c. ideas.pull, running
+GET {{baseUrl}}/api/v1/jobs?type=ideas.pull&status=running
+Authorization: Bearer {{key}}
+
+### 12d. ideas.pull, succeeded
+GET {{baseUrl}}/api/v1/jobs?type=ideas.pull&status=succeeded
+Authorization: Bearer {{key}}
+
+### 12e. ideas.pull, failed
+GET {{baseUrl}}/api/v1/jobs?type=ideas.pull&status=failed
+Authorization: Bearer {{key}}
+
+### 13. This run: status, result with the counts, item_counts per class and status
 # This reads the run of request 3. If you sent request 4 instead of 3, change startRun to startRunNormal in the
 # line below; if you sent request 5, change it to startRunLive.
 GET {{baseUrl}}/api/v1/jobs/{{startRun.response.body.$.job_id}}
 Authorization: Bearer {{key}}
 
-### 8a. The documents: "total" is 43 on the test data
+### 14a. The documents: "total" is 43 on the test data
 # Read "total": it is the number of ALL matching documents. "items" holds only ONE page of them.
 # "limit" is the page size: how many documents the answer holds (limit=1 shows 1, to keep the answer short).
 # "offset" is where the page starts: how many documents to SKIP from the start of the list, which is sorted
@@ -177,6 +355,6 @@ Authorization: Bearer {{key}}
 GET {{baseUrl}}/api/v1/items?limit=1&offset=0
 Authorization: Bearer {{key}}
 
-### 8b. The documents that are published: "total" is 43 when the run has finished
+### 14b. The documents that are published: "total" is 43 when the run has finished
 GET {{baseUrl}}/api/v1/items?status=published&limit=1
 Authorization: Bearer {{key}}
