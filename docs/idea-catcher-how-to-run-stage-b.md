@@ -202,6 +202,18 @@ The same rule runs for every way a job is started: the schedule, `POST /pipeline
 - **`CHAIN_PUBLISH_PUSH=false`** (the test stacks) makes the chained publish a local commit only: no pull and no push. A publish you queue by hand or via the API keeps the params you give it (`pull`, `push`, and `follow_up`, default `true`). `catcher run pipeline --push` sets it for that command.
 - **`catcher publish` does not chain.** It publishes and never queues a run.
 
+### What the log shows
+
+Every job starts and ends with a line of its own, with the job type, the job id, the version and (at the end) how long it took, so the lines of the handlers in between are easy to place:
+
+```text
+INFO catcher.worker: 🚀 job start: pipeline.publish id=49f871a6-15a2-48ac-a61f-f65e6191e4c3 catcher 0.1.0
+INFO catcher.worker.pipeline: publish: committed={'docs': True, 'ideas': True} pushed=True
+INFO catcher.worker: ✅ job done: pipeline.publish id=49f871a6-15a2-48ac-a61f-f65e6191e4c3 catcher 0.1.0, 1.4 s
+```
+
+The end line says how the job ended: `✅ job done`, `❌ job failed`, `⏳ job deferred` (put back for later, for example the YouTube gap) or `⚠️ job lost` (its lease was gone, the result was discarded). The chain adds a line of its own when it queues the next job (`catcher.chain: chain: ideas.pull succeeded -> pipeline.run {...}`).
+
 ### The schedule itself
 
 - **Empty means off.** `SCHEDULE_IDEAS_PULL` is empty by default, so a worker without it schedules nothing and you start the chain by hand: `POST /api/v1/pipeline/pull` (the same call the schedule makes, see [the API page](../idea-catcher-how-to-run-api/#ep-pull)), `catcher jobs add ideas.pull`, or a `pipeline.run` through the API.

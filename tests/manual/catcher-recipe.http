@@ -3,10 +3,11 @@
 # For all the endpoints, with their error cases, use tests/manual/catcher-api.http.
 #
 # Before you send anything:
-#   1. uv run catcher testdata reset
-#   2. docker compose -f compose.yaml -f compose.local-test.yaml up --build     (wait until the worker is healthy)
+#   1.  uv run catcher testdata reset                                           # No llm or YT Api calls
+#   1a. uv run catcher testdata reset --fresh-llm-and-youtube                   # LLM and YT api will be called
+#   2.  docker compose -f compose.yaml -f compose.local-test.yaml up --build    # (wait until the worker is healthy)
 # When you are done:
-#   3. docker compose -f compose.yaml -f compose.local-test.yaml down -v          (also deletes the scratch database)
+#   3.  docker compose -f compose.yaml -f compose.local-test.yaml down -v       # (also deletes the scratch database)
 #
 # Send the requests in order. The two keys belong to compose.local-test.yaml (public, only for that test).
 #
@@ -40,7 +41,8 @@ POST {{baseUrl}}/api/v1/pipeline/pull
 Authorization: Bearer {{key}}
 Content-Type: application/json
 
-{"limit": 3}
+#{"limit": 3}
+{}
 
 ### 2a. OPTIONAL: what would a run do? A read-only preview job; it processes nothing (202, then 2b)
 # What happens when you send this request:

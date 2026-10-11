@@ -1,4 +1,5 @@
-from datetime import timedelta
+import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -171,3 +172,46 @@ def test_a_handler_returning_a_non_result_fails_the_job(pg_engine: Engine, clock
     assert outcome == "failed"
     row = _row(pg_engine, job.id)
     assert (row.status, row.error) == ("failed", f"handler returned {name}, not a HandlerResult")
+
+
+# the start and the end of a job in the log
+
+
+def _job_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "catcher.worker" and "job " in r.getMessage()]
+
+
+def test_a_job_is_logged_at_its_start_and_its_end_with_version_and_id(
+    pg_engine: Engine, clock, caplog
+) -> None:
+    import logging
+
+    from catcher import __version__
+
+    job = _claimed(pg_engine, clock, type="pipeline.publish")
+    with caplog.at_level(logging.INFO, logger="catcher.worker"):
+        _run(_ctx(pg_engine, clock), job, lambda ctx, j: Done({}), type="pipeline.publish")
+
+    start, end = _job_lines(caplog)
+    assert start.startswith("🚀 job start") and end.startswith("✅ job done")
+    for line in (start, end):
+        assert "pipeline.publish" in line and str(job.id) in line and f"catcher {__version__}" in line
+    assert re.search(r", \d+\.\d s$", end)  # how long it took
+
+
+@pytest.mark.parametrize(
+    ("handler", "emoji", "word"),
+    [
+        (lambda ctx, j: Fail("boom"), "❌", "failed"),
+        (lambda ctx, j: Defer(datetime(2030, 1, 1, tzinfo=UTC), "later"), "⏳", "deferred"),
+    ],
+)
+def test_the_end_line_shows_how_the_job_ended(pg_engine: Engine, clock, caplog, handler, emoji, word) -> None:
+    import logging
+
+    job = _claimed(pg_engine, clock)
+    with caplog.at_level(logging.INFO, logger="catcher.worker"):
+        _run(_ctx(pg_engine, clock), job, handler)
+
+    _, end = _job_lines(caplog)
+    assert end.startswith(f"{emoji} job ") and word in end
