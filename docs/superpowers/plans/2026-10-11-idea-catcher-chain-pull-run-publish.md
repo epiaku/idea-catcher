@@ -2,7 +2,7 @@
 
 **Written:** 2026-10-11
 **Written for:** the owner, to approve before any code is written.
-**Status:** agreed in conversation, not built.
+**Status:** built and tested on 2026-10-11 (smoke test passed, code review done). Changes from the first draft are marked *as built*.
 
 ## The idea
 
@@ -32,8 +32,9 @@ The worker calls it in one place, `Worker.run_once`, right after `run_job` retur
 | `ideas.pull` succeeded | inbox not empty, or a `deferred`/`stuck` item is due | `pipeline.run` with `retry_deferred=true` |
 | `ideas.pull` succeeded | inbox empty, nothing to retry, but unpublished work | `pipeline.publish` |
 | `ideas.pull` failed | | nothing (the next tick tries again) |
-| `pipeline.run`, `youtube.fetch` or `llm.reason` ended (any outcome) | no document job can run now, and no `pipeline.run` is active | `pipeline.publish` |
-| `pipeline.publish` ended (any outcome) | inbox not empty | `pipeline.run` with `retry_deferred=false` |
+| `pipeline.run`, `youtube.fetch` or `llm.reason` ended (any outcome, *as built:* except a failed `pipeline.run`) | no document job can run now, and no `pipeline.run` is active | `pipeline.publish` |
+| `pipeline.run` failed (*as built*) | | nothing: it could not read the inbox, a publish and a new run would fail the same way, for ever |
+| `pipeline.publish` ended (any outcome) | inbox not empty, *as built:* and the last run that ended took at least one document | `pipeline.run` with `retry_deferred=false` |
 | `pipeline.publish` ended | inbox empty | nothing: the cycle is over |
 
 - **"Can run now"** means queued or running and due. A job delayed by the YouTube gate (`run_after` in the future) and a
@@ -53,7 +54,7 @@ The worker calls it in one place, `Worker.run_once`, right after `run_job` retur
 A run started with `limit`, `only` or `requeue` (for example request 5 with `{"limit": 3}`) is a special case: **at most
 one run.** It still ends in a publish, but that publish does **not** queue a follow-up run, even when files are left in
 the inbox on purpose. Otherwise a normal run would process everything, and with the live profile that costs money.
-A `dry_run` (preview) queues nothing at all. The decision function gets the run's params for this.
+A preview is its own job type (`pipeline.preview`) and queues nothing. *As built:* `pipeline.run` has no `dry_run` parameter.
 
 ## What changes
 
@@ -73,7 +74,7 @@ A `dry_run` (preview) queues nothing at all. The decision function gets the run'
 
 ## Tests (fixtures only: no LLM, no YouTube)
 
-- Unit tests of the decision function: every row of the table, with `limit`/`only`/`requeue`, `dry_run`, delayed jobs
+- Unit tests of the decision function: every row of the table, with `limit`/`only`/`requeue`, a preview, delayed jobs
   and the failure cases.
 - Integration tests on the test data with the fake profile: pull → run → publish → no follow-up; a second batch
   arriving during the first run → one follow-up cycle, then stop; two triggers at once → one active job per key.
@@ -83,3 +84,13 @@ A `dry_run` (preview) queues nothing at all. The decision function gets the run'
 
 - `SCHEDULE_IDEAS_PULL` = once an hour (`0 * * * *`), also in the docs and the compose files.
 - `CHAIN_PUBLISH_PUSH` = `true` in production, `false` in the test stacks.
+
+## As built (2026-10-11)
+
+- `chain.py` holds `decide` (pure), `read_facts` (reads only the facts a job type needs) and `queue_next`. The worker calls
+  it from `Worker.run_once` when `chain=True`; `catcher worker` and `catcher run pipeline` turn it on, `catcher publish` does not.
+- `pipeline.publish` accepts `follow_up` (default `true`); the chain sets it `false` after a run with `limit`, `only` or `requeue`.
+- `catcher run pipeline` no longer queues its own publish; `--push` sets the `pull` and `push` of the chained one.
+- Not changed after the code review: no remote with `CHAIN_PUBLISH_PUSH=true` fails the publish loudly (the explicit setting);
+  a stuck item makes every pull run and publish (as the old scheduled run did); a failed publish with files left still
+  queues the follow-up run.
