@@ -22,6 +22,26 @@
 ### 1. Is the stack ready? 200 with {"api":"ok","database":"ok","worker":"running"}
 GET {{baseUrl}}/health
 
+### 1b. SIMULATE THE SCHEDULE: start a cycle of the chain with a pull (202, or 200 "existing": true)
+# This is exactly what the hourly schedule does (no schedule is on in this stack): it queues one ideas.pull job
+# through the same function (start_pull, dedupe key chain:pull). When the pull ends, the worker queues the rest by
+# itself: pipeline.run -> llm.reason / youtube.fetch per document -> pipeline.publish -> another run while files
+# are left. Watch it unfold in the job lists (6a to 12e) and the items (14a).
+# The test repos have no remote, so the pull does nothing ("pulled": false) and the cycle works on the files
+# already in tmp/ic's inbox. Use this INSTEAD of request 3, 4 or 5 to see the chain from the start: those start
+# at the run. A pull that is already queued or running answers 200 with the same job_id (nothing new is queued).
+# Careful: without a limit the run uses the normal profiles on every document. With the saved replies in tmp/ic (compose.local-test.yaml) that is free,
+# like request 4; in the live stack (compose.live-test.yaml) it calls the real LLM and YouTube and COSTS MONEY.
+# To try it SMALL (do this in the live stack): put {"limit": 3} in the body, as in request 5. The first run takes at
+# most 3 documents and is the only run of the cycle: its publish queues no follow-up run, the other documents wait.
+# Without a limit the run takes the whole inbox, and so do its follow-up runs.
+# @name startPull
+POST {{baseUrl}}/api/v1/pipeline/pull
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"limit": 3}
+
 ### 2a. OPTIONAL: what would a run do? A read-only preview job; it processes nothing (202, then 2b)
 # What happens when you send this request:
 #   1. The API receives it. The API does no work itself: it only writes ONE row in the Postgres table "jobs"

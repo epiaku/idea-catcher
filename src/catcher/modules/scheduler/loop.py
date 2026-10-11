@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 
 from catcher.core.db import require_aware, session_scope
 from catcher.modules.queue.models import Schedule
-from catcher.modules.queue.queue import enqueue
 from catcher.modules.scheduler.schedule import ScheduleSpec, due_slot
+from catcher.modules.worker.chain import start_pull
 
 log = logging.getLogger("catcher.scheduler")
 
@@ -76,9 +76,7 @@ class Scheduler:
         slot = due_slot(spec, self._tz, row.last_fired_at, now)
         if slot is None:
             return False
-        job, created = enqueue(
-            session, type=spec.job_type, now=now, params=dict(spec.params), dedupe_key=f"schedule:{spec.name}"
-        )
+        job, created = start_pull(session, now=now, params=dict(spec.params))  # as POST /pipeline/pull does
         # The slot is consumed also when the previous job is still active: a missed slot runs once, not later
         row.last_fired_at = now
         if created:

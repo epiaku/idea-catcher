@@ -138,6 +138,21 @@ def test_a_run_with_a_limit_runs_once_publishes_and_stops(harness) -> None:
     assert len(inbox_files(harness)) == 2  # the rest waits for a run of its own
 
 
+def test_a_pull_with_a_limit_makes_one_limited_run_and_stops(harness) -> None:
+    chain_harness(harness)
+    harness.add_job("ideas.pull", limit=1)
+
+    harness.drain(max_jobs=20)
+
+    types = job_types(harness)
+    assert types.count("pipeline.run") == 1 and types.count("pipeline.publish") == 1
+    [run] = [j for j in all_jobs(harness) if j.type == "pipeline.run"]
+    assert run.params == {"retry_deferred": True, "limit": 1}
+    [publish] = [j for j in all_jobs(harness) if j.type == "pipeline.publish"]
+    assert publish.params["follow_up"] is False
+    assert len(inbox_files(harness)) == 2  # the rest waits for a pull without a limit
+
+
 def test_a_preview_queues_nothing(harness) -> None:
     chain_harness(harness)
     harness.add_job("pipeline.preview")

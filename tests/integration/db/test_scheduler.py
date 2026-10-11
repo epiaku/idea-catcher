@@ -15,9 +15,10 @@ from catcher.core.config import Settings
 from catcher.core.db import session_scope
 from catcher.modules.queue import queue as queue_module
 from catcher.modules.queue.models import Job, Schedule
-from catcher.modules.scheduler import loop as loop_module
 from catcher.modules.scheduler.loop import Scheduler
 from catcher.modules.scheduler.schedule import ScheduleSpec, parse_schedules
+from catcher.modules.worker import chain as chain_module
+from catcher.modules.worker.chain import start_pull
 
 AMS = ZoneInfo("Europe/Amsterdam")
 # 2026-10-02 07:59 in Amsterdam (CEST, UTC+2)
@@ -72,8 +73,24 @@ def test_it_fires_on_the_slot_and_stores_last_fired(pg_engine: Engine) -> None:
     assert sched.tick() == ["ideas_pull"]
 
     got = {job.type: (job.params, job.dedupe_key, job.status, job.run_after) for job in jobs(pg_engine)}
-    assert got == {"ideas.pull": ({}, "schedule:ideas_pull", "queued", clock.now)}
+    assert got == {"ideas.pull": ({}, "chain:pull", "queued", clock.now)}
     assert set(last_fired(pg_engine).values()) == {clock.now}
+
+
+def test_a_pull_queued_by_the_api_consumes_the_slot_without_a_second_job(pg_engine: Engine) -> None:
+    """The schedule and the API start the pull through one function with one dedupe key."""
+    clock = FrozenClock(START)
+    sched = scheduler(pg_engine, clock, ideas_pull="0 8 * * *")
+    assert sched.tick() == []
+    with session_scope(pg_engine) as s:
+        queued, _ = start_pull(s, now=clock.now)  # what POST /pipeline/pull does
+        queued_id = queued.id
+
+    clock.advance(90)  # 08:00:30, the slot is due
+    assert sched.tick() == []  # consumed: the API's pull is still waiting
+
+    assert [job.id for job in jobs(pg_engine)] == [queued_id]
+    assert last_fired(pg_engine) == {"ideas_pull": clock.now}
 
 
 def test_the_hourly_pull_fires_once_an_hour(pg_engine: Engine) -> None:
@@ -164,7 +181,7 @@ def test_two_schedulers_ticking_together_queue_one_job(pg_engine: Engine, monkey
         time.sleep(0.3)  # both schedulers would have read last_fired_at by now if nothing locked the row
         return real_enqueue(session, **{**kwargs, "dedupe_key": None})
 
-    monkeypatch.setattr(loop_module, "enqueue", slow_enqueue_without_dedupe)
+    monkeypatch.setattr(chain_module, "enqueue", slow_enqueue_without_dedupe)
     clock = FrozenClock(START)
     first = scheduler(pg_engine, clock, ideas_pull="0 8 * * *")
     second = scheduler(pg_engine, clock, ideas_pull="0 8 * * *")
@@ -192,7 +209,7 @@ def test_a_database_error_does_not_consume_the_slot_and_is_logged_once(
             raise OperationalError("insert into jobs", {}, Exception("server closed the connection"))
         return real_enqueue(session, **kwargs)
 
-    monkeypatch.setattr(loop_module, "enqueue", enqueue_failing_for_the_pull)
+    monkeypatch.setattr(chain_module, "enqueue", enqueue_failing_for_the_pull)
     clock = FrozenClock(START)
     sched = scheduler(pg_engine, clock, ideas_pull="0 8 * * *")
     assert sched.tick() == []

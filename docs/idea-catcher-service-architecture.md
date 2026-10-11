@@ -973,7 +973,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 1. **Timezone default `Europe/Amsterdam`** (`SCHEDULE_TIMEZONE`, validated with `zoneinfo`; `tzdata` is a dependency so the image has the zones).
 2. **A new schedule starts "now"**: with no row the scheduler stores `last_fired_at = now` and fires nothing; after downtime the row exists, so exactly one catch-up fires.
 3. **Job types and params**: `SCHEDULE_IDEAS_PULL` queues `ideas.pull`; `SCHEDULE_PIPELINE_RUN` queues `pipeline.run` `{"retry_deferred": true}`; `SCHEDULE_PUBLISH` queues `pipeline.publish` `{"pull": true, "push": true}`.
-4. **Dedupe**: key `schedule:<name>`; when the previous job is still queued or running no second job is queued, but `last_fired_at` still advances (the slot is consumed).
+4. **Dedupe**: key `schedule:<name>` (since 2026-10-11 the shared key `chain:pull` of `start_pull`, as `POST /pipeline/pull` uses); when the previous job is still queued or running no second job is queued, but `last_fired_at` still advances (the slot is consumed).
 5. **Manual `catcher publish [--push]`** mirrors `run pipeline`: commit only unless `--push` (then pull and push).
 6. **A bad cron string (five fields only) or timezone** stops `catcher worker` before it takes the lock, exit 2, naming the variable.
 7. **Clock goes backwards** (`last_fired_at` in the future): nothing fires until now passes it; no error.

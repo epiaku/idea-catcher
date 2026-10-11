@@ -9,9 +9,11 @@ ended, how it ended and a few `Facts` in, the job to queue (or nothing) out. No 
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from catcher.core.db import session_scope
 from catcher.core.git import GitError, ahead_of_upstream, has_remote
@@ -20,7 +22,7 @@ from catcher.modules.queue.items import items_in_status
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.queue.queue import count_runnable, enqueue, live_job_carries
 from catcher.modules.worker.handlers import HandlerContext
-from catcher.modules.worker.handlers_pipeline import _RECOVERABLE_ACTIVE, BACKFILL_ORIGIN
+from catcher.modules.worker.handlers_pipeline import _RECOVERABLE_ACTIVE, BACKFILL_ORIGIN, parse_pull_params
 
 log = logging.getLogger("catcher.chain")
 
@@ -29,6 +31,7 @@ PUBLISH = "pipeline.publish"
 PULL = "ideas.pull"
 DOCUMENT_JOBS = ("youtube.fetch", "llm.reason")
 
+PULL_KEY = "chain:pull"
 RUN_KEY = "chain:run"
 PUBLISH_KEY = "chain:publish"
 
@@ -69,8 +72,11 @@ NEUTRAL: dict[str, Any] = {
 }
 
 
-def _run(*, retry_deferred: bool) -> Next:
-    return Next(RUN, {"retry_deferred": retry_deferred}, RUN_KEY)
+def _run(*, retry_deferred: bool, limit: int | None = None) -> Next:
+    run_params: dict[str, Any] = {"retry_deferred": retry_deferred}
+    if limit is not None:
+        run_params["limit"] = limit
+    return Next(RUN, run_params, RUN_KEY)
 
 
 def _publish(facts: Facts, *, follow_up: bool) -> Next:
@@ -82,9 +88,10 @@ def decide(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) ->
     """The job to queue after `job_type` ended with `outcome` ("succeeded", "failed", "deferred", "lost"),
     or None. `params` are the params of the job that ended.
 
-    - `ideas.pull` succeeded: a run (that also retries the deferred) when files wait or a deferred item is
-      due, else a publish when finished work is unpublished, else nothing. A pull that failed stops the
-      cycle: the next scheduled pull tries again.
+    - `ideas.pull` succeeded: a run (that also retries the deferred, with the pull's `limit` if it had one,
+      and then it is the only run of the cycle) when files wait or a deferred item is due, else a publish
+      when finished work is unpublished, else nothing. A pull that failed stops the cycle: the next
+      scheduled pull tries again.
     - the run or a document job ended: a publish, but only when no document job can run now and no run is
       active. A delayed job (the YouTube gate, a retry delay) does not hold it back: when it ends later,
       this rule runs again. A failed run stops the chain (it could not read the inbox: more jobs would fail
@@ -99,7 +106,7 @@ def decide(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) ->
         if outcome != "succeeded":
             return None
         if not facts.inbox_empty or facts.deferred_due:
-            return _run(retry_deferred=True)
+            return _run(retry_deferred=True, limit=params.get("limit"))
         if facts.unpublished_work:
             return _publish(facts, follow_up=True)
         return None
@@ -256,3 +263,13 @@ def queue_next(ctx: HandlerContext, job: Job, outcome: str) -> Next | None:
         "" if created else " (already active)",
     )
     return chosen
+
+
+def start_pull(session: Session, *, now: datetime, params: dict[str, Any] | None = None) -> tuple[Job, bool]:
+    """Queue the `ideas.pull` that starts a cycle of the chain, whoever asks (the schedule, `POST
+    /pipeline/pull`): one function, one dedupe key (`chain:pull`), so a pull that is queued or running is
+    returned instead of a second one (`created` is False, with the params of that earlier pull). `params`
+    (`limit`) are checked by the handler's own parser (ValueError). Does not commit: the caller does."""
+    given = dict(params or {})
+    parse_pull_params(given)
+    return enqueue(session, type=PULL, now=now, params=given, dedupe_key=PULL_KEY)

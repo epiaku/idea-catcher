@@ -1117,9 +1117,16 @@ def parse_publish_params(params: dict[str, Any]) -> tuple[bool, bool]:
 
 
 def parse_pull_params(params: dict[str, Any]) -> None:
-    """`ideas.pull` takes no parameters. Raises ValueError naming the ones given."""
-    if params:
-        raise ValueError(f"ideas.pull takes no parameters, got: {', '.join(sorted(params))}")
+    """`ideas.pull` takes one optional parameter, `limit` (a whole number of 0 or more): the chain gives it to
+    the run it starts, which then takes at most that many documents and is the only run of the cycle. Raises
+    ValueError naming what is wrong."""
+    unknown = sorted(set(params) - {"limit"})
+    if unknown:
+        raise ValueError(f"unknown parameter(s) for ideas.pull: {', '.join(unknown)}")
+    if "limit" in params:
+        limit = params["limit"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+            raise ValueError(f"limit must be a whole number of 0 or more, not {limit!r}")
 
 
 def handle_ideas_pull(ctx: HandlerContext, job: Job) -> HandlerResult:

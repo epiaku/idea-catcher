@@ -238,6 +238,14 @@ curl -s -H "Authorization: Bearer $CATCHER_KEY" "$CATCHER_URL/api/v1/jobs/<job_i
 
 A preview is never answered with a real run and never counts as one. It dedupes only against a queued or running preview with the **same** parameters (`200` and that job id); a preview with other parameters is its own job.
 
+### `POST /api/v1/pipeline/pull`: start a cycle of the chain (scope `run`) {#ep-pull}
+
+```bash
+curl -s -w '\n%{http_code}\n' -X POST -H "Authorization: Bearer $CATCHER_KEY" $CATCHER_URL/api/v1/pipeline/pull
+```
+
+Queues an `ideas.pull`, exactly as the hourly schedule does: both call the same function (`start_pull`) and use the same dedupe key, so a pull the schedule queued counts as existing, and the other way round. When the pull ends the worker's [chain](../idea-catcher-how-to-run-stage-b/#chain) queues the run, the publish and the follow-ups, so this one request starts the whole cycle. It is the way to simulate the schedule by hand (the local test stack has no schedule on). It answers like a run: `202` `{"job_id", "existing": false}`, or `200` with `"existing": true` when a pull is already queued or running. Its one option is `limit` (a whole number of 0 or more, optional body `{"limit": 3}`): the run the pull starts takes at most that many documents and is the only run of the cycle, and its publish queues no follow-up run, so the rest of the inbox waits. Without it the run takes the whole inbox, and so do the follow-up runs. A body with any other field, or a `limit` that is not a whole number, is `422`. If a pull is already queued or running, the answer is `200` with that pull and its own `limit`, whatever you send now. In a stack without git remotes (the local test stack) the pull does nothing and the cycle works on what is already in the inbox.
+
 ### `POST /api/v1/pipeline/publish`: commit and push (scope `run`) {#ep-publish}
 
 ```bash
@@ -265,7 +273,7 @@ Queues a `pipeline.run` with `{"requeue": ["notes/walks.md"]}`: the worker takes
 
 | Code | Meaning |
 | --- | --- |
-| `200` | A read worked. For `POST pipeline/runs` and `pipeline/publish`: the job **already exists** (queued or running); its id is in the answer and nothing new was queued. |
+| `200` | A read worked. For `POST pipeline/runs`, `pipeline/pull` and `pipeline/publish`: the job **already exists** (queued or running); its id is in the answer and nothing new was queued. |
 | `202` | A new job was queued. The worker has not run it yet: poll `GET /api/v1/jobs/{id}`. |
 | `401` | No key, a malformed `Authorization` header, an unknown key or two `Authorization` headers. Same answer for every case (`{"detail": "not authenticated"}`). |
 | `403` | The key is valid but lacks the scope: `read` for GET, `run` for POST. |

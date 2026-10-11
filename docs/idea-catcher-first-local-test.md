@@ -51,7 +51,7 @@ You must give **both** files every time you start, stop or look at the test stac
 
 - The worker works **directly on the repos in `tmp/ic`** (mounted into the container), so you see the pages appear in your own folders.
 - Your real `.env` is **not passed to the containers**: no LLM keys, no GitHub token. (Compose still reads `.env` for the `${...}` values in `compose.yaml`; the file blanks the token and the remotes, so nothing from it reaches a container.) A run uses the `fake` profile (request 6a), and YouTube is offline (the test data has saved facts and saved LLM replies).
-- **No schedule is on.** Nothing runs until you start a run from the page.
+- **No schedule is on.** Nothing runs until you start a run from the page. Request 1b (`POST /api/v1/pipeline/pull`) does what the hourly schedule does and starts the whole chain: run, publish and follow-ups.
 - The database has **no port on your Mac**, so it never collides with a Postgres on 5432.
 - The API is at `http://127.0.0.1:8000` (change the port with `API_PORT=8001` in front of the `docker compose` command, and `@baseUrl` at the top of the page) with two **fixed test keys**: one with `read` and `run`, one with `read` only. They are public, so use this file only for this test.
 

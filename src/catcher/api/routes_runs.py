@@ -1,11 +1,12 @@
 """The trigger endpoints (scope `run`): they enqueue a job and answer; the worker does the work.
 
-`POST /pipeline/runs` and `/pipeline/publish` answer `200` with the oldest `pipeline.run` (or
-`pipeline.publish`) that is queued or running, whoever queued it (the scheduler, the CLI or the API), and
-otherwise insert one and answer `202`. A `pipeline.run` with `requeue` or `only` works on those names alone
-and is never the existing run. The insert carries the dedupe key `api:<type>`, so of two requests at
-the same moment only one inserts (the partial unique index on active dedupe keys); the other gets that job
-back.
+`POST /pipeline/pull` queues the `ideas.pull` that starts the chain, through the same function as the
+schedule (`start_pull`, dedupe key `chain:pull`). `POST /pipeline/runs` and `/pipeline/publish` answer `200`
+with the oldest `pipeline.run` (or `pipeline.publish`) that is queued or running, whoever queued it (the
+scheduler, the CLI or the API), and otherwise insert one and answer `202`. A `pipeline.run` with `requeue` or
+`only` works on those names alone and is never the existing run. The insert carries the dedupe key
+`api:<type>`, so of two requests at the same moment only one inserts (the partial unique index on active
+dedupe keys); the other gets that job back.
 A preview (`dry_run: true`, job `pipeline.preview`) is read-only and dedupes only against a queued or running
 preview with the same params. A requeue is always its own job. No answer holds the job's params or a key."""
 
@@ -24,6 +25,7 @@ from catcher.core.db import utc_now
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.queue.queue import enqueue
 from catcher.modules.worker.app import check_job
+from catcher.modules.worker.chain import start_pull
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require("run"))])
 
@@ -45,6 +47,15 @@ class RunRequest(BaseModel):
     profile: Annotated[StrictStr | None, Field(max_length=64)] = None
     limit: Annotated[StrictInt | None, Field(le=2**31 - 1)] = None
     retry_deferred: StrictBool = False
+
+
+class PullRequest(BaseModel):
+    """`POST /pipeline/pull`. `limit` is optional: the run the pull starts takes at most that many documents
+    and is the only run of the cycle. An unknown field or a value of the wrong type is 422 (no coercion)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    limit: Annotated[StrictInt | None, Field(ge=0, le=2**31 - 1)] = None
 
 
 class NoBody(BaseModel):
@@ -131,6 +142,28 @@ def start_run(
         return _once(session, response, PREVIEW, params, _preview_key(params), same_params=True)
     _checked(RUN, params)
     return _once(session, response, RUN, params, f"api:{RUN}", same_params=False)
+
+
+@router.post(
+    "/pipeline/pull",
+    response_model=Enqueued,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={200: {"model": Enqueued, "description": "a pull is already queued or running"}},
+)
+def pull(
+    response: Response, session: Annotated[Session, Depends(get_session)], body: PullRequest | None = None
+) -> Enqueued:
+    """Start a cycle of the chain: queue an `ideas.pull`, exactly as the schedule does (the same function and
+    dedupe key). When it ends the worker queues the run, the publish and the follow-ups. With `limit` the
+    cycle is one run of at most that many documents. A pull already queued or running is answered `200`."""
+    request = body or PullRequest()
+    params = {} if request.limit is None else {"limit": request.limit}
+    try:
+        job, created = start_pull(session, now=utc_now(), params=params)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    session.commit()
+    return _answer(response, job, existing=not created)
 
 
 @router.post(

@@ -20,6 +20,7 @@ from catcher.core.db import session_scope
 from catcher.modules.queue.items import stage_item
 from catcher.modules.queue.models import Job
 from catcher.modules.queue.queue import enqueue
+from catcher.modules.worker.chain import start_pull
 
 pytestmark = pytest.mark.db
 
@@ -173,7 +174,9 @@ def test_two_simultaneous_posts_after_a_requeue_make_one_run(client, pg_engine, 
     assert [j.params for j in _jobs(pg_engine)] == [{"requeue": ["notes/x.md"]}, {}]
 
 
-@pytest.mark.parametrize("path", ["/api/v1/pipeline/runs", "/api/v1/pipeline/publish"])
+@pytest.mark.parametrize(
+    "path", ["/api/v1/pipeline/runs", "/api/v1/pipeline/publish", "/api/v1/pipeline/pull"]
+)
 def test_a_body_over_64_kb_is_413_before_it_is_parsed(client, pg_engine, path):
     big = b'{"profile": "' + b"p" * (64 * 1024) + b'"}'
     answer = client.post(path, content=big, headers={"Content-Type": "application/json"})
@@ -298,6 +301,56 @@ def test_publish_trigger_enqueues_publish_with_dedupe(client, pg_engine):
     assert client.post("/api/v1/pipeline/publish", json={"push": False}).status_code == 422  # takes no body
 
 
+def test_pull_trigger_enqueues_ideas_pull_with_the_shared_key(client, pg_engine):
+    first = client.post("/api/v1/pipeline/pull")
+
+    assert first.status_code == 202
+    assert set(first.json()) == {"job_id", "existing"} and first.json()["existing"] is False
+    [job] = _jobs(pg_engine)
+    assert (job.type, job.params, job.dedupe_key) == (
+        "ideas.pull",
+        {},
+        "chain:pull",
+    )  # the scheduler's key too
+
+    again = client.post("/api/v1/pipeline/pull")
+    assert again.status_code == 200 and again.json() == {"job_id": first.json()["job_id"], "existing": True}
+    assert len(_jobs(pg_engine)) == 1
+
+    _set_status(pg_engine, first.json()["job_id"], "succeeded")
+    assert client.post("/api/v1/pipeline/pull").status_code == 202  # a finished pull does not block a new one
+    assert (
+        client.post("/api/v1/pipeline/pull", json={"only": "x"}).status_code == 422
+    )  # only `limit` is known
+
+
+def test_pull_trigger_passes_a_limit_on_to_the_job(client, pg_engine):
+    answer = client.post("/api/v1/pipeline/pull", json={"limit": 3})
+
+    assert answer.status_code == 202
+    [job] = _jobs(pg_engine)
+    assert (job.type, job.params) == ("ideas.pull", {"limit": 3})
+
+
+@pytest.mark.parametrize(
+    "body", [{"limit": "3"}, {"limit": -1}, {"limit": True}, {"limit": 1.5}, {"limit": 2**31}]
+)
+def test_pull_trigger_refuses_a_bad_limit(client, pg_engine, body):
+    assert client.post("/api/v1/pipeline/pull", json=body).status_code == 422
+    assert _jobs(pg_engine) == []
+
+
+def test_a_scheduled_pull_counts_as_existing(client, pg_engine):
+    with session_scope(pg_engine) as session:
+        scheduled, _ = start_pull(session, now=NOW)  # what the scheduler queues
+        scheduled_id = str(scheduled.id)
+
+    answer = client.post("/api/v1/pipeline/pull")
+
+    assert answer.status_code == 200 and answer.json() == {"job_id": scheduled_id, "existing": True}
+    assert len(_jobs(pg_engine)) == 1
+
+
 def test_requeue_enqueues_a_run_with_only_that_name_and_404s_an_unknown_item(client, pg_engine):
     with session_scope(pg_engine) as session:
         stage_item(
@@ -331,7 +384,12 @@ def test_requeue_enqueues_a_run_with_only_that_name_and_404s_an_unknown_item(cli
     assert len(_jobs(pg_engine)) == 3
 
 
-ENDPOINTS = ["/api/v1/pipeline/runs", "/api/v1/pipeline/publish", "/api/v1/items/notes/walks.md/requeue"]
+ENDPOINTS = [
+    "/api/v1/pipeline/runs",
+    "/api/v1/pipeline/publish",
+    "/api/v1/pipeline/pull",
+    "/api/v1/items/notes/walks.md/requeue",
+]
 
 
 @pytest.mark.parametrize("path", ENDPOINTS)

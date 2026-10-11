@@ -44,6 +44,18 @@ def test_a_pull_with_nothing_to_do_queues_nothing() -> None:
     assert decide("ideas.pull", "succeeded", {}, IDLE) is None
 
 
+def test_the_limit_of_a_pull_goes_on_to_its_run() -> None:
+    facts = replace(IDLE, inbox_empty=False)
+    assert decide("ideas.pull", "succeeded", {"limit": 3}, facts) == Next(
+        "pipeline.run", {"retry_deferred": True, "limit": 3}, "chain:run"
+    )
+
+
+def test_a_pull_without_a_limit_gives_its_run_no_limit() -> None:
+    chosen = decide("ideas.pull", "succeeded", {}, replace(IDLE, inbox_empty=False))
+    assert chosen is not None and "limit" not in chosen.params
+
+
 @pytest.mark.parametrize("outcome", ["failed", "deferred", "lost"])
 def test_a_pull_that_did_not_succeed_queues_nothing(outcome: str) -> None:
     assert decide("ideas.pull", outcome, {}, replace(IDLE, inbox_empty=False)) is None
@@ -145,3 +157,19 @@ def test_a_publish_that_was_put_back_or_lost_queues_nothing(outcome: str) -> Non
 @pytest.mark.parametrize("job_type", ["pipeline.preview", "test.echo"])
 def test_other_job_types_queue_nothing(job_type: str) -> None:
     assert decide(job_type, "succeeded", {}, replace(IDLE, inbox_empty=False)) is None
+
+
+# the params of ideas.pull
+
+
+def test_a_pull_accepts_only_a_whole_number_limit() -> None:
+    from catcher.modules.worker.app import check_job
+
+    check_job("ideas.pull", {})
+    check_job("ideas.pull", {"limit": 0})
+    check_job("ideas.pull", {"limit": 3})
+    for bad in (-1, "3", 1.5, True, None):
+        with pytest.raises(ValueError, match="limit"):
+            check_job("ideas.pull", {"limit": bad})
+    with pytest.raises(ValueError, match="only"):
+        check_job("ideas.pull", {"only": ["a.md"]})
