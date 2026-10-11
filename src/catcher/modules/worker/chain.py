@@ -56,6 +56,19 @@ class Next:
     dedupe_key: str
 
 
+# What `read_facts` fills in for a fact the job type does not need (`decide` does not look at it).
+NEUTRAL: dict[str, Any] = {
+    "inbox_empty": True,
+    "deferred_due": False,
+    "unpublished_work": False,
+    "document_jobs_runnable": 0,
+    "run_active": False,
+    "latest_run_limited": False,
+    "last_run_made_progress": True,
+    "chain_publish_push": True,
+}
+
+
 def _run(*, retry_deferred: bool) -> Next:
     return Next(RUN, {"retry_deferred": retry_deferred}, RUN_KEY)
 
@@ -137,54 +150,93 @@ def _git_ahead(ctx: HandlerContext) -> bool:
     return False
 
 
-def read_facts(ctx: HandlerContext) -> Facts:
+# The facts each kind of job needs: reading only those keeps a backlog of documents from paying for an inbox
+# scan and two git calls after every single document job.
+_PULL_FACTS = {"inbox_empty", "deferred_due", "unpublished_work"}
+_WORK_FACTS = {"document_jobs_runnable", "run_active", "latest_run_limited"}  # the run and its document jobs
+_PUBLISH_FACTS = {"inbox_empty", "run_active", "last_run_made_progress"}
+
+
+def _needed(job_type: str | None) -> set[str] | None:
+    """The facts `decide` reads for `job_type`; None (all of them) when no type is given."""
+    if job_type is None:
+        return None
+    if job_type == PULL:
+        return _PULL_FACTS
+    if job_type == PUBLISH:
+        return _PUBLISH_FACTS
+    return _WORK_FACTS if job_type == RUN or job_type in DOCUMENT_JOBS else set()
+
+
+def read_facts(ctx: HandlerContext, job_type: str | None = None) -> Facts:
     """The facts `decide` needs, as they are now. Reads the inbox with the scan `pipeline.run` uses, so
-    "empty" means: nothing the next run would take."""
+    "empty" means: nothing the next run would take. With `job_type`, only the facts that type needs are read;
+    the others keep a neutral value that `decide` does not look at."""
+    wanted = _needed(job_type)
+
+    def need(name: str) -> bool:
+        return wanted is None or name in wanted
+
     now = ctx.clock()
-    scan = scan_inbox(ctx.ideas, now=now)
-    inbox_empty = not (scan.notes or scan.artifacts or scan.errors)
+    inbox_empty = True
+    if need("inbox_empty"):
+        scan = scan_inbox(ctx.ideas, now=now)
+        inbox_empty = not (scan.notes or scan.artifacts or scan.errors)
+    facts: dict[str, Any] = {
+        "inbox_empty": inbox_empty,
+        "chain_publish_push": ctx.settings.chain_publish_push,
+    }
     with session_scope(ctx.engine) as session:
-        retryable = [i for i in items_in_status(session, "deferred", "stuck") if i.origin != BACKFILL_ORIGIN]
-        orphaned = [
-            i
-            for i in items_in_status(session, *_RECOVERABLE_ACTIVE)
-            if not live_job_carries(session, i.calculated_name)
-        ]
-        runs = list(
-            session.scalars(
-                select(Job).where(Job.type == RUN).order_by(Job.created_at.desc(), Job.id).limit(20)
+        if need("deferred_due"):
+            retryable = [
+                i for i in items_in_status(session, "deferred", "stuck") if i.origin != BACKFILL_ORIGIN
+            ]
+            orphaned = [
+                i
+                for i in items_in_status(session, *_RECOVERABLE_ACTIVE)
+                if not live_job_carries(session, i.calculated_name)
+            ]
+            facts["deferred_due"] = bool(retryable or orphaned)
+        if need("unpublished_work"):
+            last_publish = session.scalar(
+                select(func.max(Job.finished_at)).where(Job.type == PUBLISH, Job.status == "succeeded")
             )
-        )
-        finished = next((job for job in runs if job.status == "succeeded"), None)
-        last_publish = session.scalar(
-            select(func.max(Job.finished_at)).where(Job.type == PUBLISH, Job.status == "succeeded")
-        )
-        newer = select(func.count()).select_from(JobItem).where(JobItem.status == "published")
-        if last_publish is not None:
-            newer = newer.where(JobItem.updated_at > last_publish)
-        unpublished = bool(session.scalar(newer))
-        return Facts(
-            inbox_empty=inbox_empty,
-            deferred_due=bool(retryable or orphaned),
-            unpublished_work=unpublished or _git_ahead(ctx),
-            document_jobs_runnable=count_runnable(session, now=now, types=DOCUMENT_JOBS),
-            run_active=bool(
-                session.scalar(
-                    select(func.count())
-                    .select_from(Job)
-                    .where(Job.type == RUN, Job.status.in_(("queued", "running")))
+            newer = select(func.count()).select_from(JobItem).where(JobItem.status == "published")
+            if last_publish is not None:
+                newer = newer.where(JobItem.updated_at > last_publish)
+            facts["unpublished_work"] = bool(session.scalar(newer)) or _git_ahead(ctx)
+        if need("document_jobs_runnable"):
+            facts["document_jobs_runnable"] = count_runnable(session, now=now, types=DOCUMENT_JOBS)
+        if need("run_active"):
+            active = (
+                select(func.count())
+                .select_from(Job)
+                .where(Job.type == RUN, Job.status.in_(("queued", "running")))
+            )
+            facts["run_active"] = bool(session.scalar(active))
+        if need("latest_run_limited") or need("last_run_made_progress"):
+            runs = list(
+                session.scalars(
+                    select(Job).where(Job.type == RUN).order_by(Job.created_at.desc(), Job.id).limit(20)
                 )
-            ),
-            latest_run_limited=bool(runs) and _limited(dict(runs[0].params or {})),
-            last_run_made_progress=finished is None or _made_progress(finished.result),
-            chain_publish_push=ctx.settings.chain_publish_push,
-        )
+            )
+            if need("latest_run_limited"):
+                facts["latest_run_limited"] = bool(runs) and _limited(dict(runs[0].params or {}))
+            if need("last_run_made_progress"):
+                # the latest run that ended: one that failed took nothing, whatever an older run did
+                ended_run = next((job for job in runs if job.status in ("succeeded", "failed")), None)
+                facts["last_run_made_progress"] = (
+                    ended_run is None or ended_run.status == "succeeded" and _made_progress(ended_run.result)
+                )
+    return Facts(**{**NEUTRAL, **facts})
 
 
 def queue_next(ctx: HandlerContext, job: Job, outcome: str) -> Next | None:
     """After `job` ended with `outcome`: read the facts, ask `decide`, and queue what it says (one commit).
     Returns what was asked for (a job with that dedupe key may already have been active), or None."""
-    chosen = decide(job.type, outcome, dict(job.params or {}), read_facts(ctx))
+    if outcome == "lost":  # the result was discarded: decide would say nothing, so read nothing
+        return None
+    chosen = decide(job.type, outcome, dict(job.params or {}), read_facts(ctx, job.type))
     if chosen is None:
         return None
     with session_scope(ctx.engine) as session:

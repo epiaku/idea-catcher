@@ -241,3 +241,43 @@ def test_the_last_document_job_queues_a_publish_that_follows_the_settings(harnes
     )
     [publish] = jobs_of(harness, "pipeline.publish")
     assert publish.params == {"pull": False, "push": False, "follow_up": False}
+
+
+# review fixes: read only the facts a job type needs, and judge progress by the latest finished run
+
+
+def test_a_document_job_reads_no_inbox_and_no_git(harness, monkeypatch) -> None:
+    from catcher.modules.worker import chain
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a document job must not scan the inbox or ask git")
+
+    monkeypatch.setattr(chain, "scan_inbox", refuse)
+    monkeypatch.setattr(chain, "_git_ahead", refuse)
+    harness.add_job("llm.reason", calculated_name="notes/a.md")
+    job = ended(harness, "llm.reason")
+    set_job(harness, job.id, status="succeeded")
+
+    chosen = queue_next(harness.ctx, job, "succeeded")
+
+    assert chosen is not None and chosen.type == "pipeline.publish"
+
+
+def test_a_lost_job_reads_no_facts_at_all(harness, monkeypatch) -> None:
+    from catcher.modules.worker import chain
+
+    monkeypatch.setattr(
+        chain, "read_facts", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no facts"))
+    )
+    harness.add_job("pipeline.publish")
+
+    assert queue_next(harness.ctx, ended(harness, "pipeline.publish"), "lost") is None
+
+
+def test_a_newer_failed_run_means_no_progress_even_after_an_older_good_one(harness) -> None:
+    finished_job(harness, "pipeline.run", result={"staged": 5})
+    failed = harness.add_job("pipeline.run")
+    set_job(harness, failed, status="failed", error="no inbox", finished_at=harness.clock())
+    harness.clock.advance(1)
+
+    assert read_facts(harness.ctx).last_run_made_progress is False
