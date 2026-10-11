@@ -4,12 +4,31 @@
 #
 # Before you send anything:
 #   1.  uv run catcher testdata reset                                           # No llm or YT Api calls
-#   1a. uv run catcher testdata reset --fresh-llm-and-youtube                   # LLM and YT api will be called
 #   2.  docker compose -f compose.yaml -f compose.local-test.yaml up --build    # (wait until the worker is healthy)
 # When you are done:
 #   3.  docker compose -f compose.yaml -f compose.local-test.yaml down -v       # (also deletes the scratch database)
 #
-# Send the requests in order. The two keys belong to compose.local-test.yaml (public, only for that test).
+# ALTERNATIVE: test with the REAL LLM and the REAL YouTube instead (THIS COSTS MONEY). Use these steps INSTEAD of
+# the three above; the requests below are the same, but see request 1b / 5 to start SMALL with a limit.
+#
+#   1.  uv run catcher testdata reset --fresh-llm-and-youtube    # tmp/ic WITHOUT the saved LLM replies and YT facts
+#   2.  docker compose -f compose.yaml -f compose.live-test.yaml up --build     # (wait until the worker is healthy)
+#   3.  docker compose -f compose.yaml -f compose.live-test.yaml down -v        # (when you are done)
+#
+#   Needs, in your .env (the live stack passes it to the worker, the local-test stack does not). Its path is
+#   .env in the repository root, so ../../.env from this file (git-ignored; .env.example next to it shows the names):
+#     OPENAI_API_KEY and the OPENAI_MODEL_* values (4 AI chats, 1 web clip, 2 YouTube clips, 8 Gemini summaries
+#     go to OpenAI: your key and its budget cap apply), FREELLMAPI_URL and FREELLMAPI_API_KEY (28 notes go to
+#     FreeLLMApi: free, but the address must be reachable FROM the container, not localhost), and YouTube is ON
+#     (2 real requests, 2 minutes or more apart). Check FreeLLMApi first, from inside the stack:
+#       docker compose -f compose.yaml -f compose.live-test.yaml exec worker curl -s -o /dev/null -w '%{http_code}\n' $FREELLMAPI_URL/models
+#     (200 or 401 = reachable; 000 = not reachable). Start small: {"limit": 3} in request 1b or 5.
+#   Still safe: the GitHub token and the remotes are blanked, so nothing is pulled or pushed; the chained publish
+#   only commits in tmp/ic. A later `uv run catcher testdata reset` (no flag) puts the saved replies back.
+#   If the log says "freellmapi unreachable ... 127.0.0.1:1" you started compose.local-test.yaml, which points the
+#   LLM at a dead address on purpose (no key, no network): restart with the live file above.
+#
+# Send the requests in order. The two keys are the public test keys of compose.local-test.yaml and compose.live-test.yaml.
 #
 # THE CHAIN: only ideas.pull is scheduled (and no schedule is on in this stack). Every other job is queued by the
 # job before it: pipeline.run -> (llm.reason / youtube.fetch per document) -> pipeline.publish -> another

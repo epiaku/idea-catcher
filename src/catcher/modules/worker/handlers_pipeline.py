@@ -985,7 +985,7 @@ def _remember_block(ctx: HandlerContext, note: Note, params: ReasonParams, error
         key = _profile_of(ctx, note, params)[1].backend
     until = ctx.clock() + timedelta(seconds=seconds)  # from the failure: a call can hang
     ctx.backend_blocks.block(key, until, cause)
-    log.warning("LLM %s is not called again until %s: %s", key, until.isoformat(timespec="seconds"), error)
+    log.error("❌ LLM %s is not called again until %s: %s", key, until.isoformat(timespec="seconds"), error)
 
 
 def _profile_of(ctx: HandlerContext, note: Note, params: ReasonParams) -> tuple[str, Profile]:

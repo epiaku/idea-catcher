@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from catcher.modules.worker.chain import Facts, Next, decide
+from catcher.modules.worker.chain import Facts, Next, decide, end_of_chain
 
 IDLE = Facts(
     inbox_empty=True,
@@ -173,3 +173,59 @@ def test_a_pull_accepts_only_a_whole_number_limit() -> None:
             check_job("ideas.pull", {"limit": bad})
     with pytest.raises(ValueError, match="only"):
         check_job("ideas.pull", {"only": ["a.md"]})
+
+
+# the line that closes a cycle in the log
+
+
+def test_a_publish_that_ends_the_cycle_says_so_prominently() -> None:
+    line = end_of_chain("pipeline.publish", "succeeded", {}, IDLE)
+    assert line is not None and line.startswith("🏆🏆🏆 chain complete")
+    assert "inbox is empty" in line
+
+
+def test_a_limited_cycle_says_the_rest_waits() -> None:
+    line = end_of_chain(
+        "pipeline.publish", "succeeded", {"follow_up": False}, replace(IDLE, inbox_empty=False)
+    )
+    assert line is not None and line.startswith("🏆🏆🏆 chain complete") and "limit" in line
+
+
+def test_a_failed_publish_that_ends_the_cycle_is_a_warning_not_a_celebration() -> None:
+    line = end_of_chain("pipeline.publish", "failed", {}, IDLE)
+    assert line is not None and line.startswith("⚠️ chain ended") and "publish failed" in line
+
+
+def test_a_cycle_stopped_by_a_failure_says_so() -> None:
+    for job_type in ("ideas.pull", "pipeline.run"):
+        line = end_of_chain(job_type, "failed", {}, IDLE)
+        assert line is not None and line.startswith("🛑 chain stopped") and job_type in line
+
+
+def test_a_pull_with_nothing_to_do_is_idle() -> None:
+    line = end_of_chain("ideas.pull", "succeeded", {}, IDLE)
+    assert line is not None and line.startswith("💤 chain idle")
+
+
+def test_a_publish_without_progress_says_why_no_run_follows() -> None:
+    facts = replace(IDLE, inbox_empty=False, last_run_made_progress=False)
+    line = end_of_chain("pipeline.publish", "succeeded", {}, facts)
+    assert line is not None and line.startswith("🛑 chain stopped") and "took none" in line
+
+
+def test_nothing_is_said_while_the_cycle_goes_on() -> None:
+    assert end_of_chain("llm.reason", "succeeded", {}, replace(IDLE, document_jobs_runnable=1)) is None
+    assert end_of_chain("pipeline.run", "succeeded", {}, replace(IDLE, run_active=True)) is None
+    assert (
+        end_of_chain("pipeline.publish", "succeeded", {}, replace(IDLE, run_active=True, inbox_empty=False))
+        is None
+    )
+    assert end_of_chain("pipeline.publish", "deferred", {}, IDLE) is None
+    assert end_of_chain("llm.reason", "lost", {}, IDLE) is None
+    assert end_of_chain("pipeline.preview", "succeeded", {}, IDLE) is None
+
+
+def test_a_job_that_queues_something_ends_nothing() -> None:
+    facts = replace(IDLE, inbox_empty=False)
+    assert decide("ideas.pull", "succeeded", {}, facts) is not None
+    assert end_of_chain("ideas.pull", "succeeded", {}, facts) is None

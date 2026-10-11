@@ -127,11 +127,11 @@ class OpenAiCompatibleBackend:
                 log.error(message)
                 raise ModelRejected(message, backend=self.name, model=model) from e
             message = f"{self.name} HTTP {e.status_code}: {e.message[:300]}"
-            log.warning(message)
+            log.error("❌ %s", message)
             raise (TransientBackendError if e.status_code >= 500 else BackendUnavailable)(message) from e
         except openai.APIConnectionError as e:  # includes timeouts
             message = f"{self.name} unreachable: {e}"
-            log.warning(message)
+            log.error("❌ %s", message)
             raise TransientBackendError(message) from e
         if not response.choices:
             raise TransientBackendError(f"{self.name} returned no choices")

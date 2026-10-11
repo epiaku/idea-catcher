@@ -138,6 +138,34 @@ def test_a_run_with_a_limit_runs_once_publishes_and_stops(harness) -> None:
     assert len(inbox_files(harness)) == 2  # the rest waits for a run of its own
 
 
+def test_the_last_log_line_of_a_cycle_says_it_is_complete(harness, caplog) -> None:
+    import logging
+
+    chain_harness(harness)
+    harness.add_job("ideas.pull")
+
+    with caplog.at_level(logging.INFO, logger="catcher.chain"):
+        harness.drain(max_jobs=20)
+
+    lines = [r.getMessage() for r in caplog.records if r.name == "catcher.chain"]
+    assert lines[-1].startswith("🏆🏆🏆 chain complete") and "pipeline.publish" in lines[-1]
+    assert sum("chain complete" in line for line in lines) == 1  # once per cycle, after the publish only
+
+
+def test_a_stopped_cycle_says_why_in_the_log(harness, caplog) -> None:
+    import logging
+
+    chain_harness(harness)
+    harness.worker.handlers = {**harness.worker.handlers, "ideas.pull": lambda ctx, job: Fail("no network")}
+    harness.add_job("ideas.pull")
+
+    with caplog.at_level(logging.INFO, logger="catcher.chain"):
+        harness.drain(max_jobs=5)
+
+    [line] = [r.getMessage() for r in caplog.records if r.name == "catcher.chain"]
+    assert line.startswith("🛑 chain stopped") and "ideas.pull failed" in line
+
+
 def test_a_pull_with_a_limit_makes_one_limited_run_and_stops(harness) -> None:
     chain_harness(harness)
     harness.add_job("ideas.pull", limit=1)

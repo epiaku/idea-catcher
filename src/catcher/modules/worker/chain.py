@@ -125,6 +125,36 @@ def decide(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) ->
     return None
 
 
+def end_of_chain(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) -> str | None:
+    """The log line that closes a cycle, when `job_type` ending with `outcome` leaves nothing more to queue
+    (`decide` said None) and the cycle really is over; None while it goes on (other document jobs can still
+    run, a run is active) or when the job is not part of the chain. It is a line for people: the emoji make
+    the end of a cycle stand out between the lines of the jobs."""
+    if outcome == "lost" or (job_type == PUBLISH and outcome == "deferred"):
+        return None
+    if job_type == PULL:
+        if outcome == "succeeded":
+            if facts.inbox_empty and not facts.deferred_due and not facts.unpublished_work:
+                return "💤 chain idle: nothing to run or publish; the next ideas.pull looks again"
+            return None
+        return f"🛑 chain stopped: ideas.pull {outcome}; the next scheduled pull tries again"
+    if job_type == RUN and outcome == "failed":
+        return "🛑 chain stopped: pipeline.run failed; the next scheduled pull tries again"
+    if job_type == PUBLISH:
+        if facts.run_active:
+            return None
+        if outcome == "failed":
+            return "⚠️ chain ended, the publish failed: the work stays committed, the next publish pushes it"
+        if not params.get("follow_up", True):
+            left = "" if facts.inbox_empty else "; the rest of the inbox waits for a run of its own"
+            return f"🏆🏆🏆 chain complete (a run with a limit is one run){left}"
+        if facts.inbox_empty:
+            return "🏆🏆🏆 chain complete: all documents processed and published, the inbox is empty"
+        if not facts.last_run_made_progress:
+            return "🛑 chain stopped: files stay in inbox/, but the last run took none; the next pull retries"
+    return None
+
+
 # --- the facts, and the job that is queued ---------------------------------------------------------------
 
 _PROGRESS_COUNTS = (
@@ -243,8 +273,13 @@ def queue_next(ctx: HandlerContext, job: Job, outcome: str) -> Next | None:
     Returns what was asked for (a job with that dedupe key may already have been active), or None."""
     if outcome == "lost":  # the result was discarded: decide would say nothing, so read nothing
         return None
-    chosen = decide(job.type, outcome, dict(job.params or {}), read_facts(ctx, job.type))
+    params = dict(job.params or {})
+    facts = read_facts(ctx, job.type)
+    chosen = decide(job.type, outcome, params, facts)
     if chosen is None:
+        closing = end_of_chain(job.type, outcome, params, facts)
+        if closing is not None:
+            log.info("%s (after %s id=%s)", closing, job.type, job.id)
         return None
     with session_scope(ctx.engine) as session:
         _, created = enqueue(
