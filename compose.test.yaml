@@ -1,6 +1,6 @@
 # Overrides for the smoke run only (scripts/compose-smoke): never for real use.
 #   docker compose -p catcher-smoke-<n> --env-file <empty file> -f compose.yaml -f compose.test.yaml up -d --build
-# Local bare repos instead of GitHub, every schedule each minute, no LLM and no YouTube, no .env.
+# Local bare repos instead of GitHub, the pull each minute (the chain does the rest), no LLM and no YouTube, no .env.
 # The script exports SMOKE_IMAGE, SMOKE_REMOTES, DB_PORT, API_PORT, SMOKE_GITHUB_TOKEN and SMOKE_API_KEYS (dummies).
 x-smoke: &smoke
   image: ${SMOKE_IMAGE:?set SMOKE_IMAGE (a throwaway tag such as idea-catcher:smoke-1234)}

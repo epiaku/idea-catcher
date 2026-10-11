@@ -1139,6 +1139,7 @@ def worker(
                 heartbeat_s=lease_s / 3,
                 poll_s=poll_s,
                 lock_check=lock.check,
+                chain=True,
             )
             log.info("worker %s started (once=%s)", runner.worker_id, once)
             if once:

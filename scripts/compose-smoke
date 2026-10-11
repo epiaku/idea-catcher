@@ -21,9 +21,9 @@ has() {  # grep -q in a pipe ends early; the writer's SIGPIPE fails the pipe und
   text="$(cat)"
   grep -qE -- "$1" <<<"$text"
 }
-schedules_fired_in() {  # $1: `catcher schedules` output; every schedule on, with a date under `last fired`
+schedules_fired_in() {  # $1: `catcher schedules` output; the one schedule is on, with a date under `last fired`
   local name
-  for name in ideas_pull pipeline_run publish; do
+  for name in ideas_pull; do
     # name, five cron fields, timezone, last fired (date time | never), next due
     awk -v n="$name" '$1 == n && $2 != "off" && $8 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/' <<<"$1" \
       | has . || return 1
@@ -97,14 +97,12 @@ if [ "${1:-}" = --selftest ]; then
     "$@" >/dev/null || got=1
     if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "BAD  $name (got $got, want $want)"; bad=1; fi
   }
-  fired=$'name          cron       timezone  last fired        next due
-ideas_pull    * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48
-pipeline_run  * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48
-publish       * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48'
-  expect 0 "schedules: all three fired" schedules_fired_in "$fired"
-  expect 1 "schedules: one never fired" schedules_fired_in "${fired/publish       * * * * *  UTC       2026-10-07 18:47/publish       * * * * *  UTC       never}"
-  expect 1 "schedules: one missing" schedules_fired_in "$(grep -v ^pipeline_run <<<"$fired")"
-  expect 1 "schedules: one off" schedules_fired_in "${fired/ideas_pull    * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48/ideas_pull    off  -  -  -}"
+  fired=$'name        cron       timezone  last fired        next due
+ideas_pull  * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48'
+  expect 0 "schedules: the schedule fired" schedules_fired_in "$fired"
+  expect 1 "schedules: never fired" schedules_fired_in "${fired/UTC       2026-10-07 18:47/UTC       never}"
+  expect 1 "schedules: missing" schedules_fired_in "$(grep -v ^ideas_pull <<<"$fired")"
+  expect 1 "schedules: off" schedules_fired_in "${fired/ideas_pull  * * * * *  UTC       2026-10-07 18:47  2026-10-07 18:48/ideas_pull  off  -  -  -}"
   # stopped at 950 (sample numbers): catch-up at 1004, the next regular slot at 1021
   old=$'ideas.pull 900\npipeline.run 900\npipeline.publish 900'
   catch=$'ideas.pull 1004\npipeline.run 1004\npipeline.publish 1005'
@@ -286,7 +284,7 @@ git_clean -C "$TMP/phone" push -q origin HEAD
 CAPTURE_SHA="$(git_clean -C "$TMP/phone" rev-parse HEAD)"
 log "pushed capture $CAPTURE_SHA to the bare idea-bucket remote"
 
-# --- (c) within ~150 s a job of each scheduled type and all three schedules fired
+# --- (c) within ~150 s a job of each type of the chain (pull, run, publish) and the schedule fired
 jobs_seen() {
   local list type
   list="$(wexec catcher jobs list --limit 500 2>/dev/null)" || return 1
@@ -299,7 +297,7 @@ until jobs_seen || [ "$(now)" -ge "$deadline" ]; do sleep 5; done
 check "(c) jobs list shows ideas.pull, pipeline.run and pipeline.publish" jobs_seen
 SCHEDULES="$(wexec catcher schedules)"
 echo "$SCHEDULES"
-check "(c) schedules: all three have a last fired" schedules_fired_in "$SCHEDULES"
+check "(c) schedules: ideas_pull has a last fired" schedules_fired_in "$SCHEDULES"
 
 # --- (d) the capture arrives in the container's clone (pulled by the schedule), and publish pushed back
 capture_arrived() { wexec git -C /data/repos/idea-bucket merge-base --is-ancestor "$CAPTURE_SHA" HEAD 2>/dev/null; }
@@ -475,12 +473,12 @@ check "(f) every job from before the stop is still there" kept
 # Wait until the first regular slot after the restart has fired too, then count from the database.
 until [ "$(dbnow)" -ge $((boundary + 40)) ]; do sleep 3; done
 CREATED="$(created)"
-check "(f) exactly one catch-up job per schedule after the restart (not a flood)" one_catch_up_each "$CREATED" "$TSTOP"
-check "(f) the next regular slot fired for each schedule" next_slot_fired "$CREATED" "$TSTOP"
+check "(f) exactly one catch-up cycle (one job per type of the chain) after the restart, not a flood" one_catch_up_each "$CREATED" "$TSTOP"
+check "(f) the next regular slot started a cycle again (a job of each type)" next_slot_fired "$CREATED" "$TSTOP"
 
 # --- (i) by hand inside the stack, as the how-to documents: stop the worker, `docker compose run --rm worker catcher
 # ...` (same environment, the same repos volume; the entrypoint finds the clones), start the worker again.
-# Stop well after the minute's tick (second 30-50), so no scheduled pipeline job is still queued: a by-hand run
+# Stop well after the minute's tick (second 30-50), so no job of the chain is still queued: a by-hand run
 # refuses then (exit 2, "an earlier run's job is still queued").
 until t="$(dbnow)" && [ $((t % 60)) -ge 30 ] && [ $((t % 60)) -le 50 ]; do sleep 2; done
 dc stop worker >/dev/null 2>&1

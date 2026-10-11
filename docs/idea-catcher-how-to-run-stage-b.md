@@ -16,7 +16,7 @@ This page shows how to run what Stage B built: a **Postgres job queue** and a **
 4. Look at the jobs: `catcher jobs list`.
 5. Commit and push the result: `catcher jobs add pipeline.publish`, then the worker again.
 
-Since B6 (2026-10-07) the worker can also queue these jobs itself on a cron schedule (see [Scheduling](#scheduling)), since B7 (2026-10-07) it runs in Docker Compose (see [Run it in Docker](#docker)), and since B8 (2026-10-08) `catcher youtube import` releases the old YouTube links of the docs a few a day (see [Backfill YouTube links](#backfill)); without the `SCHEDULE_*` variables nothing is scheduled and you add the jobs by hand. Try it first on the test repos (see [Worker, jobs and exit codes](#worker)); that costs nothing.
+Since B6 (2026-10-07) the worker can also queue the first of these jobs itself on a cron schedule, and chain the rest (see [Scheduling](#scheduling)), since B7 (2026-10-07) it runs in Docker Compose (see [Run it in Docker](#docker)), and since B8 (2026-10-08) `catcher youtube import` releases the old YouTube links of the docs a few a day (see [Backfill YouTube links](#backfill)); without `SCHEDULE_IDEAS_PULL` nothing is scheduled and you add the jobs by hand. Try it first on the test repos (see [Worker, jobs and exit codes](#worker)); that costs nothing.
 
 ## Run it on test repos
 
@@ -106,7 +106,7 @@ They start their **own throwaway Postgres container** through testcontainers (`p
 
 ## Worker, jobs and exit codes {#worker}
 
-In Stage B the same work runs as **jobs** in the Postgres queue. `catcher jobs add` puts a job on the queue, `catcher worker` runs the jobs. The worker (without `--once`) can also queue them on a schedule: see [Scheduling](#scheduling). The worker uses `IDEAS_REPO` and `DOCS_REPO` (or `--ideas`/`--docs`) like `run pipeline`, and the database in `DATABASE_URL` (`postgresql+psycopg://catcher:...@localhost:5432/catcher`).
+In Stage B the same work runs as **jobs** in the Postgres queue. `catcher jobs add` puts a job on the queue, `catcher worker` runs the jobs. The worker (without `--once`) can also queue the first job on a schedule and chain the others: see [Scheduling](#scheduling). The worker uses `IDEAS_REPO` and `DOCS_REPO` (or `--ideas`/`--docs`) like `run pipeline`, and the database in `DATABASE_URL` (`postgresql+psycopg://catcher:...@localhost:5432/catcher`).
 
 **A free try on the test repos.** The test repos hold the saved replies and facts of a real run, so this calls no model and no YouTube. The empty key and the unreachable URL make sure a reply that is not saved fails (the document is `deferred`) instead of costing money.
 
@@ -138,7 +138,7 @@ What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 docum
 | ----------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pipeline.run`                | `limit`, `profile`, `refresh_llm`, `retry_deferred`, `only`, `requeue` | Stages the `inbox/` documents (database row first, then the move to `archive/` and `output/`), copies the artifacts, and queues the next job of each document. The parameters mean what the `run pipeline` options of the same name mean: `--param only=x` is `--file x`, `--param requeue=x` is `--requeue x` (repeat both for more names; an absolute path or a `..` part is refused). `requeue` leaves a document alone while a queued or running job carries it; a document left active with no job (a stuck leftover) is requeued                            |
 | `pipeline.publish`            | `pull`, `push` (both `true` by default)                                | Per repo, `idea-bucket` first: commits the managed folders (in `idea-bucket` all of `inbox/`, so also captures that arrived after the last `pipeline.run`, plus `archive/`, `output/`, `failed/`, `duplicates/`, `facts/` and `llm/`; in `epiaku-docs` the page folders and `idea-bucket/artifacts/`), then `git pull --rebase`, then push. A failed rebase is aborted and fails the job; the commit stays local and the next publish pushes it. With `push=true` on a repo without a remote the job fails before any git change (`no git remote to push to ...`) |
-| `ideas.pull`                  | none                                                                   | Pulls `idea-bucket`, so captures pushed from the phone arrive in `inbox/`. It first **commits the worker's managed folders locally** (as `pipeline.publish` does, so the pull never has to stash the worker's own changes), then runs `git pull --rebase`; it **never pushes**. A checkout without a remote is a no-op (`succeeded`, `no git remote`). A checkout that is not on a branch (a rebase or merge you started by hand, a detached HEAD, unmerged files) fails the job and is left untouched. A failed pull (no network, or a remote edit of a file the worker changed) fails the job with git's message; git aborts the rebase, so your files stay as they were and the local commit stays for the next publish. Processes nothing: the next `pipeline.run` does. Queued by `SCHEDULE_IDEAS_PULL`, or by hand |
+| `ideas.pull`                  | none                                                                   | Pulls `idea-bucket`, so captures pushed from the phone arrive in `inbox/`. It first **commits the worker's managed folders locally** (as `pipeline.publish` does, so the pull never has to stash the worker's own changes), then runs `git pull --rebase`; it **never pushes**. A checkout without a remote is a no-op (`succeeded`, `no git remote`). A checkout that is not on a branch (a rebase or merge you started by hand, a detached HEAD, unmerged files) fails the job and is left untouched. A failed pull (no network, or a remote edit of a file the worker changed) fails the job with git's message; git aborts the rebase, so your files stay as they were and the local commit stays for the next publish. Processes nothing: the next `pipeline.run` does. Queued by `SCHEDULE_IDEAS_PULL` (the start of the [chain](#chain)), or by hand |
 | `llm.reason`, `youtube.fetch` | `calculated_name`, `profile`, `refresh_llm` (queued by the worker)     | One document each, by its calculated name (`notes/<name>.md`, `clippings/2026/<name>.md`, or `<name>.md` for a capture directly in `inbox/`). You do not add these by hand                                                                                                                                                                                                                                                                                                                                                                                        |
 
 - **A fresh answer:** `uv run catcher jobs add pipeline.run --param refresh_llm=true` calls the model even when a reply is saved, so it costs money with real keys. With the empty key above it only shows that the documents defer (`OPENAI_API_KEY is not set`). With `refresh_llm=true` a rerun after a crash also skips the reply the first try saved, so **the model can be paid twice**; without it the model is paid once.
@@ -157,32 +157,67 @@ What you see (checked on 2026-10-03): the `pipeline.run` job stages the 43 docum
 
 ## Scheduling {#scheduling}
 
-Since B6 (2026-10-07) `catcher worker` (not `--once`) runs a scheduler in a thread next to its job loop. The scheduler **only queues jobs**; the worker runs them, one at a time, like jobs you add by hand. Three variables in `.env` (or the shell) set it up, one cron string each (five fields: minute, hour, day of month, month, day of week, as `croniter` reads them):
+Since B6 (2026-10-07) `catcher worker` (not `--once`) runs a scheduler in a thread next to its job loop. The scheduler **only queues jobs**; the worker runs them, one at a time, like jobs you add by hand. Since 2026-10-11 there is **one schedule**, `SCHEDULE_IDEAS_PULL`, and the rest of the work follows from it as a [chain](#chain). A cron string has five fields (minute, hour, day of month, month, day of week, as `croniter` reads them):
 
 ```bash
-SCHEDULE_IDEAS_PULL="*/30 * * * *"           # queues ideas.pull: pull idea-bucket, the new captures arrive in inbox/
-SCHEDULE_PIPELINE_RUN="0 8,12,17,21 * * *"   # queues pipeline.run with retry_deferred=true: process the inbox
-SCHEDULE_PUBLISH="0 6,12,18,23 * * *"        # queues pipeline.publish with pull=true, push=true: commit and push
+SCHEDULE_IDEAS_PULL="0 * * * *"              # queues ideas.pull every hour: pull idea-bucket, then the chain starts
+CHAIN_PUBLISH_PUSH=true                      # pull and push of the publish the chain queues (false: commit only)
 SCHEDULE_TIMEZONE=Europe/Amsterdam           # the times above are wall-clock times here (the default)
 SCHEDULE_TICK_S=30                           # how often the scheduler checks for a due slot (the default)
 ```
 
-- **Empty means off.** All three are empty by default, so a worker without them schedules nothing. Each one can be on or off on its own.
-- **What each one queues.** `SCHEDULE_IDEAS_PULL`: an `ideas.pull` job (no parameters). `SCHEDULE_PIPELINE_RUN`: a `pipeline.run` with `retry_deferred=true`, so every scheduled run also retries the `deferred` and `stuck` documents. `SCHEDULE_PUBLISH`: a `pipeline.publish` with `pull=true` and `push=true`. Pulling, processing and publishing have separate schedules, so the pull can run often and the publish a few times a day.
+`SCHEDULE_PIPELINE_RUN` and `SCHEDULE_PUBLISH` no longer exist. If either is still set, the worker logs one warning (`SCHEDULE_PUBLISH is ignored: ...`) and goes on; it does not fail.
+
+### The chain {#chain}
+
+Only `ideas.pull` is scheduled. Each job decides, when it ends, which job comes next (`modules/worker/chain.py`), so the pull, the run and the publish can never be scheduled in the wrong order:
+
+```text
+ideas.pull -> pipeline.run -> youtube.fetch / llm.reason per document -> pipeline.publish
+     ^                                                                        |
+     |                               files left in the inbox? -> pipeline.run +
+     +---- the next hourly pull <- no: the cycle is over
+```
+
+The same rule runs for every way a job is started: the schedule, `POST /pipeline/runs` and `/pipeline/publish`, `catcher jobs add`, and `catcher run pipeline`.
+
+| A job just ended | Condition | The worker queues |
+|---|---|---|
+| `ideas.pull` succeeded | files wait in `inbox/`, or a `deferred`/`stuck` item is due | `pipeline.run` with `retry_deferred=true` |
+| `ideas.pull` succeeded | nothing to run, but finished work is unpublished (or a push failed earlier) | `pipeline.publish` |
+| `ideas.pull` failed | | nothing; the next hourly pull tries again |
+| `pipeline.run`, `youtube.fetch` or `llm.reason` ended | no document job can run **now**, and no run is active | `pipeline.publish` (`pull` and `push` from `CHAIN_PUBLISH_PUSH`) |
+| `pipeline.run` failed | | nothing: it could not read the inbox, more jobs would fail the same way |
+| `pipeline.publish` ended | files are left in `inbox/` | `pipeline.run` with `retry_deferred=false` |
+| `pipeline.publish` ended | the inbox is empty | nothing: the cycle is over |
+
+- **One of each at a time.** The chain queues its jobs with the dedupe keys `chain:run` and `chain:publish`, and the worker runs one job at a time, so a run never starts during a publish and two triggers at once give one cycle.
+- **Delayed jobs do not hold the publish back.** A document job waiting for the YouTube gate, or for a retry delay, is not "able to run now". The publish goes out with what is finished; when the delayed job ends later, the same rule queues the next publish.
+- **A `deferred` document does not hold it back either, and is retried once per cycle.** Only the first run of a cycle (the one after the pull) carries `retry_deferred=true`. A follow-up run does not, so a down LLM or a used-up budget cannot cause a retry loop inside one cycle; the next hourly pull tries again.
+- **A run with `limit`, `only` or `requeue` is one run.** It still ends in a publish (queued with `follow_up=false`), but that publish queues no follow-up run, although files may be left in the inbox on purpose. A `pipeline.preview` queues nothing.
+- **No endless loop.** A follow-up run is queued only when the last run took at least one document out of the inbox (staged, adopted, moved to `duplicates/` or `failed/`, or copied as an artifact). Files the scan keeps leaving behind cannot loop.
+- **A failed publish with files left still queues the follow-up run.** A failed pull stops the whole cycle; the files wait for the next hourly pull.
+- **The hourly pull repairs a broken chain.** If the worker crashed between two steps, the next `ideas.pull` starts at the right step: a run when files wait or a deferred item is due, otherwise a publish when something is unpublished.
+- **A chain error never stops the worker.** It is logged (`catcher.chain`) and the next scheduled pull starts the chain again.
+- **`CHAIN_PUBLISH_PUSH=false`** (the test stacks) makes the chained publish a local commit only: no pull and no push. A publish you queue by hand or via the API keeps the params you give it (`pull`, `push`, and `follow_up`, default `true`). `catcher run pipeline --push` sets it for that command.
+- **`catcher publish` does not chain.** It publishes and never queues a run.
+
+### The schedule itself
+
+- **Empty means off.** `SCHEDULE_IDEAS_PULL` is empty by default, so a worker without it schedules nothing and you start the chain by hand (`catcher jobs add ideas.pull`, or `pipeline.run` through the API).
+- **What it queues.** An `ideas.pull` job (no parameters).
 - **The timezone is explicit.** `SCHEDULE_TIMEZONE` (default `Europe/Amsterdam`) is an IANA name; the slots are wall-clock times there, whatever the machine's own timezone is.
-- **When a slot fires.** The scheduler checks every `SCHEDULE_TICK_S` seconds (30), so a slot fires up to 30 seconds after its time. In one tick each schedule is checked on its own, so on a slot that two schedules share, one can fire a tick (30 s) later than the other.
-- **A new schedule fires nothing until its next slot.** The first time the worker sees a schedule it stores "now" as its last fire (`schedule ideas_pull: new, starts now; the next slot fires`), so starting a worker never fires at once: with `* * * * *` the first job comes at the next whole minute.
-- **Changing a schedule can fire it at once.** The last fire is kept per schedule name in `schedules`, so a schedule you turn off and on again, or give a new cron string or timezone, still has its old last fire: the next tick may queue one catch-up job at once instead of waiting for the next slot. Only a schedule never seen before starts "now".
-- **A missed slot runs once.** After downtime (the worker stopped, the machine asleep) the first tick queues **one** job per schedule that missed a slot, however many slots it missed, and then goes on with the normal slots. The last fire of each schedule lives in the `schedules` table in Postgres, so a restart keeps it.
-- **A slot whose previous job is still queued or running is consumed.** Each schedule queues its jobs with the dedupe key `schedule:<name>`. When the job of the previous slot is still queued or running, no second job is queued (`job ... is still running, no second job`), and the slot counts as handled. Nothing piles up.
-- **Daylight saving time.** On the spring-forward day a slot in the missing hour (`30 2 * * *` in Europe/Amsterdam) fires **once**, at the shifted time (03:30). On the fall-back day a slot in the repeated hour fires once, not twice, at its first (summer-time) occurrence; a schedule like `*/30 * * * *` therefore skips the slots of the repeated hour (the second 02:00 and 02:30, winter time) that day. Both are covered by tests (`tests/unit/test_schedule_rules.py`) and a minute-by-minute sweep of the rules, not by a live worker. `catcher schedules` shows a spring-gap slot as `02:30` in `next due`, although it fires at 03:30.
-- **A bad cron string or timezone stops the worker before it starts**: exit code 2 and a message that names the variable, for example `SCHEDULE_PUBLISH: '0 8 * * * *' is not a valid cron string (five fields)` or `SCHEDULE_TIMEZONE: unknown timezone 'Mars/Base'`. Six fields (with seconds) are refused.
+- **When a slot fires.** The scheduler checks every `SCHEDULE_TICK_S` seconds (30), so a slot fires up to 30 seconds after its time.
+- **A new schedule fires nothing until its next slot.** The first time the worker sees the schedule it stores "now" as its last fire (`schedule ideas_pull: new, starts now; the next slot fires`), so starting a worker never fires at once: with `* * * * *` the first job comes at the next whole minute.
+- **Changing the schedule can fire it at once.** The last fire is kept per schedule name in `schedules`, so a schedule you turn off and on again, or give a new cron string or timezone, still has its old last fire: the next tick may queue one catch-up job at once instead of waiting for the next slot. Only a schedule never seen before starts "now".
+- **A missed slot runs once.** After downtime (the worker stopped, the machine asleep) the first tick queues **one** job, however many slots it missed, and then goes on with the normal slots. The last fire lives in the `schedules` table in Postgres, so a restart keeps it.
+- **A slot whose previous job is still queued or running is consumed.** The schedule queues its job with the dedupe key `schedule:ideas_pull`. When the job of the previous slot is still queued or running, no second job is queued (`job ... is still running, no second job`), and the slot counts as handled. Nothing piles up.
+- **Daylight saving time.** On the spring-forward day a slot in the missing hour (`30 2 * * *` in Europe/Amsterdam) fires **once**, at the shifted time (03:30). On the fall-back day a slot in the repeated hour fires once, not twice, at its first (summer-time) occurrence. Both are covered by tests (`tests/unit/test_schedule_rules.py`) and a minute-by-minute sweep of the rules, not by a live worker. `catcher schedules` shows a spring-gap slot as `02:30` in `next due`, although it fires at 03:30.
+- **A bad cron string or timezone stops the worker before it starts**: exit code 2 and a message that names the variable, for example `SCHEDULE_IDEAS_PULL: '0 8 * * * *' is not a valid cron string (five fields)` or `SCHEDULE_TIMEZONE: unknown timezone 'Mars/Base'`. Six fields (with seconds) are refused.
 - **One scheduler.** It runs only in the worker that holds the one-worker lock, so there is never a second one. A database error in a tick is logged once and the scheduler tries again on the next tick; it never stops the worker. When the worker stops (Ctrl-C, SIGTERM, a lost lock) it stops the scheduler thread and waits for it.
+- **A document that keeps deferring is retried by every hourly cycle.** The run after each pull moves it back through `inbox/` and updates its working copy in `output/`, so every publish after it makes a small commit in `idea-bucket`. The LLM itself is not hammered: while a backend is blocked (`LLM_BLOCK_S`, 10 minutes) the retried documents defer without a call, and the log has one `LLM ... is not called again until ...` WARNING per block plus one line per retried document.
 
-- **The order inside one slot.** When `SCHEDULE_PIPELINE_RUN` and `SCHEDULE_PUBLISH` share a slot (12:00 in the example above), the `pipeline.publish` runs right after the `pipeline.run` job, **before** the `llm.reason` jobs that run queues (they are queued later, and the queue goes oldest first). So that publish commits the staged documents, and the pages of that run are committed and pushed by the **next** publish. Give the publish its own times (a little after the run) if you want the pages out at once.
-- **A document that keeps deferring is retried by every scheduled run.** Each `pipeline.run` moves it back through `inbox/` and updates its working copy in `output/`, so every publish after it makes a small commit in `idea-bucket`. The LLM itself is not hammered: while a backend is blocked (`LLM_BLOCK_S`, 10 minutes) the retried documents defer without a call, and the log has one `LLM ... is not called again until ...` WARNING per block plus one line per retried document.
-
-**What you see** (checked on 2026-10-07, on a throwaway Postgres, copies of the test repos with local bare remotes, an unreachable LLM, and all three variables set to `* * * * *`):
+**What you saw with the earlier three schedules** (checked on 2026-10-07, before the chain, on a throwaway Postgres, copies of the test repos with local bare remotes, an unreachable LLM, and all three variables set to `* * * * *`; `SCHEDULE_PIPELINE_RUN` and `SCHEDULE_PUBLISH` have since been removed):
 
 - The worker started at 09:34:23 logged one line per schedule (`schedule publish: '* * * * *' Europe/Amsterdam, next 09:35`) and `new, starts now; the next slot fires` for each. Nothing fired until the 09:35 slot; the tick at 09:35:23 queued `ideas.pull`, `pipeline.run` and `pipeline.publish` (`schedule ideas_pull: slot 2026-10-07T07:35:00+00:00, queued ideas.pull job ...`), and the worker ran them.
 - A capture pushed from another clone into the `idea-bucket` remote at 09:34:42 was pulled by that `ideas.pull` and staged by the `pipeline.run` right after it. A second capture pushed while the worker was stopped arrived with the first pull after the restart.
@@ -194,13 +229,11 @@ SCHEDULE_TICK_S=30                           # how often the scheduler checks fo
 
 ```bash
 uv run catcher schedules
-# name          cron       timezone          last fired        next due
-# ideas_pull    * * * * *  Europe/Amsterdam  2026-10-07 07:36  due now
-# pipeline_run  * * * * *  Europe/Amsterdam  2026-10-07 07:36  due now
-# publish       off        -                 -                 -
+# name        cron       timezone          last fired        next due
+# ideas_pull  0 * * * *  Europe/Amsterdam  2026-10-11 07:00  2026-10-11 10:00
 ```
 
-It reads the same variables as the worker (so run it with the same `.env`) and the `schedules` table; it is read-only and works while a worker runs. **`last fired` is in UTC, `next due` in `SCHEDULE_TIMEZONE`** (the example above is illustrative, as at 09:52 in Amsterdam, which is 07:52 UTC; there `publish` is shown as off). `next due` says `due now` when a slot has passed that the scheduler has not handled yet (it will at its next tick, or at the next start of the worker), `never` in `last fired` means the worker has not seen that schedule yet, and `off` means the variable is empty. A bad cron string or timezone exits 2 with the same message as the worker; no database exits 2.
+It reads the same variables as the worker (so run it with the same `.env`) and the `schedules` table; it is read-only and works while a worker runs. **`last fired` is in UTC, `next due` in `SCHEDULE_TIMEZONE`** (the example above is illustrative, as at 09:52 in Amsterdam, which is 07:52 UTC). `next due` says `due now` when a slot has passed that the scheduler has not handled yet (it will at its next tick, or at the next start of the worker), `never` in `last fired` means the worker has not seen that schedule yet, and `off` means the variable is empty. A bad cron string or timezone exits 2 with the same message as the worker; no database exits 2.
 
 **Publish by hand: `catcher publish`.**
 
@@ -209,13 +242,13 @@ uv run catcher publish            # commit the managed folders of both repos; no
 uv run catcher publish --push     # commit, then pull (rebase) and push both repos
 ```
 
-It is the publish half of `run pipeline`: it takes the worker's lock, queues one `pipeline.publish` (never a `pipeline.run`), runs it and prints per repo what was committed and whether it pushed (`committed: ideas yes, docs no` and `pushed: yes`, or `pushed: no (without --push)`); with nothing to commit it prints `nothing to commit` and exits 0. A push that fails is reported per repo (`push FAILED for: ...`, the commit stays local) and exits 1. It refuses like `run pipeline` (exit 2, nothing done) while a worker or a run holds the lock, when the database cannot be reached, or while an earlier `pipeline.run` or `pipeline.publish` job is still queued. **So stop the worker first**; while a worker runs, `SCHEDULE_PUBLISH` (or `catcher jobs add pipeline.publish`) is the way to publish.
+It is the publish step of the chain, by hand: it takes the worker's lock, queues one `pipeline.publish` (never a `pipeline.run`), runs it and prints per repo what was committed and whether it pushed (`committed: ideas yes, docs no` and `pushed: yes`, or `pushed: no (without --push)`); with nothing to commit it prints `nothing to commit` and exits 0. A push that fails is reported per repo (`push FAILED for: ...`, the commit stays local) and exits 1. It refuses like `run pipeline` (exit 2, nothing done) while a worker or a run holds the lock, when the database cannot be reached, or while an earlier `pipeline.run` or `pipeline.publish` job is still queued. **So stop the worker first**; while a worker runs, the chain publishes after each run, or you queue one with `catcher jobs add pipeline.publish` (or `POST /pipeline/publish`).
 
 ## Run it in Docker {#docker}
 
 Since B7 (2026-10-07) `docker compose up -d --build` starts the whole Stage B stack: `db` (Postgres), `migrate` (runs `catcher db upgrade` once and exits) and `worker` (`catcher worker` with its schedules). The worker clones `idea-bucket` and `epiaku-docs` into a volume on its first start, so the same `compose.yaml` runs on the Mac and later on a server.
 
-**You need:** Docker with Compose v2, and two GitHub repos you own (the real `idea-bucket` and `epiaku-docs`, or two throwaway repos to try it). The worker publishes with `SCHEDULE_PUBLISH`, so use throwaway repos until you trust the schedules.
+**You need:** Docker with Compose v2, and two GitHub repos you own (the real `idea-bucket` and `epiaku-docs`, or two throwaway repos to try it). The chain publishes (and pushes) after every run, so use throwaway repos until you trust it.
 
 **First start:**
 
@@ -226,9 +259,7 @@ Since B7 (2026-10-07) `docker compose up -d --build` starts the whole Stage B st
 IDEAS_REMOTE=https://github.com/epiaku/idea-bucket.git
 DOCS_REMOTE=https://github.com/epiaku/epiaku-docs.git
 GITHUB_TOKEN=github_pat_...                  # the token: never put it inside a remote URL
-SCHEDULE_IDEAS_PULL="*/30 * * * *"           # the schedules (see Scheduling above); empty means off
-SCHEDULE_PIPELINE_RUN="0 8,12,17,21 * * *"
-SCHEDULE_PUBLISH="0 6,12,18,23 * * *"
+SCHEDULE_IDEAS_PULL="0 * * * *"              # the one schedule (see Scheduling above); empty means off
 FREELLMAPI_URL=http://10.10.60.12:3001/v1    # must be reachable from inside the container (see below)
 # DB_PORT=5433                               # see the port note below
 ```
@@ -300,11 +331,12 @@ Or do not stop anything: queue the work and let the worker run it, `docker compo
 | `entrypoint: ... is not a git checkout and IDEAS_REMOTE is not set` | The folder is not there yet and there is no remote to clone from | Set `IDEAS_REMOTE` / `DOCS_REMOTE` in `.env` |
 | `entrypoint: /data/repos/... has no .git and is not empty; leaving it untouched` | A folder with files but no `.git` is never touched | Delete that folder, or the `repos` volume (`docker compose down -v`), to clone again |
 | `Bind for 0.0.0.0:5432 failed: port is already allocated` | Another Postgres uses 5432 | Set `DB_PORT` in `.env` or stop the other one (see the port note) |
-| `worker` stays `unhealthy` or restarts | No worker holds the lock: it crashed, or exits on startup | `docker compose logs worker`; a bad `SCHEDULE_*` value exits 2 and names the variable |
+| `worker` stays `unhealthy` or restarts | No worker holds the lock: it crashed, or exits on startup | `docker compose logs worker`; a bad `SCHEDULE_IDEAS_PULL` or `SCHEDULE_TIMEZONE` exits 2 and names the variable |
 
 **The smoke run: `bash scripts/compose-smoke`.** A real compose run on throwaway copies that proves the worker clones, pulls, runs, publishes and stops cleanly. It uses its own compose project, its own image tag (`idea-catcher:smoke-...`), a random free port and local bare repos as remotes; it never reads your `.env`, calls no LLM, YouTube or GitHub, and does not touch a `catcher-db` on 5432 or your own stack. It prints `PASS` or `FAIL` per step and removes what it made (containers, volumes, network, image, temp dir), also on failure.
 
-- **What it proves** (runs 5 and 9 on 2026-10-07, all steps passed): `migrate` exits 0 and the worker is `healthy`; both repos are cloned; all three schedules fired (`last fired` shows a date) and no job failed; a capture pushed to the remote is pulled by the worker, and the worker's publish commits are pushed back; the dummy token is in no log, image history, image config or `.git/config`; `catcher run pipeline` next to the worker exits 2 with the one-worker message; `docker compose stop worker` exits cleanly within the grace period; and after the worker was down for 285 s (four or more missed slots) a restart queued exactly one catch-up job per schedule, with the clones and the queue intact; and the by-hand run inside the stack (step (i), see Running by hand) works: `docker compose run --rm worker catcher publish --push`, `... run pipeline` and `publish --push` exit 0, pull a new capture, push the run's commit and leave no container. `bash scripts/compose-smoke --selftest` checks the assertion logic alone (no Docker).
+- **With the chain (2026-10-11):** `bash scripts/compose-smoke` passed all steps (63 PASS, 0 FAIL, about 8 minutes) on the single schedule `SCHEDULE_IDEAS_PULL=* * * * *`: the first pull started a cycle (jobs of `ideas.pull`, `pipeline.run` and `pipeline.publish` all appear, none failed); a capture pushed to the remote was pulled and the chained publish pushed the worker's commits back; after 268 s without a worker the restart queued exactly one cycle (one job of each type in the first 15 s, not a flood) and the next regular slot started another; the by-hand steps (`publish --push`, `run pipeline`, `publish --push` through `docker compose run --rm worker`) exit 0 and the run's commit reaches the remote.
+- **What it proved before the chain** (runs 5 and 9 on 2026-10-07, all steps passed, with three schedules): `migrate` exits 0 and the worker is `healthy`; both repos are cloned; all three schedules fired (`last fired` shows a date) and no job failed; a capture pushed to the remote is pulled by the worker, and the worker's publish commits are pushed back; the dummy token is in no log, image history, image config or `.git/config`; `catcher run pipeline` next to the worker exits 2 with the one-worker message; `docker compose stop worker` exits cleanly within the grace period; and after the worker was down for 285 s (four or more missed slots) a restart queued exactly one catch-up job per schedule, with the clones and the queue intact; and the by-hand run inside the stack (step (i), see Running by hand) works: `docker compose run --rm worker catcher publish --push`, `... run pipeline` and `publish --push` exit 0, pull a new capture, push the run's commit and leave no container. `bash scripts/compose-smoke --selftest` checks the assertion logic alone (no Docker).
 - **What it costs:** Docker only, no money. A cold build is slow: about 4 to 8 minutes for the whole run, and the image is about 790 MB. The BuildKit build cache stays afterwards (`docker builder prune` clears it).
 - **`bash scripts/compose-smoke --selftest`** checks only the script's own assertion logic on sample outputs, without Docker.
 
@@ -352,7 +384,7 @@ uv run catcher items list --status stuck     # only one state; --limit N (defaul
 **How the retries add up.**
 
 - **Inside one `llm.reason` job** the LLM service retries a temporary error (a 5xx, a timeout) up to `LLM_MAX_ATTEMPTS` (5) calls. After that the document is `deferred` or `failed`, and the job still `succeeded`.
-- **There is no job-level retry layer.** A deferred document waits for a `pipeline.run` with `retry_deferred`. Every scheduled `pipeline.run` carries it (see [Scheduling](#scheduling)); without a schedule you add it by hand.
+- **There is no job-level retry layer.** A deferred document waits for a `pipeline.run` with `retry_deferred`. The first run of every cycle, the one after the hourly pull, carries it (see [The chain](#chain)); without a schedule you add it by hand.
 - **The backend blocks** are the only waiting time: a usage limit or a down backend blocks it for `LLM_BLOCK_S` (600 s), a used-up budget for `LLM_BUDGET_BLOCK_S` (6 hours), and a model the backend does not know blocks only its profile (`openai:clippings`). The documents that need a blocked backend are `deferred` without a call. A block is a row in `resources`, so it survives a worker restart.
 - **A crashed job** (the worker died) comes back after its lease and is failed after 3 attempts; that is the only attempt counter.
 

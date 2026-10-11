@@ -1,11 +1,13 @@
-"""`catcher run pipeline` over the worker: queue one `pipeline.run`, drain it with the `Worker`, publish.
+"""`catcher run pipeline` over the worker: queue one `pipeline.run` and drain it, the chain queues the rest.
 
 The command holds the worker's Postgres lock (`WorkerLock`) for the whole run, so no worker runs beside it.
-It queues `pipeline.run` with the user's options as params, runs the same `Worker` that `catcher worker
---once` runs until nothing is due (the run's own `youtube.fetch` and `llm.reason` jobs included), queues
-`pipeline.publish` (`pull` = `push`: without `--push` only a local commit, no network) and runs it, then
-builds the report from the database (`report_for_job`). The report also lists an earlier run's documents
-that this run's drain worked on (their jobs were still queued) and those still waiting in the queue.
+It queues `pipeline.run` with the user's options as params and runs the same `Worker` that `catcher worker`
+runs, with the same chain (`chain.py`), until nothing is due: the run's own `youtube.fetch` and `llm.reason`
+jobs, then the `pipeline.publish` the chain queues (`pull` = `push`: without `--push` only a local commit,
+no network) and, while files are left in the inbox, a follow-up run and its publish (not after a run with
+`limit`, `only` or `requeue`). Then it builds the report from the database (`report_for_job`). The report
+also lists an earlier run's documents that this run's drain worked on (their jobs were still queued) and
+those still waiting in the queue.
 
 - **The lock** is checked before each job (`Worker.run_once`). A lost lock stops the run there: no further
   job, no publish, nothing committed; the outcome says what was done (`lock_lost`, exit 1).
@@ -27,7 +29,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -138,9 +140,7 @@ def run_command(
         return RunOutcome(report=RunReport(problems=problems), exit_code=2)
 
     def body(ctx: HandlerContext, worker: Worker, worked_on: list[str]) -> RunOutcome:
-        return _run(
-            ctx, worker, params, push=push, wait_youtube_s=wait_youtube_s, sleep=sleep, worked_on=worked_on
-        )
+        return _run(ctx, worker, params, wait_youtube_s=wait_youtube_s, sleep=sleep, worked_on=worked_on)
 
     return _under_the_lock(
         settings,
@@ -150,6 +150,7 @@ def run_command(
         services_factory=services_factory,
         clock=clock,
         body=body,
+        chain_push=push,
     )
 
 
@@ -177,6 +178,7 @@ def publish_command(
         services_factory=services_factory,
         clock=clock,
         body=lambda ctx, worker, worked_on: _publish_only(ctx, worker, push=push),
+        chain=False,  # `catcher publish` publishes and never queues a run
     )
 
 
@@ -189,9 +191,15 @@ def _under_the_lock(
     services_factory: Callable[[Settings], Services] | None,
     clock: Callable[[], datetime],
     body: Callable[[HandlerContext, Worker, list[str]], RunOutcome],
+    chain: bool = True,
+    chain_push: bool | None = None,
 ) -> RunOutcome:
     """Take the worker lock, refuse over an earlier run's `pipeline.run`/`pipeline.publish`, build the
-    context and a `Worker` that checks the lock before each job, and return `body(ctx, worker, worked_on)`."""
+    context and a `Worker` that checks the lock before each job, and return `body(ctx, worker, worked_on)`.
+
+    The worker chains the jobs as `catcher worker` does (`chain`): the publish after the run, and a new run
+    while files are left in the inbox. `chain_push`, when given, is the `pull` and `push` of that publish
+    (`--push`); without it the setting `CHAIN_PUBLISH_PUSH` decides."""
     with ExitStack() as stack:
         lock_engine = make_worker_engine(settings.database_url)
         stack.callback(lock_engine.dispose)
@@ -204,6 +212,8 @@ def _under_the_lock(
             services = services_factory(settings)
         ctx = build_context(settings, ideas=ideas, docs=docs, clock=clock, services=services)
         stack.callback(ctx.engine.dispose)
+        if chain_push is not None:
+            ctx = replace(ctx, settings=ctx.settings.model_copy(update={"chain_publish_push": chain_push}))
         worked_on: list[str] = []
         worker = Worker(
             ctx,
@@ -212,6 +222,7 @@ def _under_the_lock(
             lease_s=LEASE_S,
             heartbeat_s=LEASE_S / 3,
             lock_check=lock.check,
+            chain=chain,
         )
         try:
             return body(ctx, worker, worked_on)
@@ -221,26 +232,38 @@ def _under_the_lock(
     raise AssertionError("unreachable")  # the with block returns or raises; ExitStack could swallow in theory
 
 
-def _read_publish(outcome: RunOutcome, publish: Job | None, *, stopped: bool) -> bool:
-    """Put the `pipeline.publish` job's result in `outcome`; True when the job failed or did not finish
+def _read_publishes(outcome: RunOutcome, publishes: list[Job], *, stopped: bool) -> bool:
+    """Put the result of the `pipeline.publish` jobs in `outcome` (the chain may queue more than one: after a
+    clip that waited for YouTube, after a follow-up run); True when the last one failed or did not finish
     (and the run was not stopped before: a lock lost or Ctrl-C leaves its own message)."""
-    if publish is None:
-        return False
-    if publish.status == "succeeded":  # it committed (and pushed), even if the lock went after
+    for publish in publishes:
+        if publish.status != "succeeded":  # it committed (and pushed), even if the lock went after
+            continue
         result = publish.result or {}
         outcome.published = True
-        outcome.committed = dict(result.get("committed") or {})
-        outcome.pushed = bool(result.get("pushed", False))
-        outcome.pushed_repos = list(result.get("pushed_repos") or [])
-        outcome.push_failed = list(result.get("push_failed") or [])
+        for repo, committed in dict(result.get("committed") or {}).items():
+            outcome.committed[repo] = outcome.committed.get(repo, False) or bool(committed)
+        outcome.pushed = outcome.pushed or bool(result.get("pushed", False))
+        outcome.pushed_repos += [r for r in result.get("pushed_repos") or [] if r not in outcome.pushed_repos]
+        outcome.push_failed += [r for r in result.get("push_failed") or [] if r not in outcome.push_failed]
         for problem in result.get("problems") or []:  # a failed push: committed, not pushed
             outcome.report.problems.append(f"{problem}: {PUSH_FAILED}")
+    last = publishes[-1] if publishes else None
+    if last is None or last.status == "succeeded" or stopped:
         return False
-    if stopped:
-        return False
-    why = publish.error or f"pipeline.publish is {publish.status}"
+    why = last.error or f"pipeline.publish is {last.status}"
     outcome.report.problems.append(f"{why}: {PUBLISH_FAILED}")
     return True
+
+
+def _publishes_since(session: Session, since: datetime) -> list[Job]:
+    """The `pipeline.publish` jobs created at or after `since`, oldest first."""
+    statement = (
+        select(Job)
+        .where(Job.type == "pipeline.publish", Job.created_at >= since)
+        .order_by(Job.created_at, Job.id)
+    )
+    return list(session.scalars(statement))
 
 
 def _publish_only(ctx: HandlerContext, worker: Worker, *, push: bool) -> RunOutcome:
@@ -264,7 +287,11 @@ def _publish_only(ctx: HandlerContext, worker: Worker, *, push: bool) -> RunOutc
     if publish_id is not None:
         with session_scope(ctx.engine) as session:
             publish = session.get(Job, publish_id)
-            failed = _read_publish(outcome, publish, stopped=outcome.lock_lost or outcome.interrupted)
+            failed = _read_publishes(
+                outcome,
+                [publish] if publish is not None else [],
+                stopped=outcome.lock_lost or outcome.interrupted,
+            )
             outcome.left_queued = int(publish is not None and publish.status == "queued")
     outcome.report.committed, outcome.report.pushed = outcome.committed, outcome.pushed
     stopped = outcome.lock_lost or outcome.interrupted or failed or job_errors > 0
@@ -310,24 +337,23 @@ def _run(
     worker: Worker,
     params: dict[str, Any],
     *,
-    push: bool,
     wait_youtube_s: float | None,
     sleep: Callable[[float], object],
     worked_on: list[str],
 ) -> RunOutcome:
     run_id: uuid.UUID | None = None
-    publish_id: uuid.UUID | None = None
     outcome = RunOutcome(report=RunReport())
     job_errors = 0
+    started = ctx.clock()
     try:
         worker.check_lock()
         worker.reap_safely()
         run_id = _enqueue(ctx, "pipeline.run", params)
-        job_errors += _drain(worker)[1]
+        job_errors += _drain(worker)[
+            1
+        ]  # the worker's chain queues the publish, and a follow-up run if needed
         if wait_youtube_s is not None:
             job_errors += _wait_for_youtube(ctx, worker, run_id, wait_youtube_s, sleep)
-        publish_id = _enqueue(ctx, "pipeline.publish", {"push": push, "pull": push})
-        job_errors += _drain(worker)[1]
     except WorkerLockLost as e:
         log.error("the run lock was lost: the run stops here and commits nothing (%s)", e)
         outcome.lock_lost = True
@@ -338,6 +364,8 @@ def _run(
 
     now = ctx.clock()
     with session_scope(ctx.engine) as session:
+        publishes = _publishes_since(session, started)
+        publish_ids = [publish.id for publish in publishes]
         if run_id is not None:
             names = _run_item_names(session, run_id)
             # an earlier run's documents: the ones this drain worked on, and the ones still waiting in the
@@ -345,11 +373,10 @@ def _run(
             earlier = list(dict.fromkeys(n for n in [*worked_on, *_waiting_names(session)] if n not in names))
             outcome.report = report_for_job(session, run_id, also=earlier)
             names += earlier
-            outcome.left_queued = _queued_jobs_of_run(session, run_id, names, publish_id)
+            outcome.left_queued = _queued_jobs_of_run(session, run_id, names, publish_ids)
             outcome.blocked_lines = _blocked_lines(ctx, session, names, now)
             outcome.blocked_lines += _youtube_wait_line(session, names, now)
-        publish = session.get(Job, publish_id) if publish_id is not None else None
-        publish_failed = _read_publish(outcome, publish, stopped=outcome.lock_lost or outcome.interrupted)
+        publish_failed = _read_publishes(outcome, publishes, stopped=outcome.lock_lost or outcome.interrupted)
     outcome.report.committed, outcome.report.pushed = outcome.committed, outcome.pushed
     report = outcome.report
     failed = (
@@ -420,19 +447,19 @@ def _waiting_names(session: Session) -> list[str]:
     return [name for name in session.scalars(statement) if name]
 
 
-def _of_run(run_id: uuid.UUID, names: list[str], publish_id: uuid.UUID | None) -> Any:
-    ids = [run_id, *([publish_id] if publish_id is not None else [])]
+def _of_run(run_id: uuid.UUID, names: list[str], publish_ids: list[uuid.UUID]) -> Any:
+    ids = [run_id, *publish_ids]
     return or_(Job.id.in_(ids), Job.params["calculated_name"].astext.in_(names))
 
 
 def _queued_jobs_of_run(
-    session: Session, run_id: uuid.UUID, names: list[str], publish_id: uuid.UUID | None
+    session: Session, run_id: uuid.UUID, names: list[str], publish_ids: list[uuid.UUID]
 ) -> int:
-    """The jobs of this run (its own, its publish, and the jobs of its items) still queued."""
+    """The jobs of this run (its own, its publishes, and the jobs of its items) still queued."""
     statement = (
         select(func.count())
         .select_from(Job)
-        .where(Job.status == "queued", _of_run(run_id, names, publish_id))
+        .where(Job.status == "queued", _of_run(run_id, names, publish_ids))
     )
     return int(session.scalar(statement) or 0)
 

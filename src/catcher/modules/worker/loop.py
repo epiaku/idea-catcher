@@ -20,6 +20,7 @@ from catcher.modules.queue import queue
 from catcher.modules.queue.items import ACTIVE_STATUSES, get_item
 from catcher.modules.queue.models import Job, JobItem
 from catcher.modules.queue.states import ItemStates, mark_stuck
+from catcher.modules.worker.chain import queue_next
 from catcher.modules.worker.dispatch import Outcome, run_job
 from catcher.modules.worker.handlers import Handler, HandlerContext
 
@@ -116,6 +117,9 @@ class Worker:
 
     `sleep` is the idle wait; by default it is `stop.wait`, so an idle worker stops at once.
 
+    With `chain` the worker also queues, after each job, the job that follows it (see `chain.py`); `catcher
+    worker` turns it on. A failure of that step is logged and never stops the worker.
+
     Each reap also marks the items deferred for `stuck_after_days` days `stuck` (`mark_stuck`); by default
     the days come from `ctx.settings` (STUCK_AFTER_DAYS), and with no such setting nothing is marked."""
 
@@ -132,6 +136,7 @@ class Worker:
         sleep: Callable[[float], object] | None = None,
         lock_check: Callable[[], None] | None = None,
         stuck_after_days: float | None = None,
+        chain: bool = False,
     ) -> None:
         self.ctx = ctx
         self.handlers = handlers
@@ -143,6 +148,7 @@ class Worker:
         self._sleep = sleep
         self._lock_check = lock_check  # `WorkerLock.check`: raises WorkerLockLost when the lock is gone
         self._claim_failures = 0  # claims in a row that raised a database error
+        self.chain = chain  # after each job, queue the next one of the chain (pull -> run -> publish -> ...)
         if stuck_after_days is None and isinstance(ctx.settings, Settings):
             stuck_after_days = ctx.settings.stuck_after_days
         self.stuck_after_days = stuck_after_days
@@ -196,7 +202,17 @@ class Worker:
             return "error"
         if outcome == "failed":
             self.fail_item_of(job.id)
+        if self.chain:
+            self.queue_next_safely(job, outcome)
         return outcome
+
+    def queue_next_safely(self, job: Job, outcome: Outcome) -> None:
+        """Queue the job that follows `job` in the chain. An error is logged, never raised: the job is already
+        finished, and the next scheduled pull starts the chain again."""
+        try:
+            queue_next(self.ctx, job, outcome)
+        except Exception:
+            log.exception("chain: could not queue the job after %s (%s %s)", job.id, job.type, outcome)
 
     def fail_item_of(self, job_id: uuid.UUID) -> None:
         """After a job ended `failed` (a handler's `Fail`, or an exception `run_job` turned into one), its

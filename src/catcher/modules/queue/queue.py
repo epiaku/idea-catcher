@@ -145,6 +145,22 @@ def claim(
     return job
 
 
+def count_runnable(session: Session, *, now: datetime, types: Sequence[str]) -> int:
+    """How many jobs of `types` can run at `now`: the ones running, and the queued ones the claim would take
+    (due, and not held back by a closed resource). A job delayed to later, or waiting for the YouTube gate,
+    is not counted."""
+    require_aware(now)
+    closed = exists().where(
+        Resource.name == Job.resource,
+        or_(*(_holds(column, now) for column in _RESOURCE_TIMES)),
+    )
+    queued = and_(Job.status == "queued", Job.run_after <= now, ~closed)
+    statement = (
+        select(func.count()).select_from(Job).where(Job.type.in_(types), or_(Job.status == "running", queued))
+    )
+    return session.scalar(statement) or 0
+
+
 def resource_closed_until(now: datetime) -> ColumnElement[datetime | None]:
     """A column for a select on `Job`: until when the claim leaves that job queued for its resource, or NULL
     when it is claimable as far as the resource goes. The later of `blocked_until` and `next_allowed_at` that

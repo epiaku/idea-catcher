@@ -1107,10 +1107,10 @@ DOCS_MESSAGE = "idea-catcher: publish pages (pipeline.publish)"
 
 def parse_publish_params(params: dict[str, Any]) -> tuple[bool, bool]:
     """`(pull, push)` from the job's params. Raises ValueError with a message that names the bad parameter."""
-    unknown = sorted(set(params) - {"pull", "push"})
+    unknown = sorted(set(params) - {"pull", "push", "follow_up"})
     if unknown:
         raise ValueError(f"unknown parameter(s) for pipeline.publish: {', '.join(unknown)}")
-    for key in ("pull", "push"):
+    for key in ("pull", "push", "follow_up"):  # follow_up is read by the chain, not by the publish itself
         if not isinstance(params.get(key, True), bool):
             raise ValueError(f"{key} must be true or false, not {params[key]!r}")
     return params.get("pull", True), params.get("push", True)

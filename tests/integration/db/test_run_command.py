@@ -145,7 +145,11 @@ def test_run_pipeline_options_become_job_params(repos, use_services, pg_engine) 
         "refresh_facts": True,
     }
     [publish] = _jobs(pg_engine, "pipeline.publish")
-    assert publish.params == {"push": False, "pull": False}
+    assert publish.params == {
+        "push": False,
+        "pull": False,
+        "follow_up": False,
+    }  # a run with limit/only: one run
     plain = CliRunner().invoke(app, _args(repos))
     assert plain.exit_code == 0, plain.output
     assert _jobs(pg_engine, "pipeline.run")[-1].params == {}  # no option: no param
@@ -174,6 +178,42 @@ def test_run_pipeline_with_push_pushes_to_the_remote(repos, use_services, sh) ->
     assert "committed={'docs': True, 'ideas': True} pushed=True" in result.output
     for repo, bare in ((repos.ideas, repos.ideas_bare), (repos.docs, repos.docs_bare)):
         assert sh(bare, "rev-parse", "main") == sh(repo, "rev-parse", "HEAD")
+
+
+def test_the_push_flag_overrides_the_chain_publish_setting(
+    repos, use_services, sh, monkeypatch, pg_engine
+) -> None:
+    monkeypatch.setenv("CHAIN_PUBLISH_PUSH", "true")  # the setting says push; the command line says nothing
+    remote_before = sh(repos.ideas_bare, "rev-parse", "main")
+
+    result = CliRunner().invoke(app, _args(repos))
+
+    assert result.exit_code == 0, result.output
+    [publish] = _jobs(pg_engine, "pipeline.publish")
+    assert publish.params == {"push": False, "pull": False, "follow_up": True}
+    assert sh(repos.ideas_bare, "rev-parse", "main") == remote_before
+
+
+def test_a_capture_that_arrives_during_the_run_gets_a_follow_up_run(
+    repos, use_services, sh, tmp_path, pg_engine
+) -> None:
+    other = tmp_path / "other-ideas"
+    sh(tmp_path, "clone", str(repos.ideas_bare), str(other))
+    (other / "inbox/notes").mkdir(parents=True, exist_ok=True)
+    (other / "inbox/notes/phone.md").write_text("from the phone\n")
+    sh(other, "add", "-A")
+    sh(other, "commit", "-m", "a capture from the phone")
+    sh(other, "push")  # only the publish's pull (--push) brings it in
+
+    result = CliRunner().invoke(app, _args(repos, "--push"))
+
+    assert result.exit_code == 0, result.output
+    assert len(_jobs(pg_engine, "pipeline.run")) == 2
+    assert len(_jobs(pg_engine, "pipeline.publish")) == 2
+    with session_scope(pg_engine) as session:
+        statuses = [i.status for i in session.scalars(select(JobItem))]
+    assert statuses == ["published"] * 3
+    assert "phone" in result.output  # the report lists the follow-up run's document too
 
 
 def test_a_failed_push_is_a_problem_line_and_exit_1(repos, use_services, sh) -> None:

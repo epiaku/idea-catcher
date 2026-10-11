@@ -9,6 +9,12 @@
 #   3. docker compose -f compose.yaml -f compose.local-test.yaml down -v          (also deletes the scratch database)
 #
 # Send the requests in order. The two keys belong to compose.local-test.yaml (public, only for that test).
+#
+# THE CHAIN: only ideas.pull is scheduled (and no schedule is on in this stack). Every other job is queued by the
+# job before it: pipeline.run -> (llm.reason / youtube.fetch per document) -> pipeline.publish -> another
+# pipeline.run while files are left in the inbox. So after request 3, 4 or 5 you also get a pipeline.publish job
+# (list it with 11a to 11e). This stack sets CHAIN_PUBLISH_PUSH=false: the publish only COMMITS in tmp/ic, it
+# never pulls or pushes. A run with "limit" is one run: its publish queues no follow-up run.
 
 @baseUrl = http://127.0.0.1:8000
 @key = local-test-key-not-a-secret-0001
@@ -131,6 +137,8 @@ Content-Type: application/json
 #      would_fetch for the YouTube clips) instead of would_publish. Then send this request.
 # To try it small first, put {"limit": 3} in the body: only 3 documents are processed (the others stay in the
 # inbox for a later run) and only those calls are paid.
+# That is one run: the chained publish after it only commits here and queues no follow-up run (follow_up false),
+# so the other documents wait for a run of their own.
 # After it: the items (request 14a) show the real backend and model, and the replies and facts the run fetched
 # are saved in tmp/ic/idea-bucket/llm and facts. uv run catcher testdata reset (without the flag) puts the
 # committed saved ones back.
@@ -143,7 +151,7 @@ Content-Type: application/json
 
 # ====================================================================================================
 # JOBS: ALL TYPES TOGETHER (6a to 6d)
-# Total per status, every job type counted: pipeline.run, llm.reason, youtube.fetch, pipeline.preview.
+# Total per status, every job type counted: pipeline.run, llm.reason, youtube.fetch, pipeline.publish, pipeline.preview.
 # ====================================================================================================
 
 ### 6a. HOW MANY JOBS? Read "total" in each answer. Jobs waiting in the queue:
@@ -156,7 +164,7 @@ Authorization: Bearer {{key}}
 GET {{baseUrl}}/api/v1/jobs?status=running
 Authorization: Bearer {{key}}
 
-### 6c. Jobs finished: about 44 on the test data (the run + one llm.reason job per document, 43)
+### 6c. Jobs finished: about 45 on the test data (the run + one llm.reason job per document, 43, + the chained publish)
 #GET {{baseUrl}}/api/v1/jobs?status=succeeded&limit=1
 GET {{baseUrl}}/api/v1/jobs?status=succeeded
 Authorization: Bearer {{key}}
@@ -174,8 +182,8 @@ Authorization: Bearer {{key}}
 # Count one type: add &type=<type> to any call of 6a to 6d. Requests 7 to 12 do it for each type.
 # The types (the worker's registry): pipeline.run, pipeline.preview, llm.reason, youtube.fetch,
 # pipeline.publish (pushes the pages) and ideas.pull (pulls the ideas repository).
-# After request 5 with {"limit": 3} you expect: 1 pipeline.run and 3 llm.reason (plus 1 youtube.fetch per
-# YouTube clip among them, plus 1 pipeline.preview if you sent 2a). Read "total" in each answer.
+# After request 5 with {"limit": 3} you expect: 1 pipeline.run, 3 llm.reason and 1 pipeline.publish (plus 1
+# youtube.fetch per YouTube clip among them, plus 1 pipeline.preview if you sent 2a). Read "total" in each answer.
 # The first call lists ALL jobs of the type, whatever the status; the next four split it by status.
 
 # ====================================================================================================
@@ -285,8 +293,9 @@ Authorization: Bearer {{key}}
 # ====================================================================================================
 # 11. JOBS OF TYPE pipeline.publish  (total, then queued / running / succeeded / failed)
 # What: commits the managed folders of both repos, then pulls (rebase) and pushes.
-# Purpose: gets the generated pages into git. Queued by a schedule, the API or the CLI, never by this recipe,
-# so the totals are normally 0 here. This only LISTS them: it starts nothing.
+# Purpose: gets the generated pages into git. Queued by the chain after a run (params pull/push false in this
+# stack: a local commit only, follow_up false after a run with "limit"), or by hand. After request 3, 4 or 5
+# the total is 1 here. This only LISTS them: it starts nothing.
 # ====================================================================================================
 
 ### 11a. pipeline.publish
