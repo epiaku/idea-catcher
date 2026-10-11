@@ -34,6 +34,8 @@ x-local: &local
     GITHUB_TOKEN: ""
     IDEAS_REMOTE: ""
     DOCS_REMOTE: ""
+    # The chain publishes with a local commit only: nothing is pulled or pushed.
+    CHAIN_PUBLISH_PUSH: "false"
 
 services:
   db:

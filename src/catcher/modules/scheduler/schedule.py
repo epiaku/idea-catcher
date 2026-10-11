@@ -1,5 +1,6 @@
 """The pure rules of the scheduler: which schedules are on, and which slot is due. No database, no threads."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -10,13 +11,13 @@ from croniter import croniter
 from catcher.core.config import Settings
 from catcher.core.db import require_aware
 
-SCHEDULE_NAMES = ("ideas_pull", "pipeline_run", "publish")
+SCHEDULE_NAMES = ("ideas_pull",)
+# Schedules removed when the chain came: the worker still looks at these variables, only to warn
+REMOVED_VARIABLES = ("SCHEDULE_PIPELINE_RUN", "SCHEDULE_PUBLISH")
 
 # name -> (job type, params); the settings field and the variable name follow from the name
 _JOBS: dict[str, tuple[str, dict[str, Any]]] = {
     "ideas_pull": ("ideas.pull", {}),
-    "pipeline_run": ("pipeline.run", {"retry_deferred": True}),
-    "publish": ("pipeline.publish", {"pull": True, "push": True}),
 }
 
 
@@ -40,6 +41,11 @@ def check_cron(variable: str, cron: str) -> None:
     # croniter also accepts six fields (seconds); the schedule is minute-based, so only five are allowed
     if len(cron.split()) != 5 or not croniter.is_valid(cron):
         raise ValueError(f"{variable}: {cron!r} is not a valid cron string (five fields)")
+
+
+def ignored_variables(environ: Mapping[str, str]) -> list[str]:
+    """The removed schedule variables that are set (not empty) in `environ`: they do nothing any more."""
+    return [name for name in REMOVED_VARIABLES if environ.get(name, "").strip()]
 
 
 def parse_schedules(settings: Settings) -> list[ScheduleSpec]:

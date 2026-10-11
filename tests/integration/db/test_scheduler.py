@@ -25,7 +25,7 @@ START = datetime(2026, 10, 2, 5, 59, tzinfo=UTC)
 
 
 def specs(**crons: str) -> list[ScheduleSpec]:
-    base = {"schedule_ideas_pull": "", "schedule_pipeline_run": "", "schedule_publish": ""}
+    base = {"schedule_ideas_pull": ""}
     values = {**base, **{f"schedule_{name}": cron for name, cron in crons.items()}}
     return parse_schedules(Settings(_env_file=None, **values))
 
@@ -51,17 +51,17 @@ def finish_all(engine: Engine) -> None:
 
 def test_a_new_schedule_fires_nothing_and_stores_now(pg_engine: Engine) -> None:
     clock = FrozenClock(START)
-    sched = scheduler(pg_engine, clock, ideas_pull="* * * * *", publish="0 8 * * *")
+    sched = scheduler(pg_engine, clock, ideas_pull="* * * * *")
 
     assert sched.tick() == []
 
     assert jobs(pg_engine) == []
-    assert last_fired(pg_engine) == {"ideas_pull": START, "publish": START}
+    assert last_fired(pg_engine) == {"ideas_pull": START}
 
 
 def test_it_fires_on_the_slot_and_stores_last_fired(pg_engine: Engine) -> None:
     clock = FrozenClock(START)
-    sched = scheduler(pg_engine, clock, ideas_pull="0 8 * * *", pipeline_run="0 8 * * *", publish="0 8 * * *")
+    sched = scheduler(pg_engine, clock, ideas_pull="0 8 * * *")
     assert sched.tick() == []
 
     clock.advance(50)  # 07:59:50, still before 08:00
@@ -69,59 +69,49 @@ def test_it_fires_on_the_slot_and_stores_last_fired(pg_engine: Engine) -> None:
     assert jobs(pg_engine) == []
 
     clock.advance(20)  # 08:00:10 Amsterdam
-    assert sorted(sched.tick()) == ["ideas_pull", "pipeline_run", "publish"]
+    assert sched.tick() == ["ideas_pull"]
 
     got = {job.type: (job.params, job.dedupe_key, job.status, job.run_after) for job in jobs(pg_engine)}
-    assert got == {
-        "ideas.pull": ({}, "schedule:ideas_pull", "queued", clock.now),
-        "pipeline.run": ({"retry_deferred": True}, "schedule:pipeline_run", "queued", clock.now),
-        "pipeline.publish": ({"pull": True, "push": True}, "schedule:publish", "queued", clock.now),
-    }
+    assert got == {"ideas.pull": ({}, "schedule:ideas_pull", "queued", clock.now)}
     assert set(last_fired(pg_engine).values()) == {clock.now}
 
 
-def test_the_pull_fires_more_often_than_the_publish(pg_engine: Engine) -> None:
-    # 2026-10-01 23:59 in Amsterdam: the rows are created, then one local day minute by minute
+def test_the_hourly_pull_fires_once_an_hour(pg_engine: Engine) -> None:
+    # 2026-10-01 23:59 in Amsterdam: the row is created, then one local day minute by minute
     clock = FrozenClock(datetime(2026, 10, 1, 21, 59, tzinfo=UTC))
-    sched = scheduler(pg_engine, clock, ideas_pull="*/30 * * * *", publish="0 6,12,18,23 * * *")
+    sched = scheduler(pg_engine, clock, ideas_pull="0 * * * *")
     assert sched.tick() == []
 
-    counts = {"ideas_pull": 0, "publish": 0}
-    publish_hours = []
+    fired_hours = []
     for _ in range(24 * 60):
         clock.advance(60)
-        for name in sched.tick():
-            counts[name] += 1
-            if name == "publish":
-                publish_hours.append(clock.now.astimezone(AMS).hour)
+        if sched.tick():
+            fired_hours.append(clock.now.astimezone(AMS).hour)
         finish_all(pg_engine)  # the worker did the job, so the next slot is not deduped
 
-    assert counts == {"ideas_pull": 48, "publish": 4}
-    assert publish_hours == [6, 12, 18, 23]
+    assert fired_hours == [*range(24)]
 
 
 def test_downtime_fires_once_and_a_second_tick_fires_nothing(pg_engine: Engine) -> None:
     clock = FrozenClock(START)
-    sched = scheduler(
-        pg_engine, clock, ideas_pull="*/30 * * * *", pipeline_run="0 8 * * *", publish="0 6 * * *"
-    )
+    sched = scheduler(pg_engine, clock, ideas_pull="*/30 * * * *")
     assert sched.tick() == []
 
     clock.advance(3 * 24 * 3600)  # three days down
-    assert sorted(sched.tick()) == ["ideas_pull", "pipeline_run", "publish"]
+    assert sched.tick() == ["ideas_pull"]
     clock.advance(5)  # the next tick, same minute
     assert sched.tick() == []
 
-    assert sorted(job.type for job in jobs(pg_engine)) == ["ideas.pull", "pipeline.publish", "pipeline.run"]
+    assert [job.type for job in jobs(pg_engine)] == ["ideas.pull"]
     assert set(last_fired(pg_engine).values()) == {clock.now - timedelta(seconds=5)}
 
 
 def test_a_running_previous_job_consumes_the_slot_without_a_second_job(pg_engine: Engine) -> None:
     clock = FrozenClock(START)
-    sched = scheduler(pg_engine, clock, pipeline_run="*/30 * * * *")
+    sched = scheduler(pg_engine, clock, ideas_pull="*/30 * * * *")
     assert sched.tick() == []
     clock.advance(120)  # 08:01
-    assert sched.tick() == ["pipeline_run"]
+    assert sched.tick() == ["ideas_pull"]
     with session_scope(pg_engine) as s:  # the worker claimed it and is still busy with it
         s.execute(
             update(Job).values(status="running", locked_by="w", lease_until=clock.now + timedelta(hours=2))
@@ -130,7 +120,7 @@ def test_a_running_previous_job_consumes_the_slot_without_a_second_job(pg_engine
     clock.advance(30 * 60)  # 08:31: the 08:30 slot is due while the 08:00 job runs
     assert sched.tick() == []
     assert len(jobs(pg_engine)) == 1
-    assert last_fired(pg_engine) == {"pipeline_run": clock.now}  # the slot is consumed
+    assert last_fired(pg_engine) == {"ideas_pull": clock.now}  # the slot is consumed
 
     clock.advance(10)
     assert sched.tick() == []  # and nothing piles up for it
@@ -139,7 +129,7 @@ def test_a_running_previous_job_consumes_the_slot_without_a_second_job(pg_engine
     with session_scope(pg_engine) as s:
         s.execute(update(Job).values(status="succeeded", locked_by=None, lease_until=None))
     clock.advance(30 * 60)  # 09:01: the 09:00 slot fires again
-    assert sched.tick() == ["pipeline_run"]
+    assert sched.tick() == ["ideas_pull"]
     assert len(jobs(pg_engine)) == 2
 
 
@@ -176,55 +166,55 @@ def test_two_schedulers_ticking_together_queue_one_job(pg_engine: Engine, monkey
 
     monkeypatch.setattr(loop_module, "enqueue", slow_enqueue_without_dedupe)
     clock = FrozenClock(START)
-    first = scheduler(pg_engine, clock, publish="0 8 * * *")
-    second = scheduler(pg_engine, clock, publish="0 8 * * *")
+    first = scheduler(pg_engine, clock, ideas_pull="0 8 * * *")
+    second = scheduler(pg_engine, clock, ideas_pull="0 8 * * *")
 
     # Creating the row at the same moment: one row, nothing fires, no error
     assert _tick_together([first, second]) == [[], []]
-    assert last_fired(pg_engine) == {"publish": START}
+    assert last_fired(pg_engine) == {"ideas_pull": START}
 
     clock.advance(90)  # 08:00:30, the same minute for both
     results = _tick_together([first, second])
 
-    assert sorted(results) == [[], ["publish"]]
+    assert sorted(results) == [[], ["ideas_pull"]]
     assert len(jobs(pg_engine)) == 1
-    assert last_fired(pg_engine) == {"publish": clock.now}
+    assert last_fired(pg_engine) == {"ideas_pull": clock.now}
 
 
-def test_a_database_error_in_one_schedule_does_not_stop_the_others(
+def test_a_database_error_does_not_consume_the_slot_and_is_logged_once(
     pg_engine: Engine, monkeypatch, caplog
 ) -> None:
     real_enqueue = queue_module.enqueue
     broken = {"on": True}
 
-    def enqueue_failing_for_the_run(session, **kwargs):
-        if broken["on"] and kwargs["type"] == "pipeline.run":
+    def enqueue_failing_for_the_pull(session, **kwargs):
+        if broken["on"] and kwargs["type"] == "ideas.pull":
             raise OperationalError("insert into jobs", {}, Exception("server closed the connection"))
         return real_enqueue(session, **kwargs)
 
-    monkeypatch.setattr(loop_module, "enqueue", enqueue_failing_for_the_run)
+    monkeypatch.setattr(loop_module, "enqueue", enqueue_failing_for_the_pull)
     clock = FrozenClock(START)
-    sched = scheduler(pg_engine, clock, ideas_pull="0 8 * * *", pipeline_run="0 8 * * *", publish="0 8 * * *")
+    sched = scheduler(pg_engine, clock, ideas_pull="0 8 * * *")
     assert sched.tick() == []
 
     clock.advance(90)
     with caplog.at_level(logging.WARNING, logger="catcher.scheduler"):
-        assert sorted(sched.tick()) == ["ideas_pull", "publish"]
+        assert sched.tick() == []
         clock.advance(10)
         assert sched.tick() == []  # still failing: not logged again
     failures = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert len(failures) == 1 and "pipeline_run" in failures[0].getMessage()
+    assert len(failures) == 1 and "ideas_pull" in failures[0].getMessage()
 
     # its transaction was rolled back: the slot is not consumed, so it fires once the database is back
-    assert last_fired(pg_engine)["pipeline_run"] == START
+    assert last_fired(pg_engine)["ideas_pull"] == START
     broken["on"] = False
     clock.advance(10)
-    assert sched.tick() == ["pipeline_run"]
-    assert sorted(job.type for job in jobs(pg_engine)) == ["ideas.pull", "pipeline.publish", "pipeline.run"]
+    assert sched.tick() == ["ideas_pull"]
+    assert [job.type for job in jobs(pg_engine)] == ["ideas.pull"]
 
 
 def test_run_forever_survives_a_failing_tick_and_stops_on_the_event(pg_engine: Engine, caplog) -> None:
-    sched = scheduler(pg_engine, FrozenClock(START), publish="0 8 * * *")
+    sched = scheduler(pg_engine, FrozenClock(START), ideas_pull="0 8 * * *")
     stop = threading.Event()
     outcomes = ["fail", "fail", "ok", "fail", "ok", "stop"]
     calls: list[str] = []
@@ -263,17 +253,17 @@ def test_run_forever_survives_a_failing_tick_and_stops_on_the_event(pg_engine: E
 
 def test_a_schedule_row_without_last_fired_starts_now(pg_engine: Engine) -> None:
     with session_scope(pg_engine) as s:
-        s.add(Schedule(name="publish", last_fired_at=None))
+        s.add(Schedule(name="ideas_pull", last_fired_at=None))
     clock = FrozenClock(START + timedelta(hours=1))
-    assert scheduler(pg_engine, clock, publish="* * * * *").tick() == []
-    assert last_fired(pg_engine) == {"publish": clock.now}
+    assert scheduler(pg_engine, clock, ideas_pull="* * * * *").tick() == []
+    assert last_fired(pg_engine) == {"ideas_pull": clock.now}
 
 
 def test_a_clock_behind_last_fired_fires_nothing(pg_engine: Engine) -> None:
     with session_scope(pg_engine) as s:
-        s.add(Schedule(name="publish", last_fired_at=START + timedelta(days=1)))
-    assert scheduler(pg_engine, FrozenClock(START), publish="* * * * *").tick() == []
-    assert last_fired(pg_engine) == {"publish": START + timedelta(days=1)}
+        s.add(Schedule(name="ideas_pull", last_fired_at=START + timedelta(days=1)))
+    assert scheduler(pg_engine, FrozenClock(START), ideas_pull="* * * * *").tick() == []
+    assert last_fired(pg_engine) == {"ideas_pull": START + timedelta(days=1)}
     assert jobs(pg_engine) == []
 
 

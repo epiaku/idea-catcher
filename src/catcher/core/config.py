@@ -49,9 +49,10 @@ class Settings(BaseSettings):
     backfill_priority: int = -10
     backfill_daily_limit: int = Field(default=10, ge=0)
     # scheduler (in `catcher worker`): five-field cron strings in `schedule_timezone`; empty = off
+    # the only schedule: pipeline.run and pipeline.publish are queued by the job before them (the chain)
     schedule_ideas_pull: str = ""
-    schedule_pipeline_run: str = ""
-    schedule_publish: str = ""
+    # `pull` and `push` of the pipeline.publish the chain queues (false in the test stacks: commit only)
+    chain_publish_push: bool = True
     schedule_timezone: str = "Europe/Amsterdam"
     schedule_tick_s: float = Field(default=30, gt=0)  # seconds between two checks for a due slot
     git_author_name: str = "idea-catcher"

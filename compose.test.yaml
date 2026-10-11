@@ -19,8 +19,6 @@ x-smoke: &smoke
     LLM_MAX_ATTEMPTS: "1"
     YOUTUBE_OFFLINE: "1"
     SCHEDULE_IDEAS_PULL: "* * * * *"
-    SCHEDULE_PIPELINE_RUN: "* * * * *"
-    SCHEDULE_PUBLISH: "* * * * *"
     SCHEDULE_TIMEZONE: UTC
     GIT_AUTHOR_NAME: idea-catcher-smoke
     GIT_AUTHOR_EMAIL: idea-catcher-smoke@example.com

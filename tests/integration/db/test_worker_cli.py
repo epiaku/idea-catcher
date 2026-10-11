@@ -1,5 +1,6 @@
 """`catcher worker` and `catcher jobs` on a migrated fresh database (real Postgres, CliRunner)."""
 
+import logging
 import os
 import signal
 import subprocess
@@ -527,16 +528,16 @@ def test_typer_never_shows_local_variables_in_a_traceback() -> None:
 def test_worker_refuses_a_bad_cron_before_the_lock(
     runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "not a cron")
+    monkeypatch.setenv("SCHEDULE_IDEAS_PULL", "not a cron")
     with WorkerLock(engine):  # taken by someone else: a bad cron must be reported before the lock is tried
         result = runner.invoke(app, ["worker"])
     assert result.exit_code == 2
-    assert "SCHEDULE_PIPELINE_RUN" in result.output
+    assert "SCHEDULE_IDEAS_PULL" in result.output
     assert "another worker" not in result.output
     with WorkerLock(engine):  # free again
         pass
 
-    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "")
+    monkeypatch.setenv("SCHEDULE_IDEAS_PULL", "")
     monkeypatch.setenv("SCHEDULE_TIMEZONE", "Mars/Olympus")
     result = runner.invoke(app, ["worker"])
     assert result.exit_code == 2
@@ -550,10 +551,10 @@ def test_the_worker_starts_the_scheduler_and_stops_it_with_the_worker(
 
     now = datetime(2026, 1, 7, 12, 0, tzinfo=utc_now().tzinfo)  # in the past: its job is due at once
     monkeypatch.setattr(cli, "utc_now", lambda: now)
-    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "*/5 * * * *")
+    monkeypatch.setenv("SCHEDULE_IDEAS_PULL", "*/5 * * * *")
     monkeypatch.setenv("SCHEDULE_TICK_S", "0.1")
     with session_scope(engine) as session:
-        session.add(Schedule(name="pipeline_run", last_fired_at=now - timedelta(hours=1)))
+        session.add(Schedule(name="ideas_pull", last_fired_at=now - timedelta(hours=1)))
     seen: list[dict] = []
 
     def stub(ctx: HandlerContext, job: Job) -> Done:
@@ -561,7 +562,7 @@ def test_the_worker_starts_the_scheduler_and_stops_it_with_the_worker(
         os.kill(os.getpid(), signal.SIGTERM)  # the worker stops after this job
         return Done({})
 
-    monkeypatch.setitem(worker_app.EXTRA_HANDLERS, "pipeline.run", stub)
+    monkeypatch.setitem(worker_app.EXTRA_HANDLERS, "ideas.pull", stub)
     # Watchdog: if no job is ever queued the worker would run until killed; stop it so the test fails fast
     watchdog = threading.Timer(10, os.kill, (os.getpid(), signal.SIGTERM))
     watchdog.start()
@@ -573,17 +574,31 @@ def test_the_worker_starts_the_scheduler_and_stops_it_with_the_worker(
     finally:
         watchdog.cancel()
     assert result.exit_code == 0, result.output
-    assert seen == [{"retry_deferred": True}]
+    assert seen == [{}]
     [job] = _jobs(engine)
-    assert (job.type, job.status) == ("pipeline.run", "succeeded")
+    assert (job.type, job.status) == ("ideas.pull", "succeeded")
     assert not [t for t in threading.enumerate() if t.name == "scheduler"]  # joined
 
 
 def test_worker_once_starts_no_scheduler(runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "* * * * *")
+    monkeypatch.setenv("SCHEDULE_IDEAS_PULL", "* * * * *")
     started: list[object] = []
     monkeypatch.setattr(cli, "Scheduler", lambda *a, **k: started.append(a))
     result = runner.invoke(app, ["worker", "--once"])
     assert result.exit_code == 0, result.output
     assert started == []
     assert _jobs(engine) == []
+
+
+def test_worker_warns_about_the_removed_schedule_variables(
+    runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "0 8 * * *")
+    monkeypatch.setenv("SCHEDULE_PUBLISH", "0 6 * * *")
+    monkeypatch.setenv("SCHEDULE_IDEAS_PULL", "")
+    with caplog.at_level(logging.WARNING, logger="catcher.cli"):
+        result = runner.invoke(app, ["worker", "--once"])
+    assert result.exit_code == 0, result.output
+    warned = [r.getMessage() for r in caplog.records if "is ignored" in r.getMessage()]
+    assert len(warned) == 2
+    assert "SCHEDULE_PIPELINE_RUN" in warned[0] and "SCHEDULE_PUBLISH" in warned[1]

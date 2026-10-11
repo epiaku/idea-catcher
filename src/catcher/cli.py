@@ -62,6 +62,7 @@ from catcher.modules.scheduler.schedule import (
     SCHEDULE_NAMES,
     ScheduleSpec,
     due_slot,
+    ignored_variables,
     load_timezone,
     parse_schedules,
 )
@@ -1122,6 +1123,8 @@ def worker(
             log.error("%s", e)
             typer.echo(str(e), err=True)
             raise typer.Exit(2) from None
+    for name in ignored_variables(os.environ):
+        log.warning("%s is ignored: only SCHEDULE_IDEAS_PULL is scheduled, the rest follows as a chain", name)
     ctx = build_context(settings, ideas=ideas, docs=docs)
     stop = threading.Event()
     failed_once = False
@@ -1414,7 +1417,7 @@ def jobs_list(
 
 @app.command()
 def schedules() -> None:
-    """Show the three schedules of `catcher worker`: name, cron, timezone, last fired (UTC) and next due
+    """Show the schedule of `catcher worker`: name, cron, timezone, last fired (UTC) and next due
     (in the schedule timezone). An empty variable shows `off`. Read-only; the worker need not run."""
     settings = Settings()
     try:

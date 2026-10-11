@@ -50,7 +50,7 @@ uv run catcher run pipeline --ideas tmp/ic/idea-bucket --docs tmp/ic/epiaku-docs
 | `catcher api` | Serve the HTTP API (Swagger UI at `/docs`); needs `API_KEYS` and `DATABASE_URL` (Stage C; see [How to run the API](docs/idea-catcher-how-to-run-api.md)) |
 | `catcher worker` | Run the jobs in the queue, one at a time, until Ctrl-C (`--once`: run what is due, then exit). One worker at a time (Stage B) |
 | `catcher jobs add TYPE`, `catcher jobs list` | Put a job on the queue (`pipeline.run`, `pipeline.publish`, `ideas.pull`, with `--param KEY=VALUE`), list the jobs (Stage B) |
-| `catcher schedules` | Show the three schedules of the worker (`SCHEDULE_IDEAS_PULL`, `SCHEDULE_PIPELINE_RUN`, `SCHEDULE_PUBLISH`): cron, timezone, last fired (UTC), next due (Stage B) |
+| `catcher schedules` | Show the schedule of the worker (`SCHEDULE_IDEAS_PULL`; the run and the publish follow it as a chain): cron, timezone, last fired (UTC), next due (Stage B) |
 | `catcher publish` | Commit both repos by hand (`--push`: also pull and push); takes the worker's lock, so never next to a worker (Stage B) |
 | `catcher items list` | List the documents the worker handles: state, since when and why (`--status stuck`, `--limit N`; Stage B) |
 | `catcher reconcile` | Rebuild the item rows from the idea-bucket folders after a lost or new database; never deletes a file or a row, and closes the YouTube gate (`--dry-run` first, `--keep-gate`; Stage B) |

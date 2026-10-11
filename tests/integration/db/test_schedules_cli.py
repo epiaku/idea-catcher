@@ -15,7 +15,7 @@ from catcher.modules.queue.models import Job, Schedule
 @pytest.fixture
 def runner(fresh_database_url: str, monkeypatch: pytest.MonkeyPatch) -> CliRunner:
     monkeypatch.setenv("DATABASE_URL", fresh_database_url)
-    for name in ("IDEAS_PULL", "PIPELINE_RUN", "PUBLISH"):
+    for name in ("IDEAS_PULL", "PIPELINE_RUN", "PUBLISH"):  # the last two are removed: they do nothing
         monkeypatch.setenv(f"SCHEDULE_{name}", "")
     cli_runner = CliRunner()
     result = cli_runner.invoke(app, ["db", "upgrade"])
@@ -32,16 +32,15 @@ def engine(fresh_database_url: str, runner: CliRunner):
         db.dispose()
 
 
-def test_schedules_lists_the_three_with_last_fired_and_next_due(
+def test_schedules_lists_the_one_with_last_fired_and_next_due(
     runner: CliRunner, engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     now = datetime(2026, 10, 7, 12, 0, tzinfo=utc_now().tzinfo)  # 14:00 in Amsterdam (CEST)
     monkeypatch.setattr(cli, "utc_now", lambda: now)
-    monkeypatch.setenv("SCHEDULE_IDEAS_PULL", "*/30 * * * *")
-    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "0 8,12,17,21 * * *")
-    monkeypatch.setenv("SCHEDULE_PUBLISH", "0 9 * * *")
+    monkeypatch.setenv("SCHEDULE_IDEAS_PULL", "0 * * * *")
+    monkeypatch.setenv("SCHEDULE_PIPELINE_RUN", "0 8 * * *")  # removed: not listed
     with session_scope(engine) as session:
-        session.add(Schedule(name="pipeline_run", last_fired_at=now - timedelta(hours=1)))
+        session.add(Schedule(name="ideas_pull", last_fired_at=now - timedelta(hours=1)))
     result = runner.invoke(app, ["schedules"])
     assert result.exit_code == 0, result.output
     lines = {line.split()[0]: line for line in result.output.splitlines()[1:]}
@@ -54,20 +53,18 @@ def test_schedules_lists_the_three_with_last_fired_and_next_due(
         "next",
         "due",
     ]
-    assert set(lines) == {"ideas_pull", "pipeline_run", "publish"}
-    assert "0 8,12,17,21 * * *" in lines["pipeline_run"]
-    assert "Europe/Amsterdam" in lines["pipeline_run"]
-    assert "2026-10-07 11:00" in lines["pipeline_run"]  # last fired (UTC)
-    assert "2026-10-07 17:00" in lines["pipeline_run"]  # next due, Amsterdam wall time
-    assert "never" in lines["publish"]
-    assert "2026-10-08 09:00" in lines["publish"]
+    assert set(lines) == {"ideas_pull"}
+    assert "0 * * * *" in lines["ideas_pull"]
+    assert "Europe/Amsterdam" in lines["ideas_pull"]
+    assert "2026-10-07 11:00" in lines["ideas_pull"]  # last fired (UTC)
+    assert "due now" in lines["ideas_pull"]  # the 13:00 and 14:00 Amsterdam slots have passed since then
 
 
 def test_schedules_shows_off_for_an_empty_variable(runner: CliRunner, engine) -> None:
     result = runner.invoke(app, ["schedules"])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()[1:]
-    assert len(lines) == 3
+    assert len(lines) == 1
     assert all("off" in line for line in lines)
     with session_scope(engine) as session:
         assert session.scalar(select(func.count()).select_from(Schedule)) == 0  # read-only

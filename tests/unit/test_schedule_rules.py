@@ -4,18 +4,24 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from catcher.core.config import Settings
-from catcher.modules.scheduler.schedule import SCHEDULE_NAMES, ScheduleSpec, due_slot, parse_schedules
+from catcher.modules.scheduler.schedule import (
+    SCHEDULE_NAMES,
+    ScheduleSpec,
+    due_slot,
+    ignored_variables,
+    parse_schedules,
+)
 
 AMS = ZoneInfo("Europe/Amsterdam")
 
 
 def settings(**kw) -> Settings:
-    base = {"schedule_ideas_pull": "", "schedule_pipeline_run": "", "schedule_publish": ""}
+    base = {"schedule_ideas_pull": ""}
     return Settings(_env_file=None, **{**base, **kw})
 
 
 def spec(cron: str) -> ScheduleSpec:
-    return ScheduleSpec("x", cron, "pipeline.run", {}, "SCHEDULE_PIPELINE_RUN")
+    return ScheduleSpec("x", cron, "ideas.pull", {}, "SCHEDULE_IDEAS_PULL")
 
 
 def utc(*a) -> datetime:
@@ -24,18 +30,18 @@ def utc(*a) -> datetime:
 
 def test_empty_variables_mean_no_schedule():
     assert parse_schedules(settings()) == []
-    assert SCHEDULE_NAMES == ("ideas_pull", "pipeline_run", "publish")
+    assert SCHEDULE_NAMES == ("ideas_pull",)
 
 
 @pytest.mark.parametrize("cron", ["0 8 * * * *", "every day", "61 * * * *", "* * * *"])
 def test_a_bad_cron_names_the_variable(cron):
-    with pytest.raises(ValueError, match="SCHEDULE_PUBLISH"):
-        parse_schedules(settings(schedule_publish=cron))
+    with pytest.raises(ValueError, match="SCHEDULE_IDEAS_PULL"):
+        parse_schedules(settings(schedule_ideas_pull=cron))
 
 
 def test_an_unknown_timezone_is_refused():
     with pytest.raises(ValueError, match="SCHEDULE_TIMEZONE"):
-        parse_schedules(settings(schedule_timezone="Mars/Olympus", schedule_publish="0 8 * * *"))
+        parse_schedules(settings(schedule_timezone="Mars/Olympus", schedule_ideas_pull="0 8 * * *"))
 
 
 def test_the_next_slot_is_due_once_it_has_passed():
@@ -119,17 +125,22 @@ def test_the_fall_back_hour_fires_once():
     assert fires["2026-10-24"] == 1 and fires["2026-10-26"] == 1
 
 
-def test_the_job_types_and_params_of_the_three_schedules():
-    specs = parse_schedules(
-        settings(
-            schedule_ideas_pull="*/30 * * * *",
-            schedule_pipeline_run="0 7 * * *",
-            schedule_publish="0 6 * * *",
-        )
-    )
+def test_the_job_type_and_params_of_the_one_schedule():
+    specs = parse_schedules(settings(schedule_ideas_pull="0 * * * *"))
     got = {s.name: (s.job_type, s.params, s.variable, s.cron) for s in specs}
-    assert got == {
-        "ideas_pull": ("ideas.pull", {}, "SCHEDULE_IDEAS_PULL", "*/30 * * * *"),
-        "pipeline_run": ("pipeline.run", {"retry_deferred": True}, "SCHEDULE_PIPELINE_RUN", "0 7 * * *"),
-        "publish": ("pipeline.publish", {"pull": True, "push": True}, "SCHEDULE_PUBLISH", "0 6 * * *"),
-    }
+    assert got == {"ideas_pull": ("ideas.pull", {}, "SCHEDULE_IDEAS_PULL", "0 * * * *")}
+
+
+def test_the_removed_schedule_variables_are_reported_only_when_set():
+    assert ignored_variables({}) == []
+    assert ignored_variables({"SCHEDULE_PIPELINE_RUN": "", "SCHEDULE_PUBLISH": "  "}) == []
+    assert ignored_variables({"SCHEDULE_PIPELINE_RUN": "0 8 * * *", "SCHEDULE_PUBLISH": "0 6 * * *"}) == [
+        "SCHEDULE_PIPELINE_RUN",
+        "SCHEDULE_PUBLISH",
+    ]
+    assert ignored_variables({"SCHEDULE_IDEAS_PULL": "0 * * * *"}) == []
+
+
+def test_chain_publish_push_defaults_to_true():
+    assert Settings(_env_file=None).chain_publish_push is True
+    assert Settings(_env_file=None, chain_publish_push=False).chain_publish_push is False
