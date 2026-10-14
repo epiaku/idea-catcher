@@ -126,9 +126,11 @@ def test_only_the_fetcher_and_the_channel_listing_import_yt_dlp():
     assert mentions == allowed
 
 
-def test_the_listing_runs_only_inside_access_call():
-    """In cli.py, `list_channel` is called only inside the callable handed to `access.call` (the gate)."""
-    tree = ast.parse((SRC / "cli.py").read_text(encoding="utf-8"))
+@pytest.mark.parametrize("file", ["cli.py", "modules/worker/handlers_backfill.py"])
+def test_the_listing_runs_only_inside_access_call(file):
+    """`list_channel` (as `module.list_channel` or the bare name) is called only inside the callable handed to
+    `access.call` (the gate), in the CLI and in the worker's `backfill.channel` handler."""
+    tree = ast.parse((SRC / file).read_text(encoding="utf-8"))
     inside: list[ast.AST] = []
     for node in ast.walk(tree):
         if (
@@ -142,6 +144,27 @@ def test_the_listing_runs_only_inside_access_call():
     calls = [
         n
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "list_channel"
+        if isinstance(n, ast.Call)
+        and (
+            (isinstance(n.func, ast.Attribute) and n.func.attr == "list_channel")
+            or (isinstance(n.func, ast.Name) and n.func.id == "list_channel")
+        )
     ]
     assert calls and all(any(c is n for n in inside) for c in calls)
+
+
+def test_the_worker_builds_the_extractor_only_as_the_module_default():
+    """In handlers_backfill.py `build_extractor` is used once: the module-level default of `EXTRACTOR_FACTORY`
+    (a function-level use would build yt-dlp where nothing guards it)."""
+    tree = ast.parse((SRC / "modules/worker/handlers_backfill.py").read_text(encoding="utf-8"))
+    uses = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "build_extractor"]
+    defaults = [
+        n.value
+        for n in tree.body
+        if isinstance(n, ast.AnnAssign)
+        and isinstance(n.target, ast.Name)
+        and n.target.id == "EXTRACTOR_FACTORY"
+        and isinstance(n.value, ast.Name)
+    ]
+    assert len(defaults) == 1 and defaults[0].id == "build_extractor"
+    assert [u for u in uses if u is not defaults[0]] == []  # the import is an alias, not a Name
