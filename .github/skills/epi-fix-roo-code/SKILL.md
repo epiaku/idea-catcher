@@ -1,6 +1,6 @@
 ---
 name: epi-fix-roo-code
-description: "Fix Roo Code (rooveterinaryinc.roo-cline) failing every chat request with 'Could not find ripgrep binary' and hanging on 'API Request'. Explains why the ripgrep path has to be added to the VS Code install on macOS, and runs the script that creates it. Use when Roo Code never answers, after a VS Code update broke it again, or when someone asks why this symlink exists."
+description: Fix Roo Code (VS Code extension rooveterinaryinc.roo-cline) hanging forever on "API Request" with no error, caused by "Could not find ripgrep binary" after a VS Code update. Explains the cause and runs the repair script that re-creates the ripgrep symlink. Use when Roo Code hangs, shows a spinning API Request, logs "ripgrep not found", or after a VS Code update breaks Roo Code. Keywords: Roo Code, roo-cline, ripgrep, rg, API Request hang, VS Code update.
 metadata:
   version: "1.0.0"
   source: "epiaku"
@@ -9,89 +9,81 @@ metadata:
 
 # epi-fix-roo-code
 
-Roo Code cannot find the `ripgrep` (`rg`) program that VS Code ships, so every chat request fails. This skill explains why, and fixes it with one script.
+Repairs Roo Code when every chat request hangs on a spinning **API Request**
+with no error.
 
-## When to use
+## How to start this skill
 
-Use it when **any** of these is true:
+Any of these phrases in the chat triggers it:
 
-- Roo Code shows **`Could not find ripgrep binary`**, or its chat is stuck on **`API Request`** forever with no visible error.
-- Roo Code worked before and stopped after a **VS Code update**.
-- Someone asks **why there is a symlink inside the VS Code app** (the explanation is below).
+- "fix roo code" / "fix roo-code" / "repair roo code"
+- "roo code is hanging on API Request"
+- "roo code can't find ripgrep" / "ripgrep not found"
+- "roo code stopped working after the VS Code update"
+- "run the roo ripgrep fix"
 
-It does not apply to Claude Code, Cline or Copilot. It is only about Roo Code, and only about VS Code on **macOS**.
+Other ways to invoke it:
 
-## Why the ripgrep path has to be added
+- **Claude Code:** type `/epi-fix-roo-code` or just describe the problem.
+- **Cline / Roo Code:** ask for the skill by name ("use the epi-fix-roo-code
+  skill"); see `docs/invoking-skills-cline-claude.md`.
+- **No agent, run the script directly** from the repo root:
 
-Roo Code needs `ripgrep` before **every** API request (it searches the workspace to build the context). It does not bring its own copy. It looks for the one inside VS Code, and it only checks a **fixed list of folders** under VS Code's app folder (`vscode.env.appRoot`):
+  ```bash
+  bash .github/skills/epi-fix-roo-code/scripts/fix-roo-ripgrep.sh
+  ```
 
-```text
-node_modules.asar.unpacked/@vscode/ripgrep/bin/
-node_modules.asar.unpacked/vscode-ripgrep/bin/
-node_modules/@vscode/ripgrep/bin/
-node_modules/vscode-ripgrep/bin
-```
+If the user only wants to understand the problem (not fix it), explain from
+the reference doc and skip the script.
 
-Recent VS Code builds (for example **1.138.0**) moved `ripgrep` to a **new layout** that is not on that list:
+## Why it happens
 
-```text
-node_modules.asar.unpacked/@vscode/ripgrep-universal/bin/<platform-arch>/rg
-```
+Roo Code (3.54.0) looks for `rg` (ripgrep) only in the old
+`@vscode/ripgrep/bin/` locations under VS Code's `appRoot`. Recent VS Code
+builds (1.138.0+) ship it at
+`@vscode/ripgrep-universal/bin/<platform-arch>/rg`, so Roo Code never finds
+it. The lookup runs before every API call and its rejection is never caught,
+so the task loop dies before any HTTP request is made.
 
-Roo Code's lookup was written before this rename, so it **can never find the program**. The error is thrown in a step that runs before every API call, and nothing handles it. The chat window therefore just hangs, with no error shown. That is why it looks like Roo Code is "thinking" when it has actually failed.
+The fix is a symlink at the path Roo Code expects, pointing to the real
+binary VS Code already ships. **VS Code updates wipe the symlink**, so the
+fix must be re-applied after each update.
 
-## What the fix does
+Full investigation, stack trace, ruled-out causes and lessons learned:
+[references/roo-code-ripgrep-hang-fix.md](references/roo-code-ripgrep-hang-fix.md).
+Read it when the user asks for background or when the script's fix doesn't
+resolve the problem.
 
-The script creates the folder and file Roo Code expects, as a **symlink to the real binary VS Code already ships**:
+## Workflow
 
-```text
-<VS Code>/Contents/Resources/app/node_modules.asar.unpacked/@vscode/ripgrep/bin/rg
-    -> .../@vscode/ripgrep-universal/bin/<darwin-arm64 or darwin-x64>/rg
-```
+1. Briefly tell the user what the problem is and what the script will do
+   (summarise "Why it happens" above).
+2. Run the script from the repo root:
 
-- It adds **no new program**. It only points the old path at the binary that is already there.
-- It is **idempotent**: if the right symlink exists, it says "Already fixed" and changes nothing.
-- It **refuses to touch** anything else at that path (a real file, or a link to somewhere else) and tells you to remove it by hand.
-- It needs **`sudo`**, because the folder is inside `/Applications/Visual Studio Code.app`.
+   ```bash
+   bash .github/skills/epi-fix-roo-code/scripts/fix-roo-ripgrep.sh
+   ```
 
-## How to run it
+3. Interpret the result:
+   - `Already fixed: ...` — symlink is correct; nothing changed. The hang has
+     another cause; see the reference doc's "What this was *not*" section and
+     check the Webview Developer Tools console.
+   - `Missing: ... Creating it now` / `Created: ...` — the fix was just
+     (re)applied, most likely after a VS Code update.
+   - `Found something unexpected ...` — the script refuses to overwrite it;
+     show the user the path and let them decide.
+   - `Expected VS Code ripgrep binary not found` — VS Code's layout changed
+     again; inspect the `ripgrep-universal/bin` directory it names.
+4. Tell the user to reload VS Code: `Cmd+Shift+P` → `Developer: Reload
+   Window` → Enter.
 
-**Needs the user.** The script asks for the administrator password (`sudo`), and an agent cannot type it. Do **not** run it silently. Tell the user what it does, and ask them to run it in their **own terminal**, from the project root:
+## Preconditions & safety
 
-```bash
-bash .github/skills/epi-fix-roo-code/scripts/fix-roo-ripgrep.sh
-```
-
-Then they must **reload VS Code**: `Cmd+Shift+P`, type `Developer: Reload Window`, press Enter.
-
-### Check first, without sudo
-
-To see whether the fix is already in place, or whether the problem is something else:
-
-```bash
-RG="/Applications/Visual Studio Code.app/Contents/Resources/app/node_modules.asar.unpacked/@vscode/ripgrep/bin/rg"
-ls -l "$RG"                     # a symlink to .../ripgrep-universal/bin/<platform>/rg means it is fixed
-"$RG" --version                 # prints the ripgrep version when the link works
-```
-
-## What the script can say
-
-| Output | Meaning | What to do |
-| --- | --- | --- |
-| `Already fixed: ... -> ...` | The right symlink exists | Nothing. If Roo Code still hangs, the cause is something else (an API key or model setting) |
-| `Created: ... -> ...` | The symlink was made | Reload the VS Code window |
-| `This script only supports macOS VS Code installs` | Linux or Windows | The same cause may exist there, but this script does not cover it |
-| `Unrecognized architecture` | Not `arm64` or `x86_64` | Stop and look at the machine |
-| `Expected VS Code ripgrep binary not found at: ...` | VS Code **changed the layout again** | List `.../@vscode/ripgrep-universal/bin/` by hand, find where `rg` is now, and update `UNIVERSAL_RG_DIR` in the script |
-| `Found something unexpected at ... -- leaving it alone` | Something else is at the path | Look at it. Remove it by hand only if you are sure, then run the script again |
-
-## When to run it again
-
-- **After every VS Code update.** An update can replace the `node_modules.asar.unpacked` folder and delete the symlink. Run the script again, then reload the window.
-- If the script stops working, VS Code moved `ripgrep` again. Also check whether a **newer Roo Code** now finds it by itself: after updating Roo Code, test it **without** the symlink before keeping the workaround.
-
-## Limits and safety
-
-- **macOS only.** The script uses `uname`, and the fixed app path `/Applications/Visual Studio Code.app`. A VS Code installed somewhere else, or VS Code Insiders, is not found and the script stops with a message.
-- **It changes the VS Code installation, not the project.** It writes inside `/Applications`, with `sudo`. Tell the user before running it.
-- It is a **workaround for Roo Code's lookup**, not a change to VS Code or Roo Code themselves.
+- macOS only (the script aborts on other platforms), with VS Code at
+  `/Applications/Visual Studio Code.app`.
+- Creating the symlink uses `sudo` (the user's Mac login password). `sudo`
+  needs an interactive terminal, so if the Bash tool can't prompt, ask the
+  user to run the command themselves (e.g. with the `!` prefix in the
+  prompt).
+- The script is idempotent and never overwrites an existing non-matching file.
+- This is a workaround for a Roo Code bug, not a permanent fix.

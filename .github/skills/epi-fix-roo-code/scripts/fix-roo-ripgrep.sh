@@ -22,7 +22,7 @@
 # including after a VS Code update wipes node_modules.asar.unpacked/ and
 # the symlink needs recreating.
 #
-# Run from anywhere (it does not depend on the project):
+# Run from project root:
 #
 # bash .github/skills/epi-fix-roo-code/scripts/fix-roo-ripgrep.sh
 
@@ -50,8 +50,8 @@ esac
 
 REAL_RG_BIN="$UNIVERSAL_RG_DIR/$PLATFORM_ARCH/rg"
 
-if [[ ! -f "$REAL_RG_BIN" || ! -x "$REAL_RG_BIN" ]]; then
-    echo "Expected VS Code ripgrep binary not found (or not executable) at:" >&2
+if [[ ! -f "$REAL_RG_BIN" ]]; then
+    echo "Expected VS Code ripgrep binary not found at:" >&2
     echo "  $REAL_RG_BIN" >&2
     echo "VS Code's ripgrep bundling may have changed again; inspect $UNIVERSAL_RG_DIR manually." >&2
     exit 1
@@ -64,12 +64,7 @@ if [[ -L "$EXPECTED_RG_LINK" && "$(readlink "$EXPECTED_RG_LINK")" == "$REAL_RG_B
 fi
 
 if [[ -e "$EXPECTED_RG_LINK" || -L "$EXPECTED_RG_LINK" ]]; then
-    if [[ -L "$EXPECTED_RG_LINK" ]]; then
-        echo "Found a symlink at $EXPECTED_RG_LINK that points to: $(readlink "$EXPECTED_RG_LINK")" >&2
-        echo "That is not the exact path this script would create ($REAL_RG_BIN) -- leaving it alone." >&2
-    else
-        echo "Found something unexpected at $EXPECTED_RG_LINK (not our symlink) -- leaving it alone." >&2
-    fi
+    echo "Found something unexpected at $EXPECTED_RG_LINK (not our symlink) -- leaving it alone." >&2
     echo "Remove it manually if you want this script to replace it." >&2
     exit 1
 fi
