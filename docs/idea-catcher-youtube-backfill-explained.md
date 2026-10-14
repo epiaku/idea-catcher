@@ -83,7 +83,7 @@ Two tables, linked by the video id.
 SELECT b.found_in AS channel, b.video_id, b.status AS backlog,
        i.status AS processing, i.stage_reason
 FROM backfill_videos b
-LEFT JOIN job_items i ON i.doc_id = b.video_id
+LEFT JOIN job_items i ON b.status = 'released' AND i.doc_id = b.video_id
 WHERE b.source = 'channel'
 ORDER BY b.found_at;
 ```
@@ -179,7 +179,10 @@ Rules for `release`:
 - **On by default** on both POST endpoints. Add `"release": false` to only fill the backlog.
 - **Only this call's videos.** The videos listed by the channel (or found by the docs scan) that are `pending`. A video found in an earlier call with `release: false` is still released if the new call lists it again. Pending videos from other channels or from the docs scan are not touched.
 - **The 24-hour cap still applies.** `release: N` is the cap itself: it releases `N` minus everything released in the last 24 hours, whoever released it. Run it twice the same day with the same `N` and the second run releases nothing. Without a number, the cap is `BACKFILL_DAILY_LIMIT` of the worker (default 10). The API container cannot see worker settings, so the worker resolves it.
-- **Leftovers stay pending.** Videos over the cap are kept in `backfill_videos` and can be released later by another call.
+- **Leftovers stay pending.** Videos over the cap, or left by a call with `release: false`, are kept in `backfill_videos`. A `POST /backfill/docs` releases only the pending videos its scan found (linked in the docs). A `POST /backfill/channels` releases only the videos that listing returned, so leftovers of a channel can be released over the API only by listing that channel again with a `max_videos` large enough to include them (a new listing through the YouTube gate). `catcher youtube import --release` or `--limit N` on the command line drains the whole backlog of any source. An API call that releases pending videos of any source is not built.
+- **`BACKFILL_DAILY_LIMIT=0` releases nothing.** With the worker setting at 0 the default (`true`) has an allowance of 0, so nothing is released (the docs result shows `allowance` 0). The worker default is 10.
+- **Release order inside one listing is by video id, not newest first.** Every video of one listing gets the same `found_at`, so the release order falls back to the video id. `max_videos: 50` with `release: 20` releases 20 of those 50 in video-id order.
+- **An existing `release: false` job wins.** If a `release: false` channel job for the same URL is still queued or running, a default call for that URL gets `200` with that existing job, which releases nothing. The API does not merge `release` into an existing job.
 - **A dry run never releases.** `POST /backfill/docs` with `dry_run: true` only counts.
 - **The CLI is unchanged.** `catcher youtube import` releases only with `--limit` or `--release`.
 
@@ -191,7 +194,7 @@ Examples:
 {"urls": ["https://www.youtube.com/@SomeChannel"], "max_videos": 50, "release": 20}
 ```
 
-The first lists 10, stores the new ones and releases them up to the default cap. The second only stores them. The third lists 50 and releases at most 20.
+The first lists 10, stores the new ones and releases them up to the default cap. The second only stores them. The third lists 50 and releases at most 20, in video-id order.
 
 ## The two `yt-dlp` calls {#ytdlp}
 
@@ -204,7 +207,7 @@ Every channel listing goes through the YouTube gate: one slot per channel, the g
 
 ## What `max_videos` cannot do {#limits}
 
-- **No start position.** The listing asks for "the first N" (`playlistend`) and has no offset. A second run with the same `max_videos` lists the same top videos, finds them all known and adds nothing new to the backlog (any of them still `pending` is released again by default). This is the correct and cheap result.
+- **No start position.** The listing asks for "the first N" (`playlistend`) and has no offset. A second run with the same `max_videos` lists the same top videos, finds them all known and adds nothing new to the backlog (any of them still `pending` is released by default). This is the correct and cheap result.
 - **Going deeper.** Raise `max_videos` (10, then 20, then 30). Each run adds only the new slice. Up to 30 videos is one page request, so it costs almost nothing.
 - **Ceiling.** The newest 100 videos are the most one channel listing can reach. Older videos need a start offset, which is not built.
 - **Re-requested pages.** Each run asks for the earlier pages again. This is a small waste (at most a few page requests, paced by the gate) caused by the missing offset, not a design goal.

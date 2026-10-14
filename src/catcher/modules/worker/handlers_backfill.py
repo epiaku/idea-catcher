@@ -1,13 +1,14 @@
 """The backfill handlers.
 
-`backfill.docs`: scan the docs repo for YouTube links, store the videos without a page in the backlog and,
-when asked, release some of the backlog within the daily cap. The docs repo is only pulled here (never
-committed apart from the worker's own pages, which are committed locally before the pull, as `ideas.pull`
-does); a dry run pulls nothing and writes nothing.
+`backfill.docs`: scan the docs repo for YouTube links, store the videos without a page in the backlog and, by
+default, release the pending videos this scan found, up to the daily cap (`release` false or 0 turns it off).
+The docs repo is only pulled here (never committed apart from the worker's own pages, which are committed
+locally before the pull, as `ideas.pull` does); a dry run pulls nothing and writes nothing.
 
 `backfill.channel`: list one channel or playlist through the YouTube gate (one slot), store its unknown videos
-in the backlog and, when asked, release some within the daily cap. A closed gate defers the job (never a
-sleep); the claim leaves the job queued while the gate is closed."""
+in the backlog and, by default, release the pending videos this listing returned, up to the daily cap
+(`release` false or 0 turns it off). A closed gate defers the job (never a sleep); the claim leaves the job
+queued while the gate is closed."""
 
 import logging
 from collections.abc import Callable
@@ -83,7 +84,7 @@ def parse_docs_params(params: dict[str, Any]) -> DocsParams:
 
 def handle_backfill_docs(ctx: HandlerContext, job: Job) -> HandlerResult:
     """Pull the docs repo (unless `pull` is false or `dry_run`), store the new links as pending and, by
-    default, release the pending ones it scanned, up to that daily cap (`release` false or 0 releases
+    default, release the pending ones it scanned, up to the daily cap (`release` false or 0 releases
     nothing). A failed pull is `Fail(git's message)` and stores nothing."""
     try:
         params = parse_docs_params(dict(job.params or {}))

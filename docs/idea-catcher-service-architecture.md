@@ -1098,20 +1098,23 @@ To make that possible, the core logic lives in **plain functions with no knowled
 2. **One job per channel URL** (up to 10 per request, `max_videos` 1 to 100, default 50).
 3. **`backfill.channel` runs at priority `-10` and waits on the `youtube` gate resource.** API-queued channel jobs always use `-10`, whatever `BACKFILL_PRIORITY` says in `.env` (the API container does not get that variable). A closed gate defers the job; a block during the listing fails it and opens the breaker.
 4. **A backfill job that released at least one note makes the chain queue a `pipeline.run`** (when the inbox has files and no run is active). A dry run, or a job that released nothing, queues nothing; notes released while a `requeue` or `only` run is queued wait for the next scheduled pull.
-5. **`POST /backfill/docs {"release": N}` with nothing new simply releases the pending videos linked in the docs.** This is the daily release for the docs; there is no separate release endpoint. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. The API refuses a larger value (`422`).
+5. **`POST /backfill/docs {"release": N}` with nothing new simply releases the pending videos linked in the docs (the ones its scan found).** This is the daily release for the docs; there is no separate release endpoint. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. The API refuses a larger value (`422`).
 6. **The 24 hour rolling cap is shared with the CLI.**
-7. **Not built:** a schedule that releases every day, cancelling a backfill job, a progress stream (poll `GET /api/v1/jobs/{id}`).
+7. **Not built:** an API call that releases pending videos of any source (a channel call releases only the videos its listing returned, so leftovers of a channel are released over the API only by listing it again; the CLI `--release` / `--limit` drains the whole backlog), a schedule that releases every day, cancelling a backfill job, a progress stream (poll `GET /api/v1/jobs/{id}`).
 8. **Not tried live:** the first real YouTube listing is still untried (a hand test by the user, a small channel with `max_videos` 20; `tests/manual/catcher-api.http`).
 
 **Built (2026-10-14): release by default.** Both backfill endpoints now release what they find; the CLI `catcher youtube import` is unchanged. Decisions:
 
 1. **On by default.** `release` omitted or `true` releases up to `BACKFILL_DAILY_LIMIT` of the worker (default 10). The API container cannot see worker settings, so it omits the key and the worker resolves the default. `false` or `0` turns it off; a number N is the cap (at most 100 at the API).
 2. **Only this call's pending videos.** A channel call releases the pending videos it listed, a docs call the ones it scanned. A video found earlier with `release: false` is released by a later default call that lists or scans it again; other pending videos are untouched.
-3. **The 24 hour cap still applies,** shared with everyone: `release: N` is N minus what was released in the last 24 hours. Leftovers stay `pending`.
+3. **The 24 hour cap still applies,** shared with everyone: `release: N` is N minus what was released in the last 24 hours. Leftovers stay `pending`. Release order inside one listing is by video id, not newest first (every video of a listing has the same `found_at`). `BACKFILL_DAILY_LIMIT=0` makes the default release nothing. A default channel call for a URL whose `release: false` job is still queued or running gets `200` with that job, which releases nothing.
 4. **Same on both endpoints.** A dry run never releases. `catcher jobs add backfill.docs|backfill.channel` releases by default unless `--param release=false`.
+
+*Deploy note:* backfill jobs queued before this change have no `release` key and release up to the cap when they run; check `catcher jobs list` for queued `backfill.*` jobs before deploying.
 
 **Open items after the backfill API** (minors from the reviews):
 
+- *CLI lock:* `catcher youtube import --release` takes no worker lock, so running it while a backfill job runs can release up to twice the cap together (existing behavior).
 - *Tests:* the git message assertion in the pull-failure test depends on the locale; the channel block test does not assert the message and the cap test seeds no earlier releases.
 - *Order:* `EXTRACTOR_FACTORY` is built before the gate is asked.
 - *Chain:* the `RUN_KEY` dedupe after a backfill job is only a backstop (a test with stale facts shows it); the `run_active` check decides.
