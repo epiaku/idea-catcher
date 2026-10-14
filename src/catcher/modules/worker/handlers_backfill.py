@@ -8,7 +8,10 @@ locally before the pull, as `ideas.pull` does); a dry run pulls nothing and writ
 `backfill.channel`: list one channel or playlist through the YouTube gate (one slot), store its unknown videos
 in the backlog and, by default, release the pending videos this listing returned, up to the daily cap
 (`release` false or 0 turns it off). A closed gate defers the job (never a sleep); the claim leaves the job
-queued while the gate is closed."""
+queued while the gate is closed.
+
+`backfill.release`: release the oldest pending videos of any source, up to the daily cap (param `limit` is the
+cap itself); no pull, no listing, no YouTube call."""
 
 import logging
 from collections.abc import Callable

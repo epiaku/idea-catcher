@@ -152,7 +152,8 @@ def test_a_publish_that_was_put_back_or_lost_queues_nothing(outcome: str) -> Non
     assert decide("pipeline.publish", outcome, {}, replace(IDLE, inbox_empty=False)) is None
 
 
-# backfill jobs (backfill.docs, backfill.channel): they release notes into the inbox, a run takes them
+# backfill jobs (backfill.docs, backfill.channel, backfill.release): they release notes into the inbox, a run
+# takes them
 
 
 RELEASED = replace(IDLE, inbox_empty=False, backfill_released=True)

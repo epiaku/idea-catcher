@@ -10,7 +10,7 @@ This page explains the YouTube backfill in one place: how videos are found, how 
 
 ## In short
 
-- **Two flows, two endpoints.** Flow A scans the pages of `epiaku-docs` for YouTube links (`POST /api/v1/backfill/docs`). Flow B lists a YouTube channel or playlist (`POST /api/v1/backfill/channels`). They differ in where the video ids come from. After that they share the same table, the same release rule and the same pipeline. See [Two flows](#two-flows).
+- **Two flows, two endpoints (and a third that only releases).** Flow A scans the pages of `epiaku-docs` for YouTube links (`POST /api/v1/backfill/docs`). Flow B lists a YouTube channel or playlist (`POST /api/v1/backfill/channels`). A third endpoint, `POST /api/v1/backfill/release`, lists and scans nothing: it only releases the backlog (see [Release the backlog](#release-backlog)). The two flows differ in where the video ids come from. After that they share the same table, the same release rule and the same pipeline. See [Two flows](#two-flows).
 - **Find first, process second.** A found video is first written to the database as `pending`. Only a video that was **released** becomes a clip note, and only then does `yt-dlp` fetch its details and the LLM write the page.
 - **Known videos are never processed twice.** A video that already has a page, a job item, a clip or a backlog row is skipped.
 - **The API only queues jobs.** The worker does the work, because it has the repos and the YouTube gate. You poll `GET /api/v1/jobs/{id}`.
@@ -175,7 +175,7 @@ They control two different things.
 
 | Field        | Controls                                                                       | Range                                                                                               |
 | ------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `max_videos` | How many videos the channel listing fetches, newest first                      | 1 to 100, default 50                                                                                |
+| `max_videos` | How many videos the channel listing fetches (newest first for a channel; a playlist keeps its own order) | 1 to 100, default 50                                                                                |
 | `release`    | How many of this call's pending videos become clip notes and are processed now | omitted or `true`: up to the default cap; `false` or `0`: none; a number `N`: cap `N` (at most 100) |
 
 Rules for `release`:
@@ -185,7 +185,7 @@ Rules for `release`:
 - **The 24-hour cap still applies.** `release: N` is the cap itself: it releases `N` minus everything released in the last 24 hours, whoever released it. Run it twice the same day with the same `N` and the second run releases nothing. Without a number, the cap is `BACKFILL_DAILY_LIMIT` of the worker (default 10). The API container cannot see worker settings, so the worker resolves it.
 - **Leftovers stay pending.** Videos over the cap, or left by a call with `release: false`, are kept in `backfill_videos`. A `POST /backfill/docs` releases only the pending videos its scan found, and a `POST /backfill/channels` only the videos that listing returned. To release leftovers of any source with no new listing or scan, use `POST /backfill/release` (see above). `catcher youtube import --release` or `--limit N` on the command line does the same.
 - **`BACKFILL_DAILY_LIMIT=0` releases nothing.** With the worker setting at 0 the default (`true`) has an allowance of 0, so nothing is released (the docs result shows `allowance` 0). The worker default is 10.
-- **Release order: newest first within a listing; videos from earlier calls first; docs-scan rows tie-break by video id.** A listing stores its videos with `found_at` a microsecond apart in listing order, and the release goes by oldest `found_at`. `max_videos: 50` with `release: 20` releases the 20 newest of those 50. Rows from a docs scan share one `found_at`, so they go by video id.
+- **Release order: within a listing, newest first for a channel (a playlist keeps its own order); videos from earlier calls first; docs-scan rows tie-break by video id.** A listing stores its videos with `found_at` a microsecond apart in listing order, and the release goes by oldest `found_at`. `max_videos: 50` with `release: 20` releases the 20 newest of those 50 (for a channel). Rows from a docs scan share one `found_at`, so they go by video id.
 - **An existing `release: false` job wins.** If a `release: false` channel job for the same URL is still queued or running, a default call for that URL gets `200` with that existing job, which releases nothing. The API does not merge `release` into an existing job.
 - **A dry run never releases.** `POST /backfill/docs` with `dry_run: true` only counts.
 - **The CLI is unchanged.** `catcher youtube import` releases only with `--limit` or `--release`.
@@ -198,7 +198,7 @@ Examples:
 {"urls": ["https://www.youtube.com/@SomeChannel"], "max_videos": 50, "release": 20}
 ```
 
-The first lists 10, stores the new ones and releases them up to the default cap. The second only stores them. The third lists 50 and releases at most 20, the newest first.
+The first lists 10, stores the new ones and releases them up to the default cap. The second only stores them. The third lists 50 and releases at most 20, the newest first (for a channel).
 
 ## The two `yt-dlp` calls {#ytdlp}
 
@@ -230,7 +230,7 @@ There is no `max_items` on the docs endpoint, on purpose. The docs scan reads ev
 | Channel jobs run at priority `-10`                                                     | New clips are never delayed by a backfill                                                                |
 | Release is on by default, `false` turns it off, the 24-hour cap applies                | A call to check 10 videos should process them, without a flood or runaway LLM cost                       |
 | `backfill.release` releases the oldest pending videos of any source, with no listing or scan | Leftovers need no new YouTube listing. The same 24-hour cap applies; `limit` is optional |
-| A channel listing is stored newest first (`found_at` a microsecond apart) | The release order (oldest `found_at`) then releases the newest video of a listing first |
+| A listing is stored in its own order (`found_at` a microsecond apart); a channel listing is newest first, a playlist keeps its own order | The release order (oldest `found_at`) then releases a channel's newest video first |
 | Release takes only this call's pending videos                                          | A call must not process older, unrelated backlog                                                         |
 | `release` is at most 100 at the API                                                    | One key must not turn the whole backlog into notes at once                                               |
 | A succeeded backfill job that released notes makes the chain queue a `pipeline.run`    | The notes are processed without a second call. A dry run, or a job that released nothing, queues nothing |

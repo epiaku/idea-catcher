@@ -4,7 +4,9 @@
 and is never the existing job of a real one. `POST /backfill/channels` queues one `backfill.channel` per URL
 (dedupe key `api:backfill.channel:<hash of the url>`, priority `backfill_priority`, the YouTube resource),
 after every URL was checked: one URL that is not a channel or playlist is 422 and nothing is queued. A job of
-the same URL that is queued or running is answered as it is. No answer holds the job's params or a key."""
+the same URL that is queued or running is answered as it is. `POST /backfill/release` queues one
+`backfill.release` (optional `limit`) that releases the backlog of any source. No answer holds the job's
+params or a key."""
 
 import hashlib
 import json

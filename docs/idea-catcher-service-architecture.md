@@ -1089,8 +1089,8 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 **Built (2026-10-14): the backfill API.** What exists (how to use it: [How to Run the API](../idea-catcher-how-to-run-api/#ep-backfill-docs)):
 
-- **Two job types** in `modules/worker/handlers_backfill.py`: `backfill.docs` (`dry_run`, `pull`, `release`) and `backfill.channel` (`url`, `max_videos`, `release`); `release` is `true` (default), `false` or a whole number (see the release-by-default note below). The logic shared with the CLI is in `modules/backfill/service.py`; `catcher youtube import` behaves as before.
-- **Endpoints** in `api/routes_backfill.py`: `POST /api/v1/backfill/docs` and `POST /api/v1/backfill/channels` (scope `run`), `GET /api/v1/backfill` (scope `read`; filters `status`, `source`; counts and a page).
+- **Three job types** in `modules/worker/handlers_backfill.py`: `backfill.docs` (`dry_run`, `pull`, `release`), `backfill.channel` (`url`, `max_videos`, `release`) and `backfill.release` (`limit`); `release` is `true` (default), `false` or a whole number (see the release-by-default note below). The logic shared with the CLI is in `modules/backfill/service.py`; `catcher youtube import` behaves as before.
+- **Endpoints** in `api/routes_backfill.py`: `POST /api/v1/backfill/docs`, `POST /api/v1/backfill/channels` and `POST /api/v1/backfill/release` (scope `run`; the last queues `backfill.release` with the optional param `limit`), `GET /api/v1/backfill` (scope `read`; filters `status`, `source`; counts and a page).
 
 **Decisions:**
 
@@ -1107,7 +1107,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 1. **On by default.** `release` omitted or `true` releases up to `BACKFILL_DAILY_LIMIT` of the worker (default 10). The API container cannot see worker settings, so it omits the key and the worker resolves the default. `false` or `0` turns it off; a number N is the cap (at most 100 at the API).
 2. **Only this call's pending videos.** A channel call releases the pending videos it listed, a docs call the ones it scanned. A video found earlier with `release: false` is released by a later default call that lists or scans it again; other pending videos are untouched.
-3. **The 24 hour cap still applies,** shared with everyone: `release: N` is N minus what was released in the last 24 hours. Leftovers stay `pending`. Release order inside one listing is newest first (see the release endpoint note below). `BACKFILL_DAILY_LIMIT=0` makes the default release nothing. A default channel call for a URL whose `release: false` job is still queued or running gets `200` with that job, which releases nothing.
+3. **The 24 hour cap still applies,** shared with everyone: `release: N` is N minus what was released in the last 24 hours. Leftovers stay `pending`. Release order inside one listing is newest first for a channel (a playlist keeps its own order; see the release endpoint note below). `BACKFILL_DAILY_LIMIT=0` makes the default release nothing. A default channel call for a URL whose `release: false` job is still queued or running gets `200` with that job, which releases nothing.
 4. **Same on both endpoints.** A dry run never releases. `catcher jobs add backfill.docs|backfill.channel` releases by default unless `--param release=false`.
 
 **Built (2026-10-14): release endpoint and listing order.** Decisions:
@@ -1115,13 +1115,14 @@ To make that possible, the core logic lives in **plain functions with no knowled
 1. **`POST /api/v1/backfill/release`** (scope `run`, body `{"limit": 1..100 | null}`, strict: `0`, `101`, `true`, strings are `422`) queues a `backfill.release` job (`handlers_backfill.py`). It releases the oldest pending videos of any source: no pull, no scan, no YouTube, no YouTube resource, normal priority. `limit` absent or null adds no key and the worker uses `BACKFILL_DAILY_LIMIT`.
 2. **The 24 hour cap applies;** `limit` is the cap itself, a cap of 0 releases nothing. Result keys: `released`, `repaired`, `still_pending`, `allowance`. The chain queues a `pipeline.run` after it when `released` is non-empty, like the other backfill jobs.
 3. **One job at a time.** Dedupe key `api:backfill.release`: `202` for a new job, `200` with the existing job whatever its `limit` (not merged).
-4. **Listing order.** A channel listing stores its new videos with `found_at = now + i microseconds` in listing order, so the existing release order (`found_at`, then `video_id`) releases the newest video of a listing first. Docs-scan rows are unchanged (tie-break by video id). Videos found in earlier calls release before newer calls' videos.
+4. **Listing order.** A channel listing stores its new videos with `found_at = now + i microseconds` in listing order, so the existing release order (`found_at`, then `video_id`) releases the newest video of a channel listing first (a playlist URL has no `/videos` added and keeps the playlist's own order). Docs-scan rows are unchanged (tie-break by video id). Videos found in earlier calls release before newer calls' videos.
 5. **Shared allowance:** the default-on channel and docs releases and `backfill.release` share one 24 hour allowance, so a manual release right after a channel call may release nothing.
 
 *Deploy note:* backfill jobs queued before this change have no `release` key and release up to the cap when they run; check `catcher jobs list` for queued `backfill.*` jobs before deploying.
 
 **Open items after the backfill API** (minors from the reviews):
 
+- *Release endpoint, stuck rows:* the any-source release takes the oldest pending rows each time, so a row that cannot be released (an invalid video id, or a note that cannot be written) stays at the head of the queue and occupies a slot on every call; skipping or marking such rows is not built (`modules/backfill/release.py`, `release`).
 - *Release endpoint:* two calls in the same microsecond have the same `found_at` for their first video; the tie still breaks by video id, which is harmless.
 - *CLI lock:* `catcher youtube import --release` takes no worker lock, so running it while a backfill job runs can release up to twice the cap together (existing behavior).
 - *Tests:* the git message assertion in the pull-failure test depends on the locale; the channel block test does not assert the message and the cap test seeds no earlier releases.
