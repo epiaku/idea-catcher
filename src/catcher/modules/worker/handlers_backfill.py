@@ -164,7 +164,10 @@ def handle_backfill_channel(ctx: HandlerContext, job: Job) -> HandlerResult:
     if access.offline:
         return Fail("YOUTUBE_OFFLINE is on: the channel listing calls YouTube, nothing was listed")
     too_big = listing_fit(
-        params.max_videos, ctx.settings.youtube_min_gap_s, ctx.settings.youtube_request_delay_s
+        params.max_videos,
+        ctx.settings.youtube_min_gap_s,
+        ctx.settings.youtube_request_delay_s,
+        option="max_videos",
     )
     if too_big is not None:
         return Fail(too_big)

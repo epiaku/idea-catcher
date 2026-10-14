@@ -189,3 +189,25 @@ def test_openapi_lists_the_new_paths(client):
     paths = client.get("/openapi.json").json()["paths"]
     assert "post" in paths[DOCS] and "post" in paths[CHANNELS]
     assert "get" in paths["/api/v1/backfill"]
+
+
+def test_release_is_capped_at_100_on_both_endpoints(client, pg_engine):
+    assert client.post(DOCS, json={"release": 101}).status_code == 422
+    assert client.post(CHANNELS, json={"urls": [CHANNEL], "release": 101}).status_code == 422
+    assert _jobs(pg_engine) == []
+
+    assert client.post(DOCS, json={"release": 100}).status_code == 202
+    assert client.post(CHANNELS, json={"urls": [CHANNEL], "release": 100}).status_code == 202
+    assert [j.params.get("release") for j in _jobs(pg_engine)] == [100, 100]
+
+
+def test_a_channel_url_is_stripped_and_loses_trailing_slashes_before_it_is_used(client, pg_engine):
+    answer = client.post(CHANNELS, json={"urls": [f" {CHANNEL}/ ", CHANNEL, f"{CHANNEL}//"]})
+
+    assert answer.status_code == 202
+    assert [(j["url"]) for j in answer.json()["jobs"]] == [CHANNEL]
+    [job] = _jobs(pg_engine)
+    assert job.params["url"] == CHANNEL
+    again = client.post(CHANNELS, json={"urls": [f"{CHANNEL}/"]})
+    assert again.status_code == 200 and again.json()["jobs"][0]["existing"] is True
+    assert len(_jobs(pg_engine)) == 1

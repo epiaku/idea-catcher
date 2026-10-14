@@ -10,9 +10,10 @@ from catcher.modules.backfill.release import ReleaseResult, daily_allowance, rel
 from catcher.modules.backfill.scan import known_ids
 
 
-def listing_fit(max_videos: int, gap_s: float, delay_s: float) -> str | None:
+def listing_fit(max_videos: int, gap_s: float, delay_s: float, *, option: str = "--max-videos") -> str | None:
     """None when a listing of `max_videos` takes at most half the gap its gate slot starts; else why not.
-    A longer listing would overlap a worker's fetch or the next listing."""
+    A longer listing would overlap a worker's fetch or the next listing. `option` is how the size is named in
+    the text: the CLI flag by default, `max_videos` for a job."""
     if channel.listing_seconds(max_videos, delay_s) <= gap_s / 2:
         return None
     largest = channel.largest_listing(gap_s / 2, delay_s)
@@ -22,8 +23,8 @@ def listing_fit(max_videos: int, gap_s: float, delay_s: float) -> str | None:
             f"{delay_s:g} s per page: raise the gap"
         )
     return (
-        f"--max-videos {max_videos} takes about {channel.listing_seconds(max_videos, delay_s):g} s, "
-        f"more than half of YOUTUBE_MIN_GAP_S={gap_s:g} s: use at most --max-videos {largest} with these "
+        f"{option} {max_videos} takes about {channel.listing_seconds(max_videos, delay_s):g} s, "
+        f"more than half of YOUTUBE_MIN_GAP_S={gap_s:g} s: use at most {option} {largest} with these "
         "settings"
     )
 

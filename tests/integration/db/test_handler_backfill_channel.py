@@ -138,7 +138,8 @@ def test_size_over_the_gap_rule_is_fail_with_the_largest_size(harness, extractor
     result = run_job(harness, max_videos=100)
 
     assert isinstance(result, Fail)
-    assert "use at most --max-videos 90" in result.error
+    assert "use at most max_videos 90" in result.error
+    assert "--max-videos" not in result.error
     assert extractor.calls == [] and rows(harness) == {}
 
 

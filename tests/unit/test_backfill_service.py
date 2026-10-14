@@ -24,3 +24,19 @@ def test_listing_fit_says_raise_the_gap_when_not_even_one_page_fits() -> None:
     assert text is not None
     assert "raise the gap" in text
     assert "nothing was done" not in text
+
+
+def test_listing_fit_names_the_option_it_is_given() -> None:
+    text = listing_fit(100, 120, 20, option="max_videos")
+
+    assert text is not None
+    assert "max_videos 100 takes" in text
+    assert "use at most max_videos 90" in text
+    assert "--max-videos" not in text
+
+
+def test_listing_fit_defaults_to_the_cli_option_name() -> None:
+    text = listing_fit(100, 120, 20)
+
+    assert text is not None
+    assert "--max-videos 100 takes" in text and "use at most --max-videos 90" in text

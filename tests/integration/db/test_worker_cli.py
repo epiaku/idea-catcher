@@ -87,6 +87,42 @@ def test_jobs_add_refuses_dry_run(runner: CliRunner, engine, param: str) -> None
     assert _jobs(engine) == []
 
 
+@pytest.mark.parametrize("job_type", ["backfill.docs", "backfill.channel"])
+def test_jobs_add_refuses_dry_run_for_backfill_with_the_backfill_hint(
+    runner: CliRunner, engine, job_type: str
+) -> None:
+    result = runner.invoke(app, ["jobs", "add", job_type, "--param", "dry_run=true"])
+    assert result.exit_code == 2
+    assert "catcher youtube import --dry-run" in result.output
+    assert "run pipeline" not in result.output
+    assert _jobs(engine) == []
+
+
+def test_jobs_add_backfill_channel_defaults_to_the_backfill_priority(runner: CliRunner, engine) -> None:
+    result = runner.invoke(
+        app, ["jobs", "add", "backfill.channel", "--param", "url=https://www.youtube.com/@small"]
+    )
+    assert result.exit_code == 0, result.output
+    assert [j.priority for j in _jobs(engine)] == [-10]
+
+
+def test_jobs_add_backfill_channel_keeps_an_explicit_priority(runner: CliRunner, engine) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "jobs",
+            "add",
+            "backfill.channel",
+            "--param",
+            "url=https://www.youtube.com/@small",
+            "--priority",
+            "0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert [j.priority for j in _jobs(engine)] == [0]
+
+
 def test_jobs_add_refuses_a_param_without_a_value(runner: CliRunner, engine) -> None:
     result = runner.invoke(app, ["jobs", "add", "pipeline.run", "--param", "limit"])
     assert result.exit_code == 2

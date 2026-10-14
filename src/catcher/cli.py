@@ -1276,10 +1276,11 @@ def _param_value(raw: str) -> bool | int | str:
 LIST_PARAMS = ("only", "requeue")  # always a list of names; a repeated --param adds one
 
 
-def _parse_params(pairs: list[str]) -> dict[str, Any]:
+def _parse_params(pairs: list[str], job_type: str = "") -> dict[str, Any]:
     """`KEY=VALUE` pairs to job params. `only` and `requeue` always become a list of the names as typed
     (never split on commas: a file name can hold one), and repeating them adds names. Any other key is
-    given once; true/false become booleans and whole numbers integers."""
+    given once; true/false become booleans and whole numbers integers. `dry_run` is refused, with the way to
+    a dry run that fits `job_type`."""
     params: dict[str, Any] = {}
     for pair in pairs:
         key, sep, raw = pair.partition("=")
@@ -1287,9 +1288,12 @@ def _parse_params(pairs: list[str]) -> dict[str, Any]:
         if not sep or not key:
             raise typer.BadParameter(f"{pair!r} is not KEY=VALUE", param_hint="--param")
         if re.sub(r"[-_\s]", "", key.lower()) == "dryrun":
-            typer.echo(
-                "dry runs never go through the queue: use `catcher run pipeline --dry-run` instead", err=True
+            instead = (
+                "`catcher youtube import --dry-run`"
+                if job_type.startswith("backfill.")
+                else "`catcher run pipeline --dry-run`"
             )
+            typer.echo(f"dry runs never go through the queue: use {instead} instead", err=True)
             raise typer.Exit(2)
         if key in LIST_PARAMS:
             params.setdefault(key, []).append(raw)
@@ -1345,17 +1349,25 @@ def jobs_add(
             "only=NAME and requeue=NAME are lists: repeat them for more names. Repeat for more",
         ),
     ] = None,
-    priority: Annotated[int, typer.Option("--priority", help="higher runs first")] = 0,
+    priority: Annotated[
+        int | None,
+        typer.Option(
+            "--priority",
+            help="higher runs first (default 0; backfill.channel defaults to BACKFILL_PRIORITY, -10)",
+        ),
+    ] = None,
 ) -> None:
     """Put one job on the queue, due now, and print its id and the version. The type must have a handler
     and the params must pass that handler's own check, or nothing is queued (exit 2). Dry runs are refused:
     they never go through the queue."""
-    params = _parse_params(param or [])
+    params = _parse_params(param or [], job_type)
     try:
         check_job(job_type, params)
     except ValueError as e:
         typer.echo(f"cannot queue {job_type}: {e}", err=True)
         raise typer.Exit(2) from None
+    if priority is None:
+        priority = Settings().backfill_priority if job_type == "backfill.channel" else 0
     with _queue_session() as session:
         job, _ = queue.enqueue(
             session,

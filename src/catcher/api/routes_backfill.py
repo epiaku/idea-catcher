@@ -35,7 +35,10 @@ CHANNEL = "backfill.channel"
 MAX_URLS = 10
 URL_MAX = 2048
 
-Release = Annotated[StrictInt | None, Field(ge=0, le=2**31 - 1)]
+MAX_RELEASE = (
+    100  # `release: N` is the 24 h cap itself: the API never lets one call turn the backlog into notes
+)
+Release = Annotated[StrictInt | None, Field(ge=0, le=MAX_RELEASE)]
 
 
 class DocsRequest(BaseModel):
@@ -68,6 +71,12 @@ class ChannelEnqueued(BaseModel):
 
 class ChannelsEnqueued(BaseModel):
     jobs: list[ChannelEnqueued]
+
+
+def _normalized(url: str) -> str:
+    """Light clean-up of a given URL: no surrounding whitespace, no trailing slashes (`@x`, `@x/` and ` @x `
+    are one channel). Nothing else changes (no lowercase host, no `/videos`)."""
+    return url.strip().rstrip("/")
 
 
 def _dry_run_key(params: dict[str, Any]) -> str:
@@ -136,12 +145,13 @@ def backfill_channels(
 ) -> ChannelsEnqueued:
     """Queue one `backfill.channel` per URL at the backfill priority. Every URL is checked first: one that is
     not a channel or playlist is 422 naming it, and nothing is queued."""
-    for url in body.urls:
+    urls = [_normalized(url) for url in body.urls]
+    for url in urls:
         if not is_channel_url(url):
             raise HTTPException(status_code=422, detail=f"not a YouTube channel or playlist URL: {url}")
     priority = request.app.state.backfill_priority
     answers: list[ChannelEnqueued] = []
-    for url in dict.fromkeys(body.urls):  # a URL given twice is one job
+    for url in dict.fromkeys(urls):  # a URL given twice (after the clean-up) is one job
         params: dict[str, Any] = {"url": url, "max_videos": body.max_videos}
         if body.release is not None:
             params["release"] = body.release
