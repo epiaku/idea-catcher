@@ -32,6 +32,7 @@ read_router = APIRouter(prefix="/api/v1", dependencies=[Depends(require("read"))
 
 DOCS = "backfill.docs"
 CHANNEL = "backfill.channel"
+RELEASE_JOB = "backfill.release"
 MAX_URLS = 10
 URL_MAX = 2048
 
@@ -63,6 +64,14 @@ class ChannelsRequest(BaseModel):
     ]
     max_videos: Annotated[StrictInt, Field(ge=1, le=MAX_CHANNEL_VIDEOS)] = DEFAULT_CHANNEL_VIDEOS
     release: Release = None
+
+
+class ReleaseRequest(BaseModel):
+    """`POST /backfill/release`. `limit` is strict (`true`, `"5"`, `1.5` are 422); null adds no key."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    limit: Annotated[StrictInt, Field(ge=1, le=MAX_RELEASE)] | None = None
 
 
 class ChannelEnqueued(BaseModel):
@@ -129,6 +138,27 @@ def backfill_docs(
     job, created = enqueue(session, type=DOCS, now=utc_now(), params=params, dedupe_key=f"api:{DOCS}")
     session.commit()
     return _answer(response, job, existing=not created)
+
+
+@router.post(
+    "/backfill/release",
+    response_model=Enqueued,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={200: {"model": Enqueued, "description": "a release is already queued or running"}},
+)
+def backfill_release(
+    response: Response, session: Annotated[Session, Depends(get_session)], body: ReleaseRequest | None = None
+) -> Enqueued:
+    """Queue a `backfill.release`: release the oldest pending backfill videos of any source (docs or channel).
+    The rolling 24 h cap applies: `limit` is the cap itself (default: the worker's BACKFILL_DAILY_LIMIT), so
+    `limit` minus what was released in the last 24 h is released now. Leftovers stay pending. A second call
+    while one is queued or running returns that job (200); its `limit` is not merged. No YouTube call."""
+    request = body or ReleaseRequest()
+    params: dict[str, Any] = {}
+    if request.limit is not None:
+        params["limit"] = request.limit
+    _checked(RELEASE_JOB, params)
+    return _once(session, response, RELEASE_JOB, params, f"api:{RELEASE_JOB}", same_params=False)
 
 
 @router.post(
