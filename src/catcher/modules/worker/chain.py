@@ -8,6 +8,7 @@ ended, how it ended and a few `Facts` in, the job to queue (or nothing) out. No 
 """
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -49,6 +50,7 @@ class Facts:
     latest_run_limited: bool  # the latest `pipeline.run` had `limit`, `only` or `requeue`
     last_run_made_progress: bool  # the latest `pipeline.run` took at least one document (true if none yet)
     chain_publish_push: bool  # `CHAIN_PUBLISH_PUSH`: the `pull` and `push` of a chained publish
+    backfill_released: bool  # the backfill job that ended released at least one note (its stored result)
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ NEUTRAL: dict[str, Any] = {
     "latest_run_limited": False,
     "last_run_made_progress": True,
     "chain_publish_push": True,
+    "backfill_released": False,
 }
 
 
@@ -101,7 +104,8 @@ def decide(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) ->
       says `follow_up` false (it follows a run with `limit`, `only` or `requeue`: at most one run) or the
       last run took no document at all (files the scan keeps leaving would loop for ever).
     - a backfill job (`backfill.docs`, `backfill.channel`) succeeded: a run (without retrying the deferred)
-      when files wait in the inbox and no run is active, else nothing. Its end does not close a cycle.
+      only when it released at least one note, files wait in the inbox and no run is active, else nothing.
+      A dry run, or a job that released nothing, queues nothing. Its end does not close a cycle.
     """
     if outcome == "lost":
         return None
@@ -126,7 +130,9 @@ def decide(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) ->
             return None
         return _run(retry_deferred=False)
     if job_type in BACKFILL_JOBS:
-        if outcome != "succeeded" or facts.inbox_empty or facts.run_active:
+        if outcome != "succeeded" or params.get("dry_run"):
+            return None
+        if not facts.backfill_released or facts.inbox_empty or facts.run_active:
             return None
         return _run(retry_deferred=False)
     return None
@@ -199,7 +205,7 @@ def _git_ahead(ctx: HandlerContext) -> bool:
 _PULL_FACTS = {"inbox_empty", "deferred_due", "unpublished_work"}
 _WORK_FACTS = {"document_jobs_runnable", "run_active", "latest_run_limited"}  # the run and its document jobs
 _PUBLISH_FACTS = {"inbox_empty", "run_active", "last_run_made_progress"}
-_BACKFILL_FACTS = {"inbox_empty", "run_active"}
+_BACKFILL_FACTS = {"inbox_empty", "run_active", "backfill_released"}
 
 
 def _needed(job_type: str | None) -> set[str] | None:
@@ -215,10 +221,12 @@ def _needed(job_type: str | None) -> set[str] | None:
     return _WORK_FACTS if job_type == RUN or job_type in DOCUMENT_JOBS else set()
 
 
-def read_facts(ctx: HandlerContext, job_type: str | None = None) -> Facts:
+def read_facts(ctx: HandlerContext, job_type: str | None = None, job_id: uuid.UUID | None = None) -> Facts:
     """The facts `decide` needs, as they are now. Reads the inbox with the scan `pipeline.run` uses, so
     "empty" means: nothing the next run would take. With `job_type`, only the facts that type needs are read;
-    the others keep a neutral value that `decide` does not look at."""
+    the others keep a neutral value that `decide` does not look at. `job_id` is the job that ended: a backfill
+    job's `backfill_released` comes from the `released` list of its stored result (committed before the chain
+    runs; the claimed Job object does not carry it)."""
     wanted = _needed(job_type)
 
     def need(name: str) -> bool:
@@ -261,6 +269,9 @@ def read_facts(ctx: HandlerContext, job_type: str | None = None) -> Facts:
                 .where(Job.type == RUN, Job.status.in_(("queued", "running")))
             )
             facts["run_active"] = bool(session.scalar(active))
+        if need("backfill_released") and job_id is not None:
+            stored = session.scalar(select(Job.result).where(Job.id == job_id))
+            facts["backfill_released"] = bool((stored or {}).get("released"))
         if need("latest_run_limited") or need("last_run_made_progress"):
             runs = list(
                 session.scalars(
@@ -284,7 +295,7 @@ def queue_next(ctx: HandlerContext, job: Job, outcome: str) -> Next | None:
     if outcome == "lost":  # the result was discarded: decide would say nothing, so read nothing
         return None
     params = dict(job.params or {})
-    facts = read_facts(ctx, job.type)
+    facts = read_facts(ctx, job.type, job.id)
     chosen = decide(job.type, outcome, params, facts)
     if chosen is None:
         closing = end_of_chain(job.type, outcome, params, facts)

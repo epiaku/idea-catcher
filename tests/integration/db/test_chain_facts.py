@@ -5,6 +5,7 @@ import uuid
 from datetime import timedelta
 from typing import Any
 
+import pytest
 from sqlalchemy import select, update
 
 from catcher.core.db import session_scope
@@ -283,15 +284,72 @@ def test_a_newer_failed_run_means_no_progress_even_after_an_older_good_one(harne
     assert read_facts(harness.ctx).last_run_made_progress is False
 
 
-def test_the_run_key_dedupes_two_backfill_jobs(harness) -> None:
+def backfill_job(harness, type: str = "backfill.docs", *, result: dict | None, **params: Any):
+    """A backfill Job as the worker's hook sees it: its result is stored, the object it holds carries none."""
+    job_id = harness.add_job(type, **params)
+    set_job(harness, job_id, status="succeeded", result=result, finished_at=harness.clock())
+    harness.clock.advance(1)
+    job = ended(harness, type)
+    job.result = None  # the claimed Job that run_job gets back does not carry its result
+    return job
+
+
+def test_a_backfill_job_that_released_notes_queues_one_run(harness) -> None:
+    job = backfill_job(harness, result={"released": ["aaaaaaaaaa1"], "repaired": []})
+
+    chosen = queue_next(harness.ctx, job, "succeeded")
+
+    assert chosen is not None and chosen.type == "pipeline.run"
+    assert [r.status for r in jobs_of(harness, "pipeline.run")] == ["queued"]
+
+
+@pytest.mark.parametrize("result", [{"released": [], "repaired": []}, {"released": []}, None])
+def test_a_backfill_job_that_released_nothing_queues_no_run(harness, result) -> None:
+    job = backfill_job(harness, result=result)
+
+    assert queue_next(harness.ctx, job, "succeeded") is None
+    assert jobs_of(harness, "pipeline.run") == []
+
+
+def test_a_backfill_job_with_an_empty_inbox_queues_no_run(harness) -> None:
+    empty_the_inbox(harness)
+    job = backfill_job(harness, result={"released": ["aaaaaaaaaa1"]})
+
+    assert queue_next(harness.ctx, job, "succeeded") is None
+
+
+def test_the_released_fact_is_read_only_for_backfill_jobs(harness) -> None:
+    job = backfill_job(harness, result={"released": ["aaaaaaaaaa1"]})
+
+    assert read_facts(harness.ctx, "backfill.docs", job_id=job.id).backfill_released is True
+    assert read_facts(harness.ctx, "pipeline.run", job_id=job.id).backfill_released is False
+
+
+def test_a_second_backfill_job_stops_at_run_active(harness) -> None:
     for round_ in range(2):
-        harness.add_job("backfill.docs")
-        job = ended(harness, "backfill.docs")
-        set_job(harness, job.id, status="succeeded", finished_at=harness.clock())
-        harness.clock.advance(1)
+        job = backfill_job(harness, result={"released": ["aaaaaaaaaa1"]})
         chosen = queue_next(harness.ctx, job, "succeeded")
         # the second job finds the first one's run still active: nothing more is queued
         assert (chosen is not None and chosen.type == "pipeline.run") == (round_ == 0)
 
-    runs = jobs_of(harness, "pipeline.run")
-    assert [r.status for r in runs] == ["queued"]
+    assert [r.status for r in jobs_of(harness, "pipeline.run")] == ["queued"]
+
+
+def test_the_run_key_dedupes_when_both_decisions_read_stale_facts(harness, monkeypatch) -> None:
+    from dataclasses import replace
+
+    from catcher.modules.worker import chain
+
+    real = chain.read_facts
+
+    def stale(ctx, job_type=None, job_id=None):
+        return replace(real(ctx, job_type, job_id), run_active=False)  # as if read before the run was queued
+
+    monkeypatch.setattr(chain, "read_facts", stale)
+
+    for _ in range(2):
+        job = backfill_job(harness, result={"released": ["aaaaaaaaaa1"]})
+        chosen = queue_next(harness.ctx, job, "succeeded")
+        assert chosen is not None and chosen.type == "pipeline.run"
+
+    assert [r.status for r in jobs_of(harness, "pipeline.run")] == ["queued"]  # RUN_KEY: one run

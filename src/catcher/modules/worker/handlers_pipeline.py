@@ -1129,6 +1129,19 @@ def parse_pull_params(params: dict[str, Any]) -> None:
             raise ValueError(f"limit must be a whole number of 0 or more, not {limit!r}")
 
 
+def commit_then_pull(repo: Path, managed: tuple[str, ...], message: str, *, author: tuple[str, str]) -> bool:
+    """Under `GIT_LOCK` (the caller holds it): commit the worker's managed folders locally (no push), then
+    pull (rebase). Committing first means the autostash never holds the worker's own changes, and a remote
+    edit of a file the worker changed ends in a clean abort. False (nothing done) when the repo has no
+    remote; raises GitError otherwise on a failure. Never touches a rebase the user started by hand."""
+    require_on_branch(repo, unattended=True)
+    if not has_remote(repo, unattended=True):
+        return False
+    commit_managed(repo, managed, message, author=author, unattended=True)
+    pull(repo, author=author, unattended=True)
+    return True
+
+
 def handle_ideas_pull(ctx: HandlerContext, job: Job) -> HandlerResult:
     """Commit the worker's managed folders locally (as publish does, no push), then pull (rebase) the
     idea-bucket checkout, so a capture pushed from another machine arrives.
@@ -1142,14 +1155,9 @@ def handle_ideas_pull(ctx: HandlerContext, job: Job) -> HandlerResult:
     author = (ctx.settings.git_author_name, ctx.settings.git_author_email)
     with GIT_LOCK:
         try:
-            require_on_branch(ctx.ideas, unattended=True)  # never abort a rebase the user started by hand
-            if not has_remote(ctx.ideas, unattended=True):
+            if not commit_then_pull(ctx.ideas, IDEAS_MANAGED, IDEAS_MESSAGE, author=author):
                 log.info("ideas.pull: %s has no git remote, nothing to pull", ctx.ideas)
                 return Done({"pulled": False, "reason": "no git remote"})
-            # commit first, as publish does (local only, no push): the autostash then never holds the
-            # worker's own changes, and a remote edit of a file the worker changed ends in a clean abort
-            commit_managed(ctx.ideas, IDEAS_MANAGED, IDEAS_MESSAGE, author=author, unattended=True)
-            pull(ctx.ideas, author=author, unattended=True)
         except GitError as e:
             log.error("ideas.pull failed: %s", e)
             return Fail(str(e))

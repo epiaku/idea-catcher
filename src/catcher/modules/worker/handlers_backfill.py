@@ -2,7 +2,8 @@
 
 `backfill.docs`: scan the docs repo for YouTube links, store the videos without a page in the backlog and,
 when asked, release some of the backlog within the daily cap. The docs repo is only pulled here (never
-committed); a dry run pulls nothing and writes nothing.
+committed apart from the worker's own pages, which are committed locally before the pull, as `ideas.pull`
+does); a dry run pulls nothing and writes nothing.
 
 `backfill.channel`: list one channel or playlist through the YouTube gate (one slot), store its unknown videos
 in the backlog and, when asked, release some within the daily cap. A closed gate defers the job (never a
@@ -15,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from catcher.core.db import session_scope
-from catcher.core.git import GIT_LOCK, GitError, has_remote, pull, require_on_branch
+from catcher.core.git import GIT_LOCK, GitError
 from catcher.modules.backfill import store
 from catcher.modules.backfill.channel import (
     DEFAULT_CHANNEL_VIDEOS,
@@ -31,7 +32,12 @@ from catcher.modules.backfill.importer import run_import
 from catcher.modules.backfill.service import listing_fit, release_within, store_listing
 from catcher.modules.queue.models import Job
 from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
-from catcher.modules.worker.handlers_pipeline import DEFER_FALLBACK_S
+from catcher.modules.worker.handlers_pipeline import (
+    DEFER_FALLBACK_S,
+    DOCS_MANAGED,
+    DOCS_MESSAGE,
+    commit_then_pull,
+)
 from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable
 
 log = logging.getLogger("catcher.worker.backfill")
@@ -72,9 +78,7 @@ def handle_backfill_docs(ctx: HandlerContext, job: Job) -> HandlerResult:
         author = (ctx.settings.git_author_name, ctx.settings.git_author_email)
         with GIT_LOCK:
             try:
-                require_on_branch(ctx.docs, unattended=True)
-                if has_remote(ctx.docs, unattended=True):
-                    pull(ctx.docs, author=author, unattended=True)
+                if commit_then_pull(ctx.docs, DOCS_MANAGED, DOCS_MESSAGE, author=author):
                     log.info("%s: pulled %s", tag, ctx.docs)
                 else:
                     log.info("%s: %s has no git remote, nothing to pull", tag, ctx.docs)

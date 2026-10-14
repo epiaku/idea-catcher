@@ -15,6 +15,7 @@ IDLE = Facts(
     latest_run_limited=False,
     last_run_made_progress=True,
     chain_publish_push=True,
+    backfill_released=False,
 )
 
 RUN_AFTER_PULL = Next("pipeline.run", {"retry_deferred": True}, "chain:run")
@@ -154,32 +155,45 @@ def test_a_publish_that_was_put_back_or_lost_queues_nothing(outcome: str) -> Non
 # backfill jobs (backfill.docs, backfill.channel): they release notes into the inbox, a run takes them
 
 
+RELEASED = replace(IDLE, inbox_empty=False, backfill_released=True)
+
+
 @pytest.mark.parametrize("job_type", ["backfill.docs", "backfill.channel"])
-def test_backfill_succeeded_with_files_in_the_inbox_queues_a_run(job_type: str) -> None:
-    assert decide(job_type, "succeeded", {}, replace(IDLE, inbox_empty=False)) == FOLLOW_UP_RUN
+def test_backfill_that_released_notes_with_files_in_the_inbox_queues_a_run(job_type: str) -> None:
+    assert decide(job_type, "succeeded", {}, RELEASED) == FOLLOW_UP_RUN
+
+
+@pytest.mark.parametrize("job_type", ["backfill.docs", "backfill.channel"])
+def test_backfill_that_released_nothing_queues_nothing_even_with_files_waiting(job_type: str) -> None:
+    assert decide(job_type, "succeeded", {}, replace(RELEASED, backfill_released=False)) is None
+
+
+@pytest.mark.parametrize("job_type", ["backfill.docs", "backfill.channel"])
+def test_a_dry_run_queues_nothing_whatever_the_facts(job_type: str) -> None:
+    assert decide(job_type, "succeeded", {"dry_run": True}, RELEASED) is None
 
 
 @pytest.mark.parametrize("job_type", ["backfill.docs", "backfill.channel"])
 def test_backfill_succeeded_with_empty_inbox_queues_nothing(job_type: str) -> None:
-    assert decide(job_type, "succeeded", {}, IDLE) is None
+    assert decide(job_type, "succeeded", {}, replace(RELEASED, inbox_empty=True)) is None
 
 
 @pytest.mark.parametrize("job_type", ["backfill.docs", "backfill.channel"])
 def test_backfill_succeeded_while_a_run_is_active_queues_nothing(job_type: str) -> None:
-    assert decide(job_type, "succeeded", {}, replace(IDLE, inbox_empty=False, run_active=True)) is None
+    assert decide(job_type, "succeeded", {}, replace(RELEASED, run_active=True)) is None
 
 
 @pytest.mark.parametrize("outcome", ["failed", "deferred", "lost"])
 @pytest.mark.parametrize("job_type", ["backfill.docs", "backfill.channel"])
 def test_backfill_failed_and_deferred_queue_nothing(job_type: str, outcome: str) -> None:
-    assert decide(job_type, outcome, {}, replace(IDLE, inbox_empty=False)) is None
+    assert decide(job_type, outcome, {}, RELEASED) is None
 
 
-def test_a_backfill_job_needs_only_the_inbox_and_run_facts() -> None:
+def test_a_backfill_job_needs_only_the_inbox_run_and_release_facts() -> None:
     from catcher.modules.worker.chain import _needed
 
-    assert _needed("backfill.docs") == {"inbox_empty", "run_active"}
-    assert _needed("backfill.channel") == {"inbox_empty", "run_active"}
+    assert _needed("backfill.docs") == {"inbox_empty", "run_active", "backfill_released"}
+    assert _needed("backfill.channel") == {"inbox_empty", "run_active", "backfill_released"}
 
 
 @pytest.mark.parametrize("outcome", ["succeeded", "failed", "deferred"])
