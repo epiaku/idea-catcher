@@ -31,8 +31,8 @@ from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError,
 from catcher.modules.backfill import channel as backfill_channel
 from catcher.modules.backfill import store as backfill_store
 from catcher.modules.backfill.importer import run_import
-from catcher.modules.backfill.release import daily_allowance, release
-from catcher.modules.backfill.scan import known_ids
+from catcher.modules.backfill.release import daily_allowance
+from catcher.modules.backfill.service import listing_fit, release_within, store_listing
 from catcher.modules.llm.backends import make_backend
 from catcher.modules.llm.profiles import UnknownProfile, load_profiles, resolve_profile
 from catcher.modules.llm.service import LlmError, LlmRequest, reason
@@ -849,23 +849,10 @@ def youtube_import(
 def _check_the_listing_fits_the_gap(settings: Settings, videos: int) -> None:
     """Exit 2 (nothing done) when a listing of `videos` could outlast half the gap its gate slot starts: a
     listing longer than the gap would overlap a worker's fetch or the next listing."""
-    gap_s, delay_s = settings.youtube_min_gap_s, settings.youtube_request_delay_s
-    if backfill_channel.listing_seconds(videos, delay_s) <= gap_s / 2:
+    refusal = listing_fit(videos, settings.youtube_min_gap_s, settings.youtube_request_delay_s)
+    if refusal is None:
         return
-    largest = backfill_channel.largest_listing(gap_s / 2, delay_s)
-    if largest < 1:
-        typer.echo(
-            f"no channel listing fits half of YOUTUBE_MIN_GAP_S={gap_s:g} s with YOUTUBE_REQUEST_DELAY_S="
-            f"{delay_s:g} s per page: raise the gap (nothing was done)",
-            err=True,
-        )
-    else:
-        typer.echo(
-            f"--max-videos {videos} takes about {backfill_channel.listing_seconds(videos, delay_s):g} s, "
-            f"more than half of YOUTUBE_MIN_GAP_S={gap_s:g} s: use at most --max-videos {largest} with these "
-            "settings (nothing was done)",
-            err=True,
-        )
+    typer.echo(f"{refusal} (nothing was done)", err=True)
     raise typer.Exit(2)
 
 
@@ -926,11 +913,9 @@ def _list_channels(
             typer.echo(f"{e} (nothing more is listed)", err=True)
             raise typer.Exit(1) from None
         with _backfill_session() as session:
-            known = known_ids(session, ideas, docs)
-            fresh = {vid: ("channel", url) for vid in ids if vid not in known}
-            added = backfill_store.add_pending(session, fresh, utc_now())
+            already_known, added = store_listing(session, ids, url, ideas, docs, utc_now())
         typer.echo(
-            f"listed {len(ids)} video(s) from {url}: {len(ids) - len(fresh)} already known, "
+            f"listed {len(ids)} video(s) from {url}: {already_known} already known, "
             f"{added} new in the backlog"
         )
 
@@ -940,19 +925,21 @@ def _release_backlog(
 ) -> list[str]:
     """Release what the rolling 24 h cap allows; the lines to print. `dry_new` (a dry run: the new ids the
     scan would have stored) means nothing is written and the lines say what would be released."""
+    if dry_new is None:
+        allowance, done = release_within(session, ideas, cap, now)
+        lines = [] if allowance else [f"daily allowance already used ({cap} per 24 hours)"]
+        if done.repaired:
+            lines.append(f"{len(done.repaired)} video(s) already had a clip note: marked released")
+        left = backfill_store.counts(session)["pending"]
+        released = len(done.released)
+        return [*lines, f"released {released} video(s) into inbox/clippings/ ({left} still pending)"]
     allowance = daily_allowance(session, cap, now)
     lines = [] if allowance else [f"daily allowance already used ({cap} per 24 hours)"]
-    if dry_new is not None:
-        pending = [row.video_id for row in backfill_store.pending(session)] + dry_new
-        would = pending[:allowance]
-        lines += [f"would release {vid}" for vid in would]
-        left = len(pending) - len(would)
-        return [*lines, f"would release {len(would)} video(s) into inbox/clippings/ ({left} still pending)"]
-    done = release(session, ideas, allowance, now)
-    if done.repaired:
-        lines.append(f"{len(done.repaired)} video(s) already had a clip note: marked released")
-    left = backfill_store.counts(session)["pending"]
-    return [*lines, f"released {len(done.released)} video(s) into inbox/clippings/ ({left} still pending)"]
+    pending = [row.video_id for row in backfill_store.pending(session)] + dry_new
+    would = pending[:allowance]
+    lines += [f"would release {vid}" for vid in would]
+    left = len(pending) - len(would)
+    return [*lines, f"would release {len(would)} video(s) into inbox/clippings/ ({left} still pending)"]
 
 
 @youtube_app.command("backlog")
