@@ -10,7 +10,7 @@
 #      of compose.local-test.yaml (public, only for that file). Another stack needs its own keys.
 #
 # The order matters: 7 and 8 read the jobs and items that the run in 6 made, and 10 requeues the first
-# item of 8a. tmp/ic has no git remote, so the publish request (9) is EXPECTED to fail (the job ends failed).
+# item of 8a. 13 queues backfill jobs (13c calls YouTube: hand test only). tmp/ic has no git remote, so the publish request (9) is EXPECTED to fail (the job ends failed).
 # Started the stack with API_PORT=8001? Change the port in @baseUrl.
 
 @baseUrl = http://127.0.0.1:8000
@@ -154,3 +154,28 @@ Content-Type: application/json
 
 ### 12. The OpenAPI description. The Swagger UI is at http://127.0.0.1:8000/docs: open that in a browser, click Authorize, paste the key
 GET {{baseUrl}}/openapi.json
+
+### 13a. Backfill from the docs: a DRY RUN (the worker scans epiaku-docs, writes nothing). 202, then read the job
+# @name backfillDry
+POST {{baseUrl}}/api/v1/backfill/docs
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"dry_run": true}
+
+### 13b. The backfill job: "result" holds found, known, new, released, still_pending
+GET {{baseUrl}}/api/v1/jobs/{{backfillDry.response.body.$.job_id}}
+Authorization: Bearer {{key}}
+
+### 13c. Backfill a channel: calls YouTube, hand test only, small channel, max_videos 20. 202
+# Check the gate first (request 4). Replace the URL with a small channel you know.
+# @name backfillChannel
+POST {{baseUrl}}/api/v1/backfill/channels
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"urls": ["https://www.youtube.com/@SomeSmallChannel"], "max_videos": 20}
+
+### 13d. The backlog: counts and the videos (filters status, source, limit, offset)
+GET {{baseUrl}}/api/v1/backfill?status=pending&limit=20
+Authorization: Bearer {{key}}

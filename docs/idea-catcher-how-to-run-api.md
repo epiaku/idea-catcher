@@ -269,17 +269,83 @@ curl -s -w '\n%{http_code}\n' -X POST -H "Authorization: Bearer $CATCHER_KEY" \
 
 Queues a `pipeline.run` with `{"requeue": ["notes/walks.md"]}`: the worker takes the capture from `archive/` and processes it again. `404` `item not found` when no item has that name. A requeue is **always its own job** (`202`), never merged into another run.
 
+### `POST /api/v1/backfill/docs`: backfill the YouTube links of the docs (scope `run`) {#ep-backfill-docs}
+
+```bash
+curl -s -w '\n%{http_code}\n' -X POST -H "Authorization: Bearer $CATCHER_KEY" -H "Content-Type: application/json" \
+  -d '{"dry_run": true}' $CATCHER_URL/api/v1/backfill/docs
+curl -s -X POST -H "Authorization: Bearer $CATCHER_KEY" -H "Content-Type: application/json" \
+  -d '{"release": 5}' $CATCHER_URL/api/v1/backfill/docs
+```
+
+```json
+{"job_id": "7d1718bf-0000-4000-8000-000000000004", "existing": false}
+```
+
+Queues a `backfill.docs` job. The worker pulls `epiaku-docs`, finds the YouTube links without a page, adds them to the backlog and, with `release`, writes at most that many clip notes. It is the same work as `catcher youtube import` (see [Backfill YouTube links](../idea-catcher-how-to-run-stage-b/#backfill)). The body is optional JSON, no other field allowed:
+
+| Field | Meaning |
+| --- | --- |
+| `dry_run` | `true`: scan and report, write nothing. Default `false`. |
+| `pull` | `false`: do not pull `epiaku-docs` first. Default `true`. |
+| `release` | A whole number of 0 or more: release at most this many notes. Without it, or `0`, nothing is released. The 24 hour cap applies: only the unused part of it is released. |
+
+`202` for a new job, `200` with `"existing": true` when an equal job is already queued or running. Poll `GET /api/v1/jobs/{job_id}`; the `result` holds `found`, `known`, `new`, `released`, `still_pending` and more. When notes were released, the worker's chain queues a `pipeline.run` by itself. `{"release": N}` with nothing new simply releases from the backlog: this is the daily release, and there is no separate release endpoint. The 24 hour cap is shared with the command line.
+
+### `POST /api/v1/backfill/channels`: list YouTube channels (scope `run`) {#ep-backfill-channels}
+
+```bash
+curl -s -w '\n%{http_code}\n' -X POST -H "Authorization: Bearer $CATCHER_KEY" -H "Content-Type: application/json" \
+  -d '{"urls": ["https://www.youtube.com/@SomeSmallChannel"], "max_videos": 20}' $CATCHER_URL/api/v1/backfill/channels
+```
+
+```json
+{"jobs": [{"url": "https://www.youtube.com/@SomeSmallChannel", "job_id": "7d1718bf-0000-4000-8000-000000000005", "existing": false}]}
+```
+
+Queues one `backfill.channel` job **per URL**. **This calls YouTube: use it by hand on a small channel only** (the first real listing is still untried). The worker lists the channel through the [YouTube gate](#ep-gate) and adds the unknown videos to the backlog.
+
+| Field | Meaning |
+| --- | --- |
+| `urls` | 1 to 10 channel or playlist URLs, each at most 2048 characters. |
+| `max_videos` | 1 to 100, default 50. |
+| `release` | Optional: release at most this many notes after the listing (24 hour cap). |
+
+The jobs run at low priority (`-10`) and wait for the gate: a closed gate only delays a job, and a block during the listing fails it and opens the breaker. `202` when a job is new, `200` only when every job already existed. A URL that is not a channel or a playlist (a video link, another host) is `422` with that URL in `detail`, and nothing is queued. Poll each `job_id`.
+
+### `GET /api/v1/backfill`: the backlog (scope `read`) {#ep-backfill}
+
+```bash
+curl -s -H "Authorization: Bearer $CATCHER_KEY" "$CATCHER_URL/api/v1/backfill?status=pending&source=docs&limit=10"
+```
+
+```json
+{
+  "counts": {"pending": 12, "released": 5},
+  "videos": {
+    "items": [
+      {"video_id": "dQw4w9WgXcQ", "source": "docs", "found_in": "notes/walks.md", "status": "pending", "found_at": "2026-10-14T06:00:00Z", "released_at": null}
+    ],
+    "total": 12,
+    "limit": 10,
+    "offset": 0
+  }
+}
+```
+
+Filters (all optional): `status` (`pending`, `released`), `source` (`docs`, `channel`), `limit` (1 to 200, default 50), `offset`. `counts` ignores the filters.
+
 ## Status codes {#status-codes}
 
 | Code | Meaning |
 | --- | --- |
-| `200` | A read worked. For `POST pipeline/runs`, `pipeline/pull` and `pipeline/publish`: the job **already exists** (queued or running); its id is in the answer and nothing new was queued. |
+| `200` | A read worked. For `POST pipeline/runs`, `pipeline/pull`, `pipeline/publish` and `backfill/docs` (and `backfill/channels`, when every job existed): the job **already exists** (queued or running); its id is in the answer and nothing new was queued. |
 | `202` | A new job was queued. The worker has not run it yet: poll `GET /api/v1/jobs/{id}`. |
 | `401` | No key, a malformed `Authorization` header, an unknown key or two `Authorization` headers. Same answer for every case (`{"detail": "not authenticated"}`). |
 | `403` | The key is valid but lacks the scope: `read` for GET, `run` for POST. |
 | `404` | Unknown job id (a malformed id is the same), or `requeue` of an unknown item. |
 | `413` | A request whose `Content-Length` is over 64 KB. |
-| `422` | A bad query value (an unknown `status`, `limit` over 200), a bad body (an unknown or wrongly typed field), or a value the worker's own check refuses (the reason is in `detail`). |
+| `422` | A bad query value (an unknown `status`, `limit` over 200), a bad body (an unknown or wrongly typed field), a value the worker's own check refuses (the reason is in `detail`), or a backfill URL that is not a channel or playlist. |
 | `503` | Postgres is not reachable (every endpoint, `/health` included). `{"detail": "database unavailable"}` on `/api/v1`; the pool recovers when the database returns. `/health` answers its own body instead: `{"api": "ok", "database": "down", "worker": "unknown"}`, or `"worker": "none"` with the database up. |
 
 **The existing-run rule.** A request to start a run answers `200` when *any* whole-inbox `pipeline.run` is `queued` or `running`, queued by the schedule, `catcher jobs add` or the API. A run that works on named items only (a `requeue` from the API, or `only=` from the CLI) is **not** counted as the existing run: starting a run while only such a job is active queues a new full run (`202`). A scheduled run with `retry_deferred` and a run with `limit` do count. Two simultaneous requests make one job: of two POSTs at the same moment one gets `202` and the other `200` with the same id.
@@ -301,9 +367,10 @@ The API and the schedule do the same thing: they put a job on the **same queue**
 Stage C is the small API of the MVP. These are future features, not part of it:
 
 - Metrics aggregation endpoints (`/metrics/*`) and dashboards.
+- A schedule that releases the backlog every day, and cancelling a backfill job.
 - Replay, cancel (of a job) and other management endpoints; profiles and schedules endpoints.
 - API keys in the database (they are in `.env`, read at start).
-- A live progress stream: you poll `GET /api/v1/jobs/{id}`.
+- A live progress stream (also for a backfill): you poll `GET /api/v1/jobs/{id}`.
 - Rate limiting (a key can call as often as it likes).
 - HTTPS: the API speaks plain HTTP and is meant for this machine, the LAN or a VPN only. Do not forward a port to the internet. Put a TLS proxy in front first, or use a VPN, if the traffic leaves a network you trust.
 

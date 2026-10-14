@@ -1087,6 +1087,31 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 **Done when (checked 2026-10-08):** the whole MVP runs locally with `docker compose up`, and everything can be started and checked through the API: the smoke run starts the stack, answers `/health`, refuses a missing key, lists jobs and starts a run through `POST` (`202` then `200`); publish and requeue are covered by the integration tests on a real Postgres, not yet by a Docker run.
 
+**Built (2026-10-14): the backfill API.** What exists (how to use it: [How to Run the API](../idea-catcher-how-to-run-api/#ep-backfill-docs)):
+
+- **Two job types** in `modules/worker/handlers_backfill.py`: `backfill.docs` (`dry_run`, `pull`, `release`) and `backfill.channel` (`url`, `max_videos`, `release`). The logic shared with the CLI is in `modules/backfill/service.py`; `catcher youtube import` behaves as before.
+- **Endpoints** in `api/routes_backfill.py`: `POST /api/v1/backfill/docs` and `POST /api/v1/backfill/channels` (scope `run`), `GET /api/v1/backfill` (scope `read`; filters `status`, `source`; counts and a page).
+
+**Decisions:**
+
+1. **The API only enqueues.** Its container has no repos, no YouTube access and no LLM key; the worker does the work.
+2. **One job per channel URL** (up to 10 per request, `max_videos` 1 to 100, default 50).
+3. **`backfill.channel` runs at priority `-10` and waits on the `youtube` gate resource.** A closed gate defers the job; a block during the listing fails it and opens the breaker.
+4. **A backfill job that released notes makes the chain queue a `pipeline.run`** (when the inbox has files and no run is active).
+5. **`POST /backfill/docs {"release": N}` with nothing new simply releases.** This is the daily release; there is no separate release endpoint.
+6. **The 24 hour rolling cap is shared with the CLI.**
+7. **Not built:** a schedule that releases every day, cancelling a backfill job, a progress stream (poll `GET /api/v1/jobs/{id}`).
+8. **Not tried live:** the first real YouTube listing is still untried (a hand test by the user, a small channel with `max_videos` 20; `tests/manual/catcher-api.http`).
+
+**Open items after the backfill API** (minors from the reviews):
+
+- *Duplication:* the docs job's pull block repeats `handle_ideas_pull`.
+- *Tests:* none for `release=0` on `backfill.docs` or for `dry_run` with `pull=True`; the git message assertion in the pull-failure test depends on the locale; the channel block test does not assert the message and the cap test seeds no earlier releases.
+- *Order:* `EXTRACTOR_FACTORY` is built before the gate is asked.
+- *Chain:* the `RUN_KEY` dedupe after a backfill job is only a backstop (not exercised); the `run_active` check decides.
+- *Channels endpoint:* it validates each URL's job params inside the enqueue loop (it relies on the rollback), and two concurrent requests with the same URLs in opposite order could deadlock (rare, a `500`).
+- *Naming:* in `GET /backfill` the parameter `status` shadows the fastapi `status` import.
+
 #### Then: Proxmox {#mvp-stage-deploy}
 
 1. Create the LXC (Docker, `nesting=1`, `keyctl=1`), write `deploy.sh`, and put `.env` on the LXC with the GitHub PAT and `OPENAI_API_KEY`. `.env` is never rsynced.
