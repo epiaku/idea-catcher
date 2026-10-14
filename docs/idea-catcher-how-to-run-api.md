@@ -292,7 +292,7 @@ Queues a `backfill.docs` job. The worker pulls `epiaku-docs`, finds the YouTube 
 | `pull` | `false`: do not pull `epiaku-docs` first. Default `true`. Before the pull the worker commits its own pages in `epiaku-docs` locally (as `ideas.pull` does for the idea bucket), so a remote edit of one of them ends the job as `failed`, never in a half-merged stash. |
 | `release` | Optional. Omitted or `true`: release up to the default cap. `false` or `0`: release nothing, only add to the backlog. A whole number N from 1 to 100: the cap is N. It releases only the pending videos this call scanned; pending videos it did not scan are untouched. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. Videos over the cap stay `pending`. With the worker setting `BACKFILL_DAILY_LIMIT=0` the default `true` releases nothing (`allowance` 0 in the result). |
 
-`202` for a new job. `200` with `"existing": true` when a real (not dry) docs backfill is already queued or running, whatever its params: your `release` is not merged into it, so `{"release": false}` while a job with the default release is queued gives `200` and that job releases. POST again after that job has ended. A dry run is its own job. A value above 100 for `release`, an unknown field or a wrong type is `422`. Poll `GET /api/v1/jobs/{job_id}`; the `result` holds `found`, `known`, `new`, `released`, `still_pending` and more. When the job released notes (not a dry run, and at least one note), the worker's chain queues a `pipeline.run` by itself; if a `requeue` or `only` run is queued at that moment, the notes wait for the next scheduled pull. `{"release": N}` with nothing new simply releases the pending videos that are linked in the docs: this is the daily release for the docs, and there is no separate release endpoint. A video found earlier by a call with `release: false` is released by a later default call that scans it again. The 24 hour cap is shared with the command line.
+`202` for a new job. `200` with `"existing": true` when a real (not dry) docs backfill is already queued or running, whatever its params: your `release` is not merged into it, so `{"release": false}` while a job with the default release is queued gives `200` and that job releases. POST again after that job has ended. A dry run is its own job. A value above 100 for `release`, an unknown field or a wrong type is `422`. Poll `GET /api/v1/jobs/{job_id}`; the `result` holds `found`, `known`, `new`, `released`, `still_pending` and more. When the job released notes (not a dry run, and at least one note), the worker's chain queues a `pipeline.run` by itself; if a `requeue` or `only` run is queued at that moment, the notes wait for the next scheduled pull. `{"release": N}` with nothing new simply releases the pending videos that are linked in the docs: this is the daily release for the docs. To release the backlog of any source with no scan, use [`POST /api/v1/backfill/release`](#ep-backfill-release). Rows found by a docs scan have the same `found_at`, so inside a scan they are released by video id. A video found earlier by a call with `release: false` is released by a later default call that scans it again. The 24 hour cap is shared with the command line.
 
 ### `POST /api/v1/backfill/channels`: list YouTube channels (scope `run`) {#ep-backfill-channels}
 
@@ -312,9 +312,32 @@ Queues one `backfill.channel` job **per URL**. **This calls YouTube: use it by h
 | --- | --- |
 | `urls` | 1 to 10 channel or playlist URLs, each at most 2048 characters. |
 | `max_videos` | 1 to 100, default 50. |
-| `release` | Optional. Omitted or `true`: after the listing, release the pending videos of this listing up to the default cap (`BACKFILL_DAILY_LIMIT` of the worker, default 10). `false` or `0`: release nothing. A whole number N from 1 to 100: the cap is N. It releases only the pending videos this call listed, so a video found earlier with `release: false` is released when a default call lists it again; other pending videos are untouched. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. Videos over the cap stay `pending`. Every video of one listing has the same `found_at`, so the release order inside a listing is by video id, not newest first: `max_videos: 50` with `release: 20` releases 20 of those 50 in video-id order. With the worker setting `BACKFILL_DAILY_LIMIT=0` the default `true` releases nothing. Leftovers of a channel can be released over the API only by listing that channel again (a new listing with a `max_videos` that includes them); `catcher youtube import --release` drains the whole backlog. |
+| `release` | Optional. Omitted or `true`: after the listing, release the pending videos of this listing up to the default cap (`BACKFILL_DAILY_LIMIT` of the worker, default 10). `false` or `0`: release nothing. A whole number N from 1 to 100: the cap is N. It releases only the pending videos this call listed, so a video found earlier with `release: false` is released when a default call lists it again; other pending videos are untouched. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. Videos over the cap stay `pending`. Inside one listing the release order is newest first: `max_videos: 50` with `release: 20` releases the 20 newest of those 50. Videos found in an earlier call are released before the videos of a newer call. With the worker setting `BACKFILL_DAILY_LIMIT=0` the default `true` releases nothing. Leftovers of a channel are released with [`POST /api/v1/backfill/release`](#ep-backfill-release), with no new listing. |
 
 The jobs run at low priority (`-10`) and wait for the gate: a closed gate only delays a job, and a block during the listing fails it and opens the breaker. `202` when a job is new, `200` only when every job already existed. `release` is not merged into an existing job: if a `release: false` job for the same URL is still queued or running, a default call gets `200` with that job, which releases nothing; POST again after it has ended. A URL that is not a channel or a playlist (a video link, another host) is `422` with that URL in `detail`, and nothing is queued; so is a URL over 2048 characters, a `max_videos` outside 1 to 100 or a `release` above 100. Whitespace around a URL and trailing slashes are removed first, and a URL given twice in one request (also after that clean-up) becomes one job. Channel jobs queued through the API always use priority `-10`: the API container does not read `BACKFILL_PRIORITY` from `.env`. Poll each `job_id`.
+
+### `POST /api/v1/backfill/release`: release the backlog (scope `run`) {#ep-backfill-release}
+
+```bash
+curl -s -w '\n%{http_code}\n' -X POST -H "Authorization: Bearer $CATCHER_KEY" -H "Content-Type: application/json" \
+  -d '{}' $CATCHER_URL/api/v1/backfill/release
+curl -s -X POST -H "Authorization: Bearer $CATCHER_KEY" -H "Content-Type: application/json" \
+  -d '{"limit": 5}' $CATCHER_URL/api/v1/backfill/release
+```
+
+```json
+{"job_id": "7d1718bf-0000-4000-8000-000000000006", "existing": false}
+```
+
+Queues a `backfill.release` job. The worker releases the **oldest pending videos of any source** (docs and channels) as clip notes. It does not pull, does not scan, does not list a channel and does not call YouTube. The body is optional JSON, no other field allowed:
+
+| Field | Meaning |
+| --- | --- |
+| `limit` | Optional. A whole number from 1 to 100, or `null`. Omitted or `null`: the cap is the worker's `BACKFILL_DAILY_LIMIT` (default 10; the API container cannot see it, so the worker resolves it). A number N: the cap is N. |
+
+The 24 hour cap applies and is shared with every other release: `limit` is the cap itself, so the job releases `limit` minus what anyone released in the last 24 hours. A second call the same day with the same `limit` releases nothing. With `BACKFILL_DAILY_LIMIT=0` the default releases nothing. Videos over the cap stay `pending`. The oldest `found_at` goes first; inside one channel listing that is newest video first.
+
+`202` for a new job. `200` with `"existing": true` when a `backfill.release` job is already queued or running, whatever its `limit`: your `limit` is not merged into it. POST again after it has ended. `0`, `101`, `true`, a string, a decimal or an unknown field is `422`. Poll `GET /api/v1/jobs/{job_id}`; the `result` holds `released`, `repaired`, `still_pending` and `allowance`. When the job released notes, the worker's chain queues a `pipeline.run` by itself, as for the other backfill jobs. The job runs at normal priority and does not wait on the YouTube gate.
 
 ### `GET /api/v1/backfill`: the backlog (scope `read`) {#ep-backfill}
 
@@ -336,13 +359,13 @@ curl -s -H "Authorization: Bearer $CATCHER_KEY" "$CATCHER_URL/api/v1/backfill?st
 }
 ```
 
-Filters (all optional): `status` (`pending`, `released`), `source` (`docs`, `channel`), `limit` (1 to 200, default 50), `offset`. `counts` ignores the filters. The videos are ordered oldest `found_at` first, which is the order they are released.
+Filters (all optional): `status` (`pending`, `released`), `source` (`docs`, `channel`), `limit` (1 to 200, default 50), `offset`. `counts` ignores the filters. The videos are ordered oldest `found_at` first, which is the order they are released (the video id breaks a tie).
 
 ## Status codes {#status-codes}
 
 | Code | Meaning |
 | --- | --- |
-| `200` | A read worked. For `POST pipeline/runs`, `pipeline/pull`, `pipeline/publish` and `backfill/docs` (and `backfill/channels`, when every job existed): the job **already exists** (queued or running); its id is in the answer and nothing new was queued. |
+| `200` | A read worked. For `POST pipeline/runs`, `pipeline/pull`, `pipeline/publish` and `backfill/docs`, `backfill/release` (and `backfill/channels`, when every job existed): the job **already exists** (queued or running); its id is in the answer and nothing new was queued. |
 | `202` | A new job was queued. The worker has not run it yet: poll `GET /api/v1/jobs/{id}`. |
 | `401` | No key, a malformed `Authorization` header, an unknown key or two `Authorization` headers. Same answer for every case (`{"detail": "not authenticated"}`). |
 | `403` | The key is valid but lacks the scope: `read` for GET, `run` for POST. |
@@ -370,7 +393,7 @@ The API and the schedule do the same thing: they put a job on the **same queue**
 Stage C is the small API of the MVP. These are future features, not part of it:
 
 - Metrics aggregation endpoints (`/metrics/*`) and dashboards.
-- A schedule that releases the backlog every day, and cancelling a backfill job.
+- A schedule that releases the backlog every day (the release itself is `POST /backfill/release`), and cancelling a backfill job.
 - Replay, cancel (of a job) and other management endpoints; profiles and schedules endpoints.
 - API keys in the database (they are in `.env`, read at start).
 - A live progress stream (also for a backfill): you poll `GET /api/v1/jobs/{id}`.

@@ -189,3 +189,18 @@ Content-Type: application/json
 ### 13d. The backlog: counts and the videos (filters status, source, limit, offset)
 GET {{baseUrl}}/api/v1/backfill?status=pending&limit=20
 Authorization: Bearer {{key}}
+
+### 13e. Release the backlog: the oldest pending videos of any source, default cap (BACKFILL_DAILY_LIMIT). No YouTube call. 202, then read the job (result: released, repaired, still_pending, allowance)
+# @name backfillRelease
+POST {{baseUrl}}/api/v1/backfill/release
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{}
+
+### 13e2. The same with "limit": the 24 hour cap is 5 (minus what was released in the last 24 hours). 200 if a backfill.release job is still queued
+POST {{baseUrl}}/api/v1/backfill/release
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"limit": 5}

@@ -154,7 +154,7 @@ A video whose clip note was released from a Gemini chat has the `doc_id` `<id>-g
 
 ## The steps in order {#flow}
 
-These are the steps of both flows. They differ only in step 2.
+These are the steps of the two finding flows. They differ only in step 2. A third way, [release the backlog](#release-backlog), skips steps 1 to 4.
 
 1. **Call.** `POST /api/v1/backfill/channels` with `urls` and `max_videos`, or `POST /api/v1/backfill/docs`. The API checks the body (a bad URL is `422`) and puts one job per channel (or one docs job) on the queue. It answers `202`, or `200` with the job that already exists.
 2. **List or scan.** The worker takes the job. A channel job asks YouTube for the video **ids** of the newest `max_videos` videos (one flat `yt-dlp` listing, no video page opened). A docs job pulls `epiaku-docs` and reads its markdown files for video links.
@@ -164,6 +164,10 @@ These are the steps of both flows. They differ only in step 2.
 6. **Process.** The chain sees the released notes and queues a `pipeline.run`. The run stages each note, the `youtube.fetch` job asks `yt-dlp` for the details through the YouTube gate, the `llm.reason` job writes the page, and a publish commits and pushes.
 
 Steps 1 to 4 never fetch a video's details. That starts at step 6, after the video is in the database.
+
+## Release the backlog, with no listing or scan {#release-backlog}
+
+`POST /api/v1/backfill/release` is a third way to release. It finds nothing: it only releases videos that are already `pending`, the oldest first, of any source. There is no pull, no listing and no YouTube call. The body is optional: `{}` uses the default cap, `{"limit": 5}` makes the cap 5 (1 to 100). The 24-hour cap applies as everywhere (`limit` is the cap itself), and the chain queues a `pipeline.run` when it released notes. Use it to drain the leftovers of a channel or of the docs scan without listing anything again.
 
 ## `max_videos` and `release` {#max-and-release}
 
@@ -179,9 +183,9 @@ Rules for `release`:
 - **On by default** on both POST endpoints. Add `"release": false` to only fill the backlog.
 - **Only this call's videos.** The videos listed by the channel (or found by the docs scan) that are `pending`. A video found in an earlier call with `release: false` is still released if the new call lists it again. Pending videos from other channels or from the docs scan are not touched.
 - **The 24-hour cap still applies.** `release: N` is the cap itself: it releases `N` minus everything released in the last 24 hours, whoever released it. Run it twice the same day with the same `N` and the second run releases nothing. Without a number, the cap is `BACKFILL_DAILY_LIMIT` of the worker (default 10). The API container cannot see worker settings, so the worker resolves it.
-- **Leftovers stay pending.** Videos over the cap, or left by a call with `release: false`, are kept in `backfill_videos`. A `POST /backfill/docs` releases only the pending videos its scan found (linked in the docs). A `POST /backfill/channels` releases only the videos that listing returned, so leftovers of a channel can be released over the API only by listing that channel again with a `max_videos` large enough to include them (a new listing through the YouTube gate). `catcher youtube import --release` or `--limit N` on the command line drains the whole backlog of any source. An API call that releases pending videos of any source is not built.
+- **Leftovers stay pending.** Videos over the cap, or left by a call with `release: false`, are kept in `backfill_videos`. A `POST /backfill/docs` releases only the pending videos its scan found, and a `POST /backfill/channels` only the videos that listing returned. To release leftovers of any source with no new listing or scan, use `POST /backfill/release` (see above). `catcher youtube import --release` or `--limit N` on the command line does the same.
 - **`BACKFILL_DAILY_LIMIT=0` releases nothing.** With the worker setting at 0 the default (`true`) has an allowance of 0, so nothing is released (the docs result shows `allowance` 0). The worker default is 10.
-- **Release order inside one listing is by video id, not newest first.** Every video of one listing gets the same `found_at`, so the release order falls back to the video id. `max_videos: 50` with `release: 20` releases 20 of those 50 in video-id order.
+- **Release order: newest first within a listing; videos from earlier calls first; docs-scan rows tie-break by video id.** A listing stores its videos with `found_at` a microsecond apart in listing order, and the release goes by oldest `found_at`. `max_videos: 50` with `release: 20` releases the 20 newest of those 50. Rows from a docs scan share one `found_at`, so they go by video id.
 - **An existing `release: false` job wins.** If a `release: false` channel job for the same URL is still queued or running, a default call for that URL gets `200` with that existing job, which releases nothing. The API does not merge `release` into an existing job.
 - **A dry run never releases.** `POST /backfill/docs` with `dry_run: true` only counts.
 - **The CLI is unchanged.** `catcher youtube import` releases only with `--limit` or `--release`.
@@ -194,7 +198,7 @@ Examples:
 {"urls": ["https://www.youtube.com/@SomeChannel"], "max_videos": 50, "release": 20}
 ```
 
-The first lists 10, stores the new ones and releases them up to the default cap. The second only stores them. The third lists 50 and releases at most 20, in video-id order.
+The first lists 10, stores the new ones and releases them up to the default cap. The second only stores them. The third lists 50 and releases at most 20, the newest first.
 
 ## The two `yt-dlp` calls {#ytdlp}
 
@@ -225,6 +229,8 @@ There is no `max_items` on the docs endpoint, on purpose. The docs scan reads ev
 | Channel jobs wait on the YouTube gate resource                                         | The claim skips them while the gate is closed, so one call at a time                                     |
 | Channel jobs run at priority `-10`                                                     | New clips are never delayed by a backfill                                                                |
 | Release is on by default, `false` turns it off, the 24-hour cap applies                | A call to check 10 videos should process them, without a flood or runaway LLM cost                       |
+| `backfill.release` releases the oldest pending videos of any source, with no listing or scan | Leftovers need no new YouTube listing. The same 24-hour cap applies; `limit` is optional |
+| A channel listing is stored newest first (`found_at` a microsecond apart) | The release order (oldest `found_at`) then releases the newest video of a listing first |
 | Release takes only this call's pending videos                                          | A call must not process older, unrelated backlog                                                         |
 | `release` is at most 100 at the API                                                    | One key must not turn the whole backlog into notes at once                                               |
 | A succeeded backfill job that released notes makes the chain queue a `pipeline.run`    | The notes are processed without a second call. A dry run, or a job that released nothing, queues nothing |
@@ -236,6 +242,6 @@ There is no `max_items` on the docs endpoint, on purpose. The docs scan reads ev
 - A start offset for a channel listing, to pass the 100-video ceiling and avoid re-requested pages.
 - A `max_items` field on the docs endpoint.
 - An endpoint that joins `backfill_videos` and `job_items` per channel (counts of pending, released, published, failed).
-- A schedule that releases every day. The daily release is one call, for example `POST /backfill/docs {"release": 10}`, which releases the pending videos linked in the docs. The CLI `catcher youtube import --release` releases the oldest pending videos of any source.
+- A schedule that releases every day. The daily release is one call: `POST /backfill/release {"limit": 10}` releases the oldest pending videos of any source.
 - Cancelling a backfill job, and a progress stream. Poll `GET /api/v1/jobs/{id}`.
 - A real YouTube channel listing has never run against YouTube. Try one small channel by hand (`max_videos: 10`) and look at `catcher youtube gate` before and after.
