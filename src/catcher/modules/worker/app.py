@@ -14,8 +14,10 @@ from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter
 from catcher.modules.worker.handlers_backfill import (
     handle_backfill_channel,
     handle_backfill_docs,
+    handle_backfill_release,
     parse_channel_params,
     parse_docs_params,
+    parse_release_params,
 )
 from catcher.modules.worker.handlers_pipeline import (
     handle_ideas_pull,
@@ -47,6 +49,7 @@ def build_handlers() -> dict[str, Handler]:
         "ideas.pull": handle_ideas_pull,
         "backfill.docs": handle_backfill_docs,
         "backfill.channel": handle_backfill_channel,
+        "backfill.release": handle_backfill_release,
     }
     handlers.update(EXTRA_HANDLERS)
     return handlers
@@ -62,6 +65,7 @@ PARAM_CHECKS: dict[str, Callable[[dict[str, Any]], object]] = {
     "ideas.pull": parse_pull_params,
     "backfill.docs": parse_docs_params,
     "backfill.channel": parse_channel_params,
+    "backfill.release": parse_release_params,
 }
 
 

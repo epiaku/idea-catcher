@@ -31,7 +31,11 @@ RUN = "pipeline.run"
 PUBLISH = "pipeline.publish"
 PULL = "ideas.pull"
 DOCUMENT_JOBS = ("youtube.fetch", "llm.reason")
-BACKFILL_JOBS = ("backfill.docs", "backfill.channel")  # they release clip notes into the inbox
+BACKFILL_JOBS = (
+    "backfill.docs",
+    "backfill.channel",
+    "backfill.release",
+)  # they release clip notes into the inbox
 
 PULL_KEY = "chain:pull"
 RUN_KEY = "chain:run"
@@ -103,8 +107,9 @@ def decide(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) ->
     - `pipeline.publish` ended: a run (without retrying the deferred) when files are left, unless the publish
       says `follow_up` false (it follows a run with `limit`, `only` or `requeue`: at most one run) or the
       last run took no document at all (files the scan keeps leaving would loop for ever).
-    - a backfill job (`backfill.docs`, `backfill.channel`) succeeded: a run (without retrying the deferred)
-      only when it released at least one note, files wait in the inbox and no run is active, else nothing.
+    - a backfill job (`backfill.docs`, `backfill.channel`, `backfill.release`) succeeded: a run (without
+      retrying the deferred) only when it released at least one note, files wait in the inbox and no run is
+      active, else nothing.
       A dry run, or a job that released nothing, queues nothing. Its end does not close a cycle.
     """
     if outcome == "lost":

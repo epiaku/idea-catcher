@@ -243,3 +243,47 @@ def handle_backfill_channel(ctx: HandlerContext, job: Job) -> HandlerResult:
             "still_pending": still_pending,
         }
     )
+
+
+RELEASE_PARAMS = frozenset({"limit"})
+
+
+@dataclass(frozen=True)
+class ReleaseParams:
+    limit: int | None = None
+
+
+def parse_release_params(params: dict[str, Any]) -> ReleaseParams:
+    """The `backfill.release` params; raises ValueError naming what is wrong."""
+    unknown = sorted(set(params) - RELEASE_PARAMS)
+    if unknown:
+        raise ValueError(f"unknown parameter(s) for backfill.release: {', '.join(unknown)}")
+    limit = params.get("limit")
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+        raise ValueError(f"limit must be a whole number of 1 or more, not {limit!r}")
+    return ReleaseParams(limit=limit)
+
+
+def handle_backfill_release(ctx: HandlerContext, job: Job) -> HandlerResult:
+    """Release the oldest pending videos of any source, up to the rolling 24 h cap (`limit`, else the
+    worker's daily limit). No git, no YouTube: a cap of 0 releases nothing."""
+    try:
+        params = parse_release_params(dict(job.params or {}))
+    except ValueError as e:
+        return Fail(str(e))
+    tag = f"backfill.release {job.id}"
+    cap = params.limit if params.limit is not None else ctx.settings.backfill_daily_limit
+    allowance = 0
+    released: list[str] = []
+    repaired: list[str] = []
+    with session_scope(ctx.engine) as session:
+        if cap > 0:
+            allowance, outcome = release_within(session, ctx.ideas, cap, ctx.clock(), only=None)
+            released, repaired = outcome.released, outcome.repaired
+            log.info(
+                "%s: allowance %d, released %d, repaired %d", tag, allowance, len(released), len(repaired)
+            )
+        still_pending = store.counts(session)["pending"]
+    return Done(
+        {"released": released, "repaired": repaired, "still_pending": still_pending, "allowance": allowance}
+    )

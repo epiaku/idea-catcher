@@ -325,6 +325,12 @@ def test_the_released_fact_is_read_only_for_backfill_jobs(harness) -> None:
     assert read_facts(harness.ctx, "pipeline.run", job_id=job.id).backfill_released is False
 
 
+def test_the_released_fact_is_read_for_backfill_release(harness) -> None:
+    job = backfill_job(harness, "backfill.release", result={"released": ["aaaaaaaaaa1"]})
+
+    assert read_facts(harness.ctx, "backfill.release", job_id=job.id).backfill_released is True
+
+
 def test_a_second_backfill_job_stops_at_run_active(harness) -> None:
     for round_ in range(2):
         job = backfill_job(harness, result={"released": ["aaaaaaaaaa1"]})
