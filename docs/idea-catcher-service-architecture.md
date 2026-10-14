@@ -1096,19 +1096,18 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 1. **The API only enqueues.** Its container has no repos, no YouTube access and no LLM key; the worker does the work.
 2. **One job per channel URL** (up to 10 per request, `max_videos` 1 to 100, default 50).
-3. **`backfill.channel` runs at priority `-10` and waits on the `youtube` gate resource.** A closed gate defers the job; a block during the listing fails it and opens the breaker.
-4. **A backfill job that released notes makes the chain queue a `pipeline.run`** (when the inbox has files and no run is active).
-5. **`POST /backfill/docs {"release": N}` with nothing new simply releases.** This is the daily release; there is no separate release endpoint.
+3. **`backfill.channel` runs at priority `-10` and waits on the `youtube` gate resource.** API-queued channel jobs always use `-10`, whatever `BACKFILL_PRIORITY` says in `.env` (the API container does not get that variable). A closed gate defers the job; a block during the listing fails it and opens the breaker.
+4. **A backfill job that released at least one note makes the chain queue a `pipeline.run`** (when the inbox has files and no run is active). A dry run, or a job that released nothing, queues nothing; notes released while a `requeue` or `only` run is queued wait for the next scheduled pull.
+5. **`POST /backfill/docs {"release": N}` with nothing new simply releases.** This is the daily release; there is no separate release endpoint. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. The API refuses a larger value (`422`).
 6. **The 24 hour rolling cap is shared with the CLI.**
 7. **Not built:** a schedule that releases every day, cancelling a backfill job, a progress stream (poll `GET /api/v1/jobs/{id}`).
 8. **Not tried live:** the first real YouTube listing is still untried (a hand test by the user, a small channel with `max_videos` 20; `tests/manual/catcher-api.http`).
 
 **Open items after the backfill API** (minors from the reviews):
 
-- *Duplication:* the docs job's pull block repeats `handle_ideas_pull`.
-- *Tests:* none for `release=0` on `backfill.docs` or for `dry_run` with `pull=True`; the git message assertion in the pull-failure test depends on the locale; the channel block test does not assert the message and the cap test seeds no earlier releases.
+- *Tests:* the git message assertion in the pull-failure test depends on the locale; the channel block test does not assert the message and the cap test seeds no earlier releases.
 - *Order:* `EXTRACTOR_FACTORY` is built before the gate is asked.
-- *Chain:* the `RUN_KEY` dedupe after a backfill job is only a backstop (not exercised); the `run_active` check decides.
+- *Chain:* the `RUN_KEY` dedupe after a backfill job is only a backstop (a test with stale facts shows it); the `run_active` check decides.
 - *Channels endpoint:* it validates each URL's job params inside the enqueue loop (it relies on the rollback), and two concurrent requests with the same URLs in opposite order could deadlock (rare, a `500`).
 - *Naming:* in `GET /backfill` the parameter `status` shadows the fastapi `status` import.
 

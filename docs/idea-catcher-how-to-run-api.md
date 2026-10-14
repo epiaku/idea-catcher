@@ -286,11 +286,11 @@ Queues a `backfill.docs` job. The worker pulls `epiaku-docs`, finds the YouTube 
 
 | Field | Meaning |
 | --- | --- |
-| `dry_run` | `true`: scan and report, write nothing. Default `false`. |
-| `pull` | `false`: do not pull `epiaku-docs` first. Default `true`. |
-| `release` | A whole number of 0 or more: release at most this many notes. Without it, or `0`, nothing is released. The 24 hour cap applies: only the unused part of it is released. |
+| `dry_run` | `true`: scan and report, write nothing. It skips the pull and ignores `release`. Default `false`. |
+| `pull` | `false`: do not pull `epiaku-docs` first. Default `true`. Before the pull the worker commits its own pages in `epiaku-docs` locally (as `ideas.pull` does for the idea bucket), so a remote edit of one of them ends the job as `failed`, never in a half-merged stash. |
+| `release` | A whole number from 0 to 100. Without it, or `0`, nothing is released. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. |
 
-`202` for a new job, `200` with `"existing": true` when an equal job is already queued or running. Poll `GET /api/v1/jobs/{job_id}`; the `result` holds `found`, `known`, `new`, `released`, `still_pending` and more. When notes were released, the worker's chain queues a `pipeline.run` by itself. `{"release": N}` with nothing new simply releases from the backlog: this is the daily release, and there is no separate release endpoint. The 24 hour cap is shared with the command line.
+`202` for a new job. `200` with `"existing": true` when a real (not dry) docs backfill is already queued or running, whatever its params: your `release` is not merged into it, so `{"release": 5}` while a job without `release` is queued gives `200` and releases nothing. POST again after that job has ended. A dry run is its own job. A value above 100 for `release`, an unknown field or a wrong type is `422`. Poll `GET /api/v1/jobs/{job_id}`; the `result` holds `found`, `known`, `new`, `released`, `still_pending` and more. When the job released notes (not a dry run, and at least one note), the worker's chain queues a `pipeline.run` by itself; if a `requeue` or `only` run is queued at that moment, the notes wait for the next scheduled pull. `{"release": N}` with nothing new simply releases from the backlog: this is the daily release, and there is no separate release endpoint. The 24 hour cap is shared with the command line.
 
 ### `POST /api/v1/backfill/channels`: list YouTube channels (scope `run`) {#ep-backfill-channels}
 
@@ -309,9 +309,9 @@ Queues one `backfill.channel` job **per URL**. **This calls YouTube: use it by h
 | --- | --- |
 | `urls` | 1 to 10 channel or playlist URLs, each at most 2048 characters. |
 | `max_videos` | 1 to 100, default 50. |
-| `release` | Optional: release at most this many notes after the listing (24 hour cap). |
+| `release` | Optional, 0 to 100: after the listing, release notes under the 24 hour cap. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. |
 
-The jobs run at low priority (`-10`) and wait for the gate: a closed gate only delays a job, and a block during the listing fails it and opens the breaker. `202` when a job is new, `200` only when every job already existed. A URL that is not a channel or a playlist (a video link, another host) is `422` with that URL in `detail`, and nothing is queued. Poll each `job_id`.
+The jobs run at low priority (`-10`) and wait for the gate: a closed gate only delays a job, and a block during the listing fails it and opens the breaker. `202` when a job is new, `200` only when every job already existed. A URL that is not a channel or a playlist (a video link, another host) is `422` with that URL in `detail`, and nothing is queued; so is a URL over 2048 characters, a `max_videos` outside 1 to 100 or a `release` above 100. Whitespace around a URL and trailing slashes are removed first, and a URL given twice in one request (also after that clean-up) becomes one job. Channel jobs queued through the API always use priority `-10`: the API container does not read `BACKFILL_PRIORITY` from `.env`. Poll each `job_id`.
 
 ### `GET /api/v1/backfill`: the backlog (scope `read`) {#ep-backfill}
 
@@ -333,7 +333,7 @@ curl -s -H "Authorization: Bearer $CATCHER_KEY" "$CATCHER_URL/api/v1/backfill?st
 }
 ```
 
-Filters (all optional): `status` (`pending`, `released`), `source` (`docs`, `channel`), `limit` (1 to 200, default 50), `offset`. `counts` ignores the filters.
+Filters (all optional): `status` (`pending`, `released`), `source` (`docs`, `channel`), `limit` (1 to 200, default 50), `offset`. `counts` ignores the filters. The videos are ordered oldest `found_at` first, which is the order they are released.
 
 ## Status codes {#status-codes}
 
