@@ -38,7 +38,9 @@ URL_MAX = 2048
 MAX_RELEASE = (
     100  # `release: N` is the 24 h cap itself: the API never lets one call turn the backlog into notes
 )
-Release = Annotated[StrictInt | None, Field(ge=0, le=MAX_RELEASE)]
+# true / false / N, stored as given; omitted or null adds no key (the job's default, true, applies). Both
+# members are strict, so a bool is never an int and `"5"`, `1.5` are 422.
+Release = StrictBool | Annotated[StrictInt, Field(ge=0, le=MAX_RELEASE)] | None
 
 
 class DocsRequest(BaseModel):

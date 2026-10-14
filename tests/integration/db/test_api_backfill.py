@@ -211,3 +211,32 @@ def test_a_channel_url_is_stripped_and_loses_trailing_slashes_before_it_is_used(
     again = client.post(CHANNELS, json={"urls": [f"{CHANNEL}/"]})
     assert again.status_code == 200 and again.json()["jobs"][0]["existing"] is True
     assert len(_jobs(pg_engine)) == 1
+
+
+def _stored_params(engine: Engine) -> list[dict]:
+    return [dict(job.params) for job in _jobs(engine)]
+
+
+@pytest.mark.parametrize("release", [True, False, 0, 1, 5, 100])
+def test_release_true_false_and_n_are_stored_exactly_as_given_on_both_endpoints(client, pg_engine, release):
+    assert client.post(DOCS, json={"release": release}).status_code == 202
+    assert client.post(CHANNELS, json={"urls": [CHANNEL], "release": release}).status_code == 202
+
+    for params in _stored_params(pg_engine):
+        assert params["release"] == release and type(params["release"]) is type(release)
+
+
+@pytest.mark.parametrize("body", [{}, {"release": None}])
+def test_release_omitted_or_null_adds_no_release_key(client, pg_engine, body):
+    assert client.post(DOCS, json=body).status_code == 202
+    assert client.post(CHANNELS, json={"urls": [CHANNEL], **body}).status_code == 202
+
+    for params in _stored_params(pg_engine):
+        assert "release" not in params
+
+
+@pytest.mark.parametrize("release", ["yes", "5", "true", 1.5, -1, 101, [], {}])
+def test_bad_release_values_are_422_on_both_endpoints(client, pg_engine, release):
+    assert client.post(DOCS, json={"release": release}).status_code == 422
+    assert client.post(CHANNELS, json={"urls": [CHANNEL], "release": release}).status_code == 422
+    assert _jobs(pg_engine) == []
