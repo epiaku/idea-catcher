@@ -202,13 +202,15 @@ def test_default_releases_this_listings_pending_up_to_the_default_limit(harness,
     assert result.result["still_pending"] == 3
 
 
-def test_release_false_adds_but_releases_nothing(harness, extractor) -> None:
-    result = run_job(harness, release=False)
+@pytest.mark.parametrize("value", [False, 0])
+def test_release_false_adds_but_releases_nothing(harness, extractor, value) -> None:
+    result = run_job(harness, release=value)
 
     assert isinstance(result, Done)
     assert result.result["released"] == [] and result.result["new"] == 5
     assert result.result["still_pending"] == 5
-    assert not note_path(harness.ideas, IDS[0]).exists()
+    assert not any(note_path(harness.ideas, vid).exists() for vid in IDS)
+    assert {r.status for r in rows(harness).values()} == {"pending"}
 
 
 def test_release_int_is_the_cap(harness, extractor) -> None:

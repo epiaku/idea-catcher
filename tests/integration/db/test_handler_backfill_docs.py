@@ -11,7 +11,7 @@ from catcher.modules.queue.models import BackfillVideo, Job
 from catcher.modules.worker import handlers_pipeline
 from catcher.modules.worker.app import build_handlers, check_job
 from catcher.modules.worker.handlers import Done, Fail, HandlerResult
-from catcher.modules.worker.handlers_backfill import handle_backfill_docs, parse_docs_params
+from catcher.modules.worker.handlers_backfill import handle_backfill_docs, parse_docs_params, release_cap
 
 pytestmark = pytest.mark.db
 
@@ -126,16 +126,22 @@ def test_default_releases_this_scans_pending_up_to_the_default_limit(harness, do
     assert result.result["allowance"] == 2
 
 
-def test_release_false_adds_but_releases_nothing(harness, docs_with_links) -> None:
+@pytest.mark.parametrize("value", [False, 0])
+def test_release_false_adds_but_releases_nothing(harness, docs_with_links, value) -> None:
     before = clippings(harness)
 
-    result = run_job(harness, release=False)
+    result = run_job(harness, release=value)
 
     assert isinstance(result, Done)
     assert result.result["released"] == [] and result.result["allowance"] == 0
     assert result.result["still_pending"] == 2
     assert set(rows(harness)) == {A, C}
     assert clippings(harness) == before
+
+
+@pytest.mark.parametrize(("value", "expected"), [(True, 10), (False, 0), (0, 0), (5, 5)])
+def test_release_cap(value, expected) -> None:
+    assert release_cap(value, 10) == expected
 
 
 def test_release_int_is_the_cap(harness, docs_with_links) -> None:
