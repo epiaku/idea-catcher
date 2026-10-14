@@ -64,3 +64,18 @@ def test_two_sessions_adding_the_same_id_do_not_fail(pg_engine):
         assert store.add_pending(second, {"a": ("docs", "x")}, NOW) == 0
     with session_scope(pg_engine) as check:
         assert store.known(check) == {"a"}
+
+
+def test_add_pending_ordered_gives_each_row_a_later_found_at(session):
+    found = {"z": ("channel", "U"), "a": ("channel", "U"), "m": ("channel", "U")}
+    store.add_pending(session, found, NOW, ordered=True)
+    rows = {row.video_id: row.found_at for row in store.pending(session)}
+    assert rows["z"] < rows["a"] < rows["m"]
+    assert rows["a"] - rows["z"] == timedelta(microseconds=1)
+    assert [row.video_id for row in store.pending(session)] == ["z", "a", "m"]
+
+
+def test_add_pending_default_keeps_one_found_at(session):
+    store.add_pending(session, {"z": ("docs", "x"), "a": ("docs", "x"), "m": ("docs", "x")}, NOW)
+    assert [row.found_at for row in store.pending(session)] == [NOW, NOW, NOW]
+    assert [row.video_id for row in store.pending(session)] == ["a", "m", "z"]

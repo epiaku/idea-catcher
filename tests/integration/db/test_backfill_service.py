@@ -97,3 +97,41 @@ def test_run_import_result_has_found_ids(session, tmp_path) -> None:
 
     assert result.found_ids == ids
     assert result.new_ids == [ids[0], ids[2]]
+
+
+def _store(session, tmp_path, ids: list[str]) -> tuple[int, int]:
+    return store_listing(session, ids, URL, tmp_path / "ideas", tmp_path / "docs", NOW)
+
+
+def test_store_listing_keeps_the_listing_order(session, tmp_path) -> None:
+    ids = ["zzzzzzzzzz1", "aaaaaaaaaa1", "mmmmmmmmmm1"]
+    _store(session, tmp_path, ids)
+    assert [row.video_id for row in store.pending(session)] == ids
+
+
+def test_store_listing_skips_known_but_keeps_the_order_of_the_rest(session, tmp_path) -> None:
+    session.add(
+        JobItem(
+            calculated_name=f"youtube/{KNOWN}.md",
+            doc_id=KNOWN,
+            doc_class="youtube",
+            status="published",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    session.flush()
+    _store(session, tmp_path, ["zzzzzzzzzz1", KNOWN, "aaaaaaaaaa1", "mmmmmmmmmm1"])
+    assert [row.video_id for row in store.pending(session)] == ["zzzzzzzzzz1", "aaaaaaaaaa1", "mmmmmmmmmm1"]
+
+
+def test_release_within_after_a_listing_releases_the_first_listed(session, tmp_path) -> None:
+    ids = [f"{c * 10}1" for c in "edcba"]  # newest first, reverse alphabetical
+    _store(session, tmp_path, ids)
+    _, result = release_within(session, tmp_path / "ideas", 3, NOW)
+    assert result.released == ids[:3]
+
+
+def test_docs_scan_order_is_unchanged(session) -> None:
+    store.add_pending(session, {"c": ("docs", "x"), "a": ("docs", "x"), "b": ("docs", "x")}, NOW)
+    assert [row.video_id for row in store.pending(session)] == ["a", "b", "c"]

@@ -36,7 +36,7 @@ def store_listing(
     """Store the listed videos not known yet in the backlog; `(already_known, added)`."""
     known = known_ids(session, ideas, docs)
     fresh = {vid: ("channel", url) for vid in ids if vid not in known}
-    added = store.add_pending(session, fresh, now)
+    added = store.add_pending(session, fresh, now, ordered=True)
     return len(ids) - len(fresh), added
 
 

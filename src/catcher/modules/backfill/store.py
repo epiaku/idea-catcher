@@ -1,7 +1,7 @@
 """The backfill backlog: which YouTube videos were found in the old links and which are released."""
 
 from collections.abc import Collection, Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -11,14 +11,25 @@ from catcher.core.db import require_aware
 from catcher.modules.queue.models import BackfillVideo
 
 
-def add_pending(session: Session, found: Mapping[str, tuple[str, str]], now: datetime) -> int:
-    """Insert the unknown video ids (id -> (source, found_in)) as `pending`; return how many were new."""
+def add_pending(
+    session: Session, found: Mapping[str, tuple[str, str]], now: datetime, *, ordered: bool = False
+) -> int:
+    """Insert the unknown video ids (id -> (source, found_in)) as `pending`; return how many were new.
+
+    `ordered` keeps the iteration order: the i-th entry gets `found_at = now + i microseconds`, so `pending`
+    returns them in that order. Otherwise every row gets `now` (ties break by video id)."""
     require_aware(now)
     if not found:
         return 0
     rows = [
-        {"video_id": video_id, "source": source, "found_in": found_in, "status": "pending", "found_at": now}
-        for video_id, (source, found_in) in found.items()
+        {
+            "video_id": video_id,
+            "source": source,
+            "found_in": found_in,
+            "status": "pending",
+            "found_at": now + timedelta(microseconds=n if ordered else 0),
+        }
+        for n, (video_id, (source, found_in)) in enumerate(found.items())
     ]
     statement = (
         insert(BackfillVideo)
