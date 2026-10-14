@@ -281,3 +281,17 @@ def test_a_newer_failed_run_means_no_progress_even_after_an_older_good_one(harne
     harness.clock.advance(1)
 
     assert read_facts(harness.ctx).last_run_made_progress is False
+
+
+def test_the_run_key_dedupes_two_backfill_jobs(harness) -> None:
+    for round_ in range(2):
+        harness.add_job("backfill.docs")
+        job = ended(harness, "backfill.docs")
+        set_job(harness, job.id, status="succeeded", finished_at=harness.clock())
+        harness.clock.advance(1)
+        chosen = queue_next(harness.ctx, job, "succeeded")
+        # the second job finds the first one's run still active: nothing more is queued
+        assert (chosen is not None and chosen.type == "pipeline.run") == (round_ == 0)
+
+    runs = jobs_of(harness, "pipeline.run")
+    assert [r.status for r in runs] == ["queued"]

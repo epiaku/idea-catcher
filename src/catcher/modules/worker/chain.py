@@ -30,6 +30,7 @@ RUN = "pipeline.run"
 PUBLISH = "pipeline.publish"
 PULL = "ideas.pull"
 DOCUMENT_JOBS = ("youtube.fetch", "llm.reason")
+BACKFILL_JOBS = ("backfill.docs", "backfill.channel")  # they release clip notes into the inbox
 
 PULL_KEY = "chain:pull"
 RUN_KEY = "chain:run"
@@ -99,6 +100,8 @@ def decide(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) ->
     - `pipeline.publish` ended: a run (without retrying the deferred) when files are left, unless the publish
       says `follow_up` false (it follows a run with `limit`, `only` or `requeue`: at most one run) or the
       last run took no document at all (files the scan keeps leaving would loop for ever).
+    - a backfill job (`backfill.docs`, `backfill.channel`) succeeded: a run (without retrying the deferred)
+      when files wait in the inbox and no run is active, else nothing. Its end does not close a cycle.
     """
     if outcome == "lost":
         return None
@@ -120,6 +123,10 @@ def decide(job_type: str, outcome: str, params: dict[str, Any], facts: Facts) ->
         if outcome == "deferred" or not params.get("follow_up", True):
             return None
         if facts.inbox_empty or facts.run_active or not facts.last_run_made_progress:
+            return None
+        return _run(retry_deferred=False)
+    if job_type in BACKFILL_JOBS:
+        if outcome != "succeeded" or facts.inbox_empty or facts.run_active:
             return None
         return _run(retry_deferred=False)
     return None
@@ -192,6 +199,7 @@ def _git_ahead(ctx: HandlerContext) -> bool:
 _PULL_FACTS = {"inbox_empty", "deferred_due", "unpublished_work"}
 _WORK_FACTS = {"document_jobs_runnable", "run_active", "latest_run_limited"}  # the run and its document jobs
 _PUBLISH_FACTS = {"inbox_empty", "run_active", "last_run_made_progress"}
+_BACKFILL_FACTS = {"inbox_empty", "run_active"}
 
 
 def _needed(job_type: str | None) -> set[str] | None:
@@ -202,6 +210,8 @@ def _needed(job_type: str | None) -> set[str] | None:
         return _PULL_FACTS
     if job_type == PUBLISH:
         return _PUBLISH_FACTS
+    if job_type in BACKFILL_JOBS:
+        return _BACKFILL_FACTS
     return _WORK_FACTS if job_type == RUN or job_type in DOCUMENT_JOBS else set()
 
 
