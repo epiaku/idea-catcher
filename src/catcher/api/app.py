@@ -140,6 +140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_youtube.router)
     app.include_router(routes_runs.router)
     app.include_router(routes_backfill.router)
+    app.include_router(routes_backfill.read_router)
 
     def openapi() -> dict[str, Any]:
         """The schema, with the Bearer scheme declared even before a route uses it (for Authorize)."""

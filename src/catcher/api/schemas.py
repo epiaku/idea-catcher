@@ -73,3 +73,19 @@ class GateOut(BaseModel):
     streak: int
     next_allowed_at: datetime | None
     blocked_until: datetime | None
+
+
+class BackfillVideoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    video_id: str
+    source: str
+    found_in: str | None
+    status: str
+    found_at: datetime
+    released_at: datetime | None
+
+
+class BackfillOut(BaseModel):
+    counts: dict[str, int]
+    videos: Page[BackfillVideoOut]

@@ -188,3 +188,4 @@ def test_two_posts_at_once_make_one_job(client, pg_engine, monkeypatch):
 def test_openapi_lists_the_new_paths(client):
     paths = client.get("/openapi.json").json()["paths"]
     assert "post" in paths[DOCS] and "post" in paths[CHANNELS]
+    assert "get" in paths["/api/v1/backfill"]

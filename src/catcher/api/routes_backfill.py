@@ -8,9 +8,9 @@ the same URL that is queued or running is answered as it is. No answer holds the
 
 import hashlib
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -18,13 +18,17 @@ from sqlalchemy.orm import Session
 from catcher.api.auth import require
 from catcher.api.deps import get_session
 from catcher.api.routes_runs import ACTIVE, Enqueued, _answer, _checked, _once
+from catcher.api.schemas import BackfillOut, BackfillVideoOut, Page
 from catcher.core.db import utc_now
+from catcher.modules.backfill import store
 from catcher.modules.backfill.channel import DEFAULT_CHANNEL_VIDEOS, MAX_CHANNEL_VIDEOS, is_channel_url
-from catcher.modules.queue.models import Job
+from catcher.modules.queue.models import BackfillVideo, Job
 from catcher.modules.queue.queue import enqueue
 from catcher.modules.worker.app import JOB_RESOURCES
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require("run"))])
+
+read_router = APIRouter(prefix="/api/v1", dependencies=[Depends(require("read"))])
 
 DOCS = "backfill.docs"
 CHANNEL = "backfill.channel"
@@ -161,3 +165,31 @@ def backfill_channels(
     all_existing = all(a.existing for a in answers)
     response.status_code = status.HTTP_200_OK if all_existing else status.HTTP_202_ACCEPTED
     return ChannelsEnqueued(jobs=answers)
+
+
+@read_router.get("/backfill", response_model=BackfillOut)
+def get_backfill(
+    session: Annotated[Session, Depends(get_session)],
+    status: Annotated[Literal["pending", "released"] | None, Query()] = None,
+    source: Annotated[Literal["docs", "channel"] | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0, le=2**31 - 1)] = 0,
+) -> BackfillOut:
+    """The counts per status and a page of the backlog in the release order (oldest `found_at` first)."""
+    conditions = []
+    if status is not None:
+        conditions.append(BackfillVideo.status == status)
+    if source is not None:
+        conditions.append(BackfillVideo.source == source)
+    total = session.scalar(select(func.count()).select_from(BackfillVideo).where(*conditions)) or 0
+    rows = session.scalars(
+        select(BackfillVideo)
+        .where(*conditions)
+        .order_by(BackfillVideo.found_at, BackfillVideo.video_id)
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    page = Page[BackfillVideoOut](
+        items=[BackfillVideoOut.model_validate(row) for row in rows], total=total, limit=limit, offset=offset
+    )
+    return BackfillOut(counts=store.counts(session), videos=page)
