@@ -59,7 +59,7 @@ def clippings(harness) -> list[Path]:
 
 @pytest.mark.parametrize(
     "params",
-    [{"x": 1}, {"release": "5"}, {"release": True}, {"release": -1}, {"pull": "yes"}, {"dry_run": 1}],
+    [{"x": 1}, {"release": "5"}, {"release": -1}, {"release": 1.5}, {"pull": "yes"}, {"dry_run": 1}],
 )
 def test_params_reject_unknown_and_wrong_types(params) -> None:
     with pytest.raises(ValueError):
@@ -68,9 +68,16 @@ def test_params_reject_unknown_and_wrong_types(params) -> None:
         check_job("backfill.docs", params)
 
 
+@pytest.mark.parametrize("value", [True, False, 0, 5])
+def test_params_accept_release_as_bool_or_whole_number(value) -> None:
+    parsed = parse_docs_params({"release": value})
+    assert parsed.release == value and type(parsed.release) is type(value)
+    assert parse_docs_params({"release": None}).release is True
+
+
 def test_params_defaults() -> None:
     parsed = parse_docs_params({})
-    assert (parsed.dry_run, parsed.pull, parsed.release) == (False, True, None)
+    assert (parsed.dry_run, parsed.pull, parsed.release) == (False, True, True)
     assert "backfill.docs" in build_handlers()
 
 
@@ -92,8 +99,6 @@ def test_stores_new_links_and_skips_known(harness, docs_with_links) -> None:
     assert isinstance(result, Done)
     assert (result.result["new"], result.result["known"], result.result["found"]) == (2, 1, 3)
     assert result.result["dry_run"] is False
-    assert result.result["allowance"] is None
-    assert result.result["released"] == []
     assert set(rows(harness)) == {A, C}
 
 
@@ -109,14 +114,70 @@ def test_release_writes_clip_notes_within_the_cap(harness, docs_with_links) -> N
     assert "backfill: true" in note.read_text(encoding="utf-8")
 
 
-def test_no_release_key_releases_nothing(harness, docs_with_links) -> None:
+def test_default_releases_this_scans_pending_up_to_the_default_limit(harness, docs_with_links) -> None:
+    (harness.docs / "more.md").write_text(_link("d" * 10 + "1"), encoding="utf-8")
+    harness.ctx.settings = harness.ctx.settings.model_copy(update={"backfill_daily_limit": 2})
+
+    result = run_job(harness, pull=False)
+
+    assert isinstance(result, Done)
+    assert (result.result["new"], len(result.result["released"])) == (3, 2)
+    assert result.result["still_pending"] == 1
+    assert result.result["allowance"] == 2
+
+
+def test_release_false_adds_but_releases_nothing(harness, docs_with_links) -> None:
     before = clippings(harness)
+
+    result = run_job(harness, release=False)
+
+    assert isinstance(result, Done)
+    assert result.result["released"] == [] and result.result["allowance"] == 0
+    assert result.result["still_pending"] == 2
+    assert set(rows(harness)) == {A, C}
+    assert clippings(harness) == before
+
+
+def test_release_int_is_the_cap(harness, docs_with_links) -> None:
+    result = run_job(harness, release=1)
+
+    assert len(result.result["released"]) == 1  # type: ignore[union-attr]
+    assert result.result["still_pending"] == 1  # type: ignore[union-attr]
+
+
+def test_a_pending_video_from_an_earlier_call_that_the_scan_finds_again_is_released(
+    harness, docs_with_links
+) -> None:
+    run_job(harness, release=False)
 
     result = run_job(harness)
 
     assert isinstance(result, Done)
-    assert result.result["still_pending"] == 2
-    assert clippings(harness) == before
+    assert (result.result["new"], result.result["known"]) == (0, 3)
+    assert sorted(result.result["released"]) == [A, C]
+
+
+def test_pending_videos_the_scan_did_not_find_are_not_released(harness, docs_with_links) -> None:
+    now = harness.clock()
+    with session_scope(harness.ctx.engine) as session:
+        session.add(BackfillVideo(video_id="z" * 10 + "1", source="docs", found_in=None, found_at=now))
+
+    result = run_job(harness)
+
+    assert isinstance(result, Done)
+    assert sorted(result.result["released"]) == [A, C]
+    assert rows(harness)["z" * 10 + "1"].status == "pending"
+    assert result.result["still_pending"] == 1
+
+
+def test_dry_run_releases_nothing_by_default(harness, docs_with_links) -> None:
+    before = clippings(harness)
+
+    result = run_job(harness, dry_run=True)
+
+    assert isinstance(result, Done)
+    assert result.result["released"] == [] and result.result["allowance"] is None
+    assert clippings(harness) == before and rows(harness) == {}
 
 
 def test_pull_true_without_remote_still_scans(harness, docs_with_links, sh) -> None:

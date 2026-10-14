@@ -62,6 +62,11 @@ def run_job(harness, **params) -> HandlerResult:
         return handle_backfill_channel(harness.ctx, job)
 
 
+def open_the_gate(harness) -> None:
+    with session_scope(harness.ctx.engine) as session:
+        session.execute(text("update resources set next_allowed_at = null where name = 'youtube'"))
+
+
 def rows(harness) -> dict[str, BackfillVideo]:
     with session_scope(harness.ctx.engine) as session:
         found = list(session.scalars(select(BackfillVideo)))
@@ -79,6 +84,7 @@ def rows(harness) -> dict[str, BackfillVideo]:
         {"url": URL, "max_videos": True},
         {"url": URL, "release": -1},
         {"url": URL, "release": "5"},
+        {"url": URL, "release": 1.5},
         {"url": URL, "x": 1},
     ],
 )
@@ -89,14 +95,22 @@ def test_channel_params_reject_a_video_url_and_a_big_max_videos(params) -> None:
         check_job("backfill.channel", params)
 
 
+@pytest.mark.parametrize("value", [True, False, 0, 5])
+def test_channel_params_accept_release_as_bool_or_whole_number(value) -> None:
+    parsed = parse_channel_params({"url": URL, "release": value})
+    assert parsed.release == value and type(parsed.release) is type(value)
+    assert parse_channel_params({"url": URL, "release": None}).release is True
+
+
 def test_channel_params_defaults_and_registration() -> None:
     parsed = parse_channel_params({"url": URL})
-    assert (parsed.url, parsed.max_videos, parsed.release) == (URL, 50, None)
+    assert (parsed.url, parsed.max_videos, parsed.release) == (URL, 50, True)
     assert build_handlers()["backfill.channel"] is handle_backfill_channel
     assert JOB_RESOURCES["backfill.channel"] == YOUTUBE_RESOURCE
 
 
 def test_lists_and_stores_unknown_videos(harness, extractor) -> None:
+    harness.ctx.settings = harness.ctx.settings.model_copy(update={"backfill_daily_limit": 10})
     now = harness.clock()
     with session_scope(harness.ctx.engine) as session:  # IDS[0] and IDS[1] have a page already
         for vid in IDS[:2]:
@@ -114,14 +128,15 @@ def test_lists_and_stores_unknown_videos(harness, extractor) -> None:
     result = run_job(harness)
 
     assert isinstance(result, Done)
+    assert result.result["released"] == sorted(result.result["released"])
     assert result.result == {
         "url": URL,
         "listed": 5,
         "known": 2,
         "new": 3,
-        "released": [],
+        "released": sorted(IDS[2:]),
         "repaired": [],
-        "still_pending": 3,
+        "still_pending": 0,
     }
     assert extractor.calls == [(f"{URL}/videos", 50)]
     stored = rows(harness)
@@ -177,7 +192,26 @@ def test_offline_is_fail(harness, extractor) -> None:
     assert harness.gate.peek() is None  # no gate slot was taken
 
 
-def test_release_after_listing_respects_the_cap(harness, extractor) -> None:
+def test_default_releases_this_listings_pending_up_to_the_default_limit(harness, extractor) -> None:
+    harness.ctx.settings = harness.ctx.settings.model_copy(update={"backfill_daily_limit": 2})
+
+    result = run_job(harness)
+
+    assert isinstance(result, Done)
+    assert len(result.result["released"]) == 2
+    assert result.result["still_pending"] == 3
+
+
+def test_release_false_adds_but_releases_nothing(harness, extractor) -> None:
+    result = run_job(harness, release=False)
+
+    assert isinstance(result, Done)
+    assert result.result["released"] == [] and result.result["new"] == 5
+    assert result.result["still_pending"] == 5
+    assert not note_path(harness.ideas, IDS[0]).exists()
+
+
+def test_release_int_is_the_cap(harness, extractor) -> None:
     result = run_job(harness, release=2)
 
     assert isinstance(result, Done)
@@ -188,6 +222,55 @@ def test_release_after_listing_respects_the_cap(harness, extractor) -> None:
     assert sorted(v for v, r in rows(harness).items() if r.status == "released") == sorted(
         result.result["released"]
     )
+
+
+def test_a_pending_video_from_an_earlier_call_that_the_listing_finds_again_is_released(
+    harness, extractor
+) -> None:
+    run_job(harness, release=False)
+    open_the_gate(harness)
+    extractor.ids = IDS[:2]
+
+    result = run_job(harness)
+
+    assert isinstance(result, Done)
+    assert (result.result["new"], result.result["known"]) == (0, 2)
+    assert sorted(result.result["released"]) == IDS[:2]
+
+
+def test_pending_videos_the_listing_did_not_find_are_not_released(harness, extractor) -> None:
+    run_job(harness, release=False)
+    open_the_gate(harness)
+    extractor.ids = IDS[:1]
+
+    result = run_job(harness)
+
+    assert isinstance(result, Done)
+    assert result.result["released"] == IDS[:1]
+    assert result.result["still_pending"] == 4
+    assert rows(harness)[IDS[1]].status == "pending"
+
+
+def test_cap_used_up_adds_but_releases_nothing(harness, extractor) -> None:
+    hour_ago = harness.clock() - timedelta(hours=1)
+    with session_scope(harness.ctx.engine) as session:
+        for n in range(3):
+            session.add(
+                BackfillVideo(
+                    video_id=f"q{n}" * 5 + "1",
+                    source="docs",
+                    found_in=None,
+                    status="released",
+                    found_at=hour_ago,
+                    released_at=hour_ago,
+                )
+            )
+
+    result = run_job(harness, release=3)
+
+    assert isinstance(result, Done)
+    assert result.result["released"] == [] and result.result["new"] == 5
+    assert set(IDS) <= set(rows(harness))
 
 
 def test_claim_skips_the_job_while_the_gate_is_closed(harness) -> None:

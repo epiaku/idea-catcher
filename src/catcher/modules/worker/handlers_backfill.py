@@ -45,11 +45,28 @@ log = logging.getLogger("catcher.worker.backfill")
 DOCS_PARAMS = frozenset({"dry_run", "pull", "release"})
 
 
+def parse_release(params: dict[str, Any]) -> bool | int:
+    """`release`: absent or null is true (the default limit); true, false or a whole number of 0 or more."""
+    release = params.get("release")
+    if release is None or isinstance(release, bool):
+        return True if release is None else release
+    if not isinstance(release, int) or release < 0:
+        raise ValueError(f"release must be true, false or a whole number of 0 or more, not {release!r}")
+    return release
+
+
+def release_cap(value: bool | int, default_limit: int) -> int:
+    """The 24 h cap to release within: true is the default limit, false is 0, a number is itself."""
+    if isinstance(value, bool):
+        return default_limit if value else 0
+    return value
+
+
 @dataclass(frozen=True)
 class DocsParams:
     dry_run: bool = False
     pull: bool = True
-    release: int | None = None
+    release: bool | int = True
 
 
 def parse_docs_params(params: dict[str, Any]) -> DocsParams:
@@ -60,9 +77,7 @@ def parse_docs_params(params: dict[str, Any]) -> DocsParams:
     for flag in ("dry_run", "pull"):
         if flag in params and not isinstance(params[flag], bool):
             raise ValueError(f"{flag} must be true or false, not {params[flag]!r}")
-    release = params.get("release")
-    if release is not None and (isinstance(release, bool) or not isinstance(release, int) or release < 0):
-        raise ValueError(f"release must be a whole number of 0 or more, not {release!r}")
+    release = parse_release(params)
     return DocsParams(dry_run=params.get("dry_run", False), pull=params.get("pull", True), release=release)
 
 
@@ -94,13 +109,20 @@ def handle_backfill_docs(ctx: HandlerContext, job: Job) -> HandlerResult:
         imported = run_import(session, ctx.ideas, ctx.docs, now, dry_run=params.dry_run)
         log.info("%s: found %d, new %d, known %d", tag, imported.found, imported.new, imported.known)
         still_pending = imported.pending
-        if params.release is not None and not params.dry_run:
-            allowance, outcome = release_within(session, ctx.ideas, params.release, now)
-            released, repaired = outcome.released, outcome.repaired
-            still_pending = store.counts(session)["pending"]
-            log.info(
-                "%s: allowance %d, released %d, repaired %d", tag, allowance, len(released), len(repaired)
-            )
+        cap = release_cap(params.release, ctx.settings.backfill_daily_limit)
+        if not params.dry_run:
+            allowance = 0
+            if cap > 0:
+                allowance, outcome = release_within(session, ctx.ideas, cap, now, only=imported.found_ids)
+                released, repaired = outcome.released, outcome.repaired
+                still_pending = store.counts(session)["pending"]
+                log.info(
+                    "%s: allowance %d, released %d, repaired %d",
+                    tag,
+                    allowance,
+                    len(released),
+                    len(repaired),
+                )
     result = asdict(imported)
     del result["new_ids"], result["found_ids"]
     result.update(
@@ -123,7 +145,7 @@ EXTRACTOR_FACTORY: Callable[[float], Extractor] = build_extractor
 class ChannelParams:
     url: str
     max_videos: int = DEFAULT_CHANNEL_VIDEOS
-    release: int | None = None
+    release: bool | int = True
 
 
 def parse_channel_params(params: dict[str, Any]) -> ChannelParams:
@@ -143,16 +165,14 @@ def parse_channel_params(params: dict[str, Any]) -> ChannelParams:
         raise ValueError(
             f"max_videos must be a whole number from 1 to {MAX_CHANNEL_VIDEOS}, not {max_videos!r}"
         )
-    release = params.get("release")
-    if release is not None and (isinstance(release, bool) or not isinstance(release, int) or release < 0):
-        raise ValueError(f"release must be a whole number of 0 or more, not {release!r}")
+    release = parse_release(params)
     return ChannelParams(url=url, max_videos=max_videos, release=release)
 
 
 def handle_backfill_channel(ctx: HandlerContext, job: Job) -> HandlerResult:
-    """List one channel through the gate and store its unknown videos as pending; with `release`, release up
-    to that daily cap. A closed gate is `Defer` (to the gate's time); offline, a block, a listing error or a
-    listing too big for the gap rule is `Fail` and stores nothing."""
+    """List one channel through the gate and store its unknown videos as pending; release (by default)
+    up to that daily cap. A closed gate is `Defer` (to the gate's time); offline, a block, a listing error
+    or a listing too big for the gap rule is `Fail` and stores nothing."""
     try:
         params = parse_channel_params(dict(job.params or {}))
     except ValueError as e:
@@ -195,14 +215,14 @@ def handle_backfill_channel(ctx: HandlerContext, job: Job) -> HandlerResult:
         log.error("%s: %s", tag, e)
         return Fail(str(e))
     now = ctx.clock()
-    allowance: int | None = None
     released: list[str] = []
     repaired: list[str] = []
     with session_scope(ctx.engine) as session:
         known, new = store_listing(session, ids, params.url, ctx.ideas, ctx.docs, now)
         log.info("%s: listed %d, known %d, new %d", tag, len(ids), known, new)
-        if params.release is not None:
-            allowance, outcome = release_within(session, ctx.ideas, params.release, now)
+        cap = release_cap(params.release, ctx.settings.backfill_daily_limit)
+        if cap > 0:
+            allowance, outcome = release_within(session, ctx.ideas, cap, now, only=ids)
             released, repaired = outcome.released, outcome.repaired
             log.info(
                 "%s: allowance %d, released %d, repaired %d", tag, allowance, len(released), len(repaired)
