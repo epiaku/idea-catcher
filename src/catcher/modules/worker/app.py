@@ -11,7 +11,12 @@ from catcher.modules.pipeline.process import Services, default_services
 from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter_mirror
-from catcher.modules.worker.handlers_backfill import handle_backfill_docs, parse_docs_params
+from catcher.modules.worker.handlers_backfill import (
+    handle_backfill_channel,
+    handle_backfill_docs,
+    parse_channel_params,
+    parse_docs_params,
+)
 from catcher.modules.worker.handlers_pipeline import (
     handle_ideas_pull,
     handle_llm_reason,
@@ -41,6 +46,7 @@ def build_handlers() -> dict[str, Handler]:
         "pipeline.publish": handle_pipeline_publish,
         "ideas.pull": handle_ideas_pull,
         "backfill.docs": handle_backfill_docs,
+        "backfill.channel": handle_backfill_channel,
     }
     handlers.update(EXTRA_HANDLERS)
     return handlers
@@ -55,12 +61,13 @@ PARAM_CHECKS: dict[str, Callable[[dict[str, Any]], object]] = {
     "pipeline.publish": parse_publish_params,
     "ideas.pull": parse_pull_params,
     "backfill.docs": parse_docs_params,
+    "backfill.channel": parse_channel_params,
 }
 
 
 # The `resources` row a job type waits for: the claim skips such a job while that row is closed. The handlers
 # that queue a fetch pass the same resource themselves (they cannot import this module: it imports them).
-JOB_RESOURCES: dict[str, str] = {"youtube.fetch": YOUTUBE_RESOURCE}
+JOB_RESOURCES: dict[str, str] = {"youtube.fetch": YOUTUBE_RESOURCE, "backfill.channel": YOUTUBE_RESOURCE}
 
 
 def check_job(job_type: str, params: dict[str, Any]) -> None:

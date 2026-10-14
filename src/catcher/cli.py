@@ -30,6 +30,7 @@ from catcher.core.log import configure_logging, share_project_handlers
 from catcher.core.testdata import DEFAULT_SOURCE, DEFAULT_TARGET, TestDataError, reset_test_repos
 from catcher.modules.backfill import channel as backfill_channel
 from catcher.modules.backfill import store as backfill_store
+from catcher.modules.backfill.channel import DEFAULT_CHANNEL_VIDEOS, MAX_CHANNEL_VIDEOS
 from catcher.modules.backfill.importer import run_import
 from catcher.modules.backfill.release import daily_allowance
 from catcher.modules.backfill.service import listing_fit, release_within, store_listing
@@ -666,11 +667,6 @@ def reconcile_cmd(
     if gate_line:
         typer.echo(gate_line)
 
-
-DEFAULT_CHANNEL_VIDEOS = 50  # --max-videos without a value
-# One listing (one gate slot) never asks for more: about 4 paced pages, a bigger channel takes several runs.
-# The settings may lower it further (`_check_the_listing_fits_the_gap`).
-MAX_CHANNEL_VIDEOS = 100
 
 youtube_app = typer.Typer(no_args_is_help=True, help="YouTube helpers.")
 app.add_typer(youtube_app, name="youtube")

@@ -22,6 +22,10 @@ Extractor = Callable[..., dict[str, Any]]
 
 _CHANNEL_HOSTS = YOUTUBE_HOSTS - {"youtu.be"}  # youtu.be has video links only
 _CHANNEL_PREFIXES = {"channel", "c", "user"}
+DEFAULT_CHANNEL_VIDEOS = 50  # --max-videos without a value
+# One listing (one gate slot) never asks for more: about 4 paced pages, a bigger channel takes several runs.
+# The settings may lower it further (`listing_fit`).
+MAX_CHANNEL_VIDEOS = 100
 PAGE_SIZE = 30  # videos per page of a flat channel listing: one paced request each
 
 _TABS = {"videos", "shorts", "streams", "live", "playlists", "featured"}

@@ -73,10 +73,14 @@ def test_services_without_an_access_have_no_fetcher_by_default():
 
 
 def test_the_channel_listing_is_built_and_called_only_where_the_gate_is_passed():
-    """`build_extractor` (yt-dlp) is built only in `_list_channels`, and `list_channel` runs there only inside
+    """`build_extractor` (yt-dlp) is built only in `_list_channels` and in the worker's `backfill.channel`
+    handler (through `EXTRACTOR_FACTORY`, a module-level default), and `list_channel` runs there only inside
     `access.call` (the gate slot, the breaker)."""
     assert _named("build_extractor") == [("cli.py", "_list_channels")]
-    assert _named("list_channel") == [("cli.py", "_list_channels")]
+    assert _named("list_channel") == [
+        ("cli.py", "_list_channels"),
+        ("modules/worker/handlers_backfill.py", "handle_backfill_channel"),
+    ]
     assert _named("_list_channels") == [("cli.py", "youtube_import")]
 
 

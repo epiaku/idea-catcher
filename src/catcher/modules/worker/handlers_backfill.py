@@ -1,19 +1,38 @@
-"""The `backfill.docs` handler: scan the docs repo for YouTube links, store the videos without a page in the
-backlog and, when asked, release some of the backlog within the daily cap.
+"""The backfill handlers.
 
-The docs repo is only pulled here (never committed); a dry run pulls nothing and writes nothing."""
+`backfill.docs`: scan the docs repo for YouTube links, store the videos without a page in the backlog and,
+when asked, release some of the backlog within the daily cap. The docs repo is only pulled here (never
+committed); a dry run pulls nothing and writes nothing.
+
+`backfill.channel`: list one channel or playlist through the YouTube gate (one slot), store its unknown videos
+in the backlog and, when asked, release some within the daily cap. A closed gate defers the job (never a
+sleep); the claim leaves the job queued while the gate is closed."""
 
 import logging
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from catcher.core.db import session_scope
 from catcher.core.git import GIT_LOCK, GitError, has_remote, pull, require_on_branch
 from catcher.modules.backfill import store
+from catcher.modules.backfill.channel import (
+    DEFAULT_CHANNEL_VIDEOS,
+    MAX_CHANNEL_VIDEOS,
+    ChannelListingError,
+    Extractor,
+    build_extractor,
+    is_channel_url,
+    list_channel,
+    listing_url,
+)
 from catcher.modules.backfill.importer import run_import
-from catcher.modules.backfill.service import release_within
+from catcher.modules.backfill.service import listing_fit, release_within, store_listing
 from catcher.modules.queue.models import Job
-from catcher.modules.worker.handlers import Done, Fail, HandlerContext, HandlerResult
+from catcher.modules.worker.handlers import Defer, Done, Fail, HandlerContext, HandlerResult
+from catcher.modules.worker.handlers_pipeline import DEFER_FALLBACK_S
+from catcher.modules.youtube.facts import FactsDeferred, FactsUnavailable
 
 log = logging.getLogger("catcher.worker.backfill")
 
@@ -88,3 +107,108 @@ def handle_backfill_docs(ctx: HandlerContext, job: Job) -> HandlerResult:
         allowance=allowance,
     )
     return Done(result)
+
+
+CHANNEL_PARAMS = frozenset({"url", "max_videos", "release"})
+
+# The extractor of a listing (yt-dlp). Tests replace it with a fake; production never assigns it.
+EXTRACTOR_FACTORY: Callable[[float], Extractor] = build_extractor
+
+
+@dataclass(frozen=True)
+class ChannelParams:
+    url: str
+    max_videos: int = DEFAULT_CHANNEL_VIDEOS
+    release: int | None = None
+
+
+def parse_channel_params(params: dict[str, Any]) -> ChannelParams:
+    """The `backfill.channel` params; raises ValueError naming what is wrong."""
+    unknown = sorted(set(params) - CHANNEL_PARAMS)
+    if unknown:
+        raise ValueError(f"unknown parameter(s) for backfill.channel: {', '.join(unknown)}")
+    url = params.get("url")
+    if not isinstance(url, str) or not is_channel_url(url):
+        raise ValueError(f"url must be a YouTube channel or playlist URL, not {url!r}")
+    max_videos = params.get("max_videos", DEFAULT_CHANNEL_VIDEOS)
+    if (
+        isinstance(max_videos, bool)
+        or not isinstance(max_videos, int)
+        or not 1 <= max_videos <= MAX_CHANNEL_VIDEOS
+    ):
+        raise ValueError(
+            f"max_videos must be a whole number from 1 to {MAX_CHANNEL_VIDEOS}, not {max_videos!r}"
+        )
+    release = params.get("release")
+    if release is not None and (isinstance(release, bool) or not isinstance(release, int) or release < 0):
+        raise ValueError(f"release must be a whole number of 0 or more, not {release!r}")
+    return ChannelParams(url=url, max_videos=max_videos, release=release)
+
+
+def handle_backfill_channel(ctx: HandlerContext, job: Job) -> HandlerResult:
+    """List one channel through the gate and store its unknown videos as pending; with `release`, release up
+    to that daily cap. A closed gate is `Defer` (to the gate's time); offline, a block, a listing error or a
+    listing too big for the gap rule is `Fail` and stores nothing."""
+    try:
+        params = parse_channel_params(dict(job.params or {}))
+    except ValueError as e:
+        return Fail(str(e))
+    tag = f"backfill.channel {job.id}"
+    access = ctx.services.youtube
+    if access is None:
+        return Fail("no YouTube access in the services: a channel is listed only through the gate")
+    if access.offline:
+        return Fail("YOUTUBE_OFFLINE is on: the channel listing calls YouTube, nothing was listed")
+    too_big = listing_fit(
+        params.max_videos, ctx.settings.youtube_min_gap_s, ctx.settings.youtube_request_delay_s
+    )
+    if too_big is not None:
+        return Fail(too_big)
+    extractor = EXTRACTOR_FACTORY(ctx.settings.youtube_request_delay_s)
+    target = listing_url(params.url)
+    try:
+        ids = access.call(
+            lambda: list_channel(target, max_videos=params.max_videos, extractor=extractor), wait=False
+        )
+    except FactsDeferred as e:
+        if isinstance(
+            e.__cause__, ChannelListingError
+        ):  # YouTube blocked this very listing (breaker now open)
+            log.error("%s: blocked during the listing: %s", tag, e)
+            return Fail(f"{e.__cause__}: {e}")
+        # the gap, the breaker or the gate's database: wait for the gate
+        until = (
+            datetime.fromtimestamp(e.until, UTC)
+            if e.until is not None
+            else ctx.clock() + timedelta(seconds=DEFER_FALLBACK_S)
+        )
+        log.info("%s: %s; the listing waits until %s", tag, e, until.isoformat(timespec="seconds"))
+        return Defer(run_after=until, reason=str(e))
+    except (FactsUnavailable, ChannelListingError) as e:
+        log.error("%s: %s", tag, e)
+        return Fail(str(e))
+    now = ctx.clock()
+    allowance: int | None = None
+    released: list[str] = []
+    repaired: list[str] = []
+    with session_scope(ctx.engine) as session:
+        known, new = store_listing(session, ids, params.url, ctx.ideas, ctx.docs, now)
+        log.info("%s: listed %d, known %d, new %d", tag, len(ids), known, new)
+        if params.release is not None:
+            allowance, outcome = release_within(session, ctx.ideas, params.release, now)
+            released, repaired = outcome.released, outcome.repaired
+            log.info(
+                "%s: allowance %d, released %d, repaired %d", tag, allowance, len(released), len(repaired)
+            )
+        still_pending = store.counts(session)["pending"]
+    return Done(
+        {
+            "url": params.url,
+            "listed": len(ids),
+            "known": known,
+            "new": new,
+            "released": released,
+            "repaired": repaired,
+            "still_pending": still_pending,
+        }
+    )
