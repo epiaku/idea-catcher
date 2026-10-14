@@ -1089,7 +1089,7 @@ To make that possible, the core logic lives in **plain functions with no knowled
 
 **Built (2026-10-14): the backfill API.** What exists (how to use it: [How to Run the API](../idea-catcher-how-to-run-api/#ep-backfill-docs)):
 
-- **Two job types** in `modules/worker/handlers_backfill.py`: `backfill.docs` (`dry_run`, `pull`, `release`) and `backfill.channel` (`url`, `max_videos`, `release`). The logic shared with the CLI is in `modules/backfill/service.py`; `catcher youtube import` behaves as before.
+- **Two job types** in `modules/worker/handlers_backfill.py`: `backfill.docs` (`dry_run`, `pull`, `release`) and `backfill.channel` (`url`, `max_videos`, `release`); `release` is `true` (default), `false` or a whole number (see the release-by-default note below). The logic shared with the CLI is in `modules/backfill/service.py`; `catcher youtube import` behaves as before.
 - **Endpoints** in `api/routes_backfill.py`: `POST /api/v1/backfill/docs` and `POST /api/v1/backfill/channels` (scope `run`), `GET /api/v1/backfill` (scope `read`; filters `status`, `source`; counts and a page).
 
 **Decisions:**
@@ -1098,10 +1098,17 @@ To make that possible, the core logic lives in **plain functions with no knowled
 2. **One job per channel URL** (up to 10 per request, `max_videos` 1 to 100, default 50).
 3. **`backfill.channel` runs at priority `-10` and waits on the `youtube` gate resource.** API-queued channel jobs always use `-10`, whatever `BACKFILL_PRIORITY` says in `.env` (the API container does not get that variable). A closed gate defers the job; a block during the listing fails it and opens the breaker.
 4. **A backfill job that released at least one note makes the chain queue a `pipeline.run`** (when the inbox has files and no run is active). A dry run, or a job that released nothing, queues nothing; notes released while a `requeue` or `only` run is queued wait for the next scheduled pull.
-5. **`POST /backfill/docs {"release": N}` with nothing new simply releases.** This is the daily release; there is no separate release endpoint. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. The API refuses a larger value (`422`).
+5. **`POST /backfill/docs {"release": N}` with nothing new simply releases the pending videos linked in the docs.** This is the daily release for the docs; there is no separate release endpoint. `release: N` is the 24 hour cap: it releases N minus what anyone released in the last 24 hours, and N is at most 100 per request; a second call the same day with the same N releases nothing. The API refuses a larger value (`422`).
 6. **The 24 hour rolling cap is shared with the CLI.**
 7. **Not built:** a schedule that releases every day, cancelling a backfill job, a progress stream (poll `GET /api/v1/jobs/{id}`).
 8. **Not tried live:** the first real YouTube listing is still untried (a hand test by the user, a small channel with `max_videos` 20; `tests/manual/catcher-api.http`).
+
+**Built (2026-10-14): release by default.** Both backfill endpoints now release what they find; the CLI `catcher youtube import` is unchanged. Decisions:
+
+1. **On by default.** `release` omitted or `true` releases up to `BACKFILL_DAILY_LIMIT` of the worker (default 10). The API container cannot see worker settings, so it omits the key and the worker resolves the default. `false` or `0` turns it off; a number N is the cap (at most 100 at the API).
+2. **Only this call's pending videos.** A channel call releases the pending videos it listed, a docs call the ones it scanned. A video found earlier with `release: false` is released by a later default call that lists or scans it again; other pending videos are untouched.
+3. **The 24 hour cap still applies,** shared with everyone: `release: N` is N minus what was released in the last 24 hours. Leftovers stay `pending`.
+4. **Same on both endpoints.** A dry run never releases. `catcher jobs add backfill.docs|backfill.channel` releases by default unless `--param release=false`.
 
 **Open items after the backfill API** (minors from the reviews):
 

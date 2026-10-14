@@ -167,7 +167,7 @@ Content-Type: application/json
 GET {{baseUrl}}/api/v1/jobs/{{backfillDry.response.body.$.job_id}}
 Authorization: Bearer {{key}}
 
-### 13c. Backfill a channel: calls YouTube, hand test only, small channel, max_videos 20. 202
+### 13c. Backfill a channel (releases by default): calls YouTube, hand test only, small channel, max_videos 20. 202
 # Check the gate first (request 4). Replace the URL with a small channel you know.
 # On the local-test stack YOUTUBE_OFFLINE=1 is set, so this job FAILS as expected (like the publish in 9).
 # @name backfillChannel
@@ -176,6 +176,15 @@ Authorization: Bearer {{key}}
 Content-Type: application/json
 
 {"urls": ["https://www.youtube.com/@SomeSmallChannel"], "max_videos": 20}
+
+### 13c2. The same channel with "release": false: only fills the backlog, releases nothing. Calls YouTube, hand test only, small channel, max_videos 20
+# 13c releases by default (up to the worker's BACKFILL_DAILY_LIMIT). Same note: YOUTUBE_OFFLINE=1 on the local-test stack makes this job FAIL as expected.
+# @name backfillChannelNoRelease
+POST {{baseUrl}}/api/v1/backfill/channels
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{"urls": ["https://www.youtube.com/@SomeSmallChannel"], "max_videos": 20, "release": false}
 
 ### 13d. The backlog: counts and the videos (filters status, source, limit, offset)
 GET {{baseUrl}}/api/v1/backfill?status=pending&limit=20

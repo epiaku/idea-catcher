@@ -113,8 +113,9 @@ def active_channel_job(session: Session, url: str) -> Job | None:
 def backfill_docs(
     response: Response, session: Annotated[Session, Depends(get_session)], body: DocsRequest | None = None
 ) -> Enqueued:
-    """Queue a `backfill.docs`: store the links found in the docs repo as pending and, with `release`, release
-    up to that daily cap. With `dry_run: true` it only counts (its own job). Returns at once."""
+    """Queue a `backfill.docs`: store the links found in the docs repo as pending and release the pending ones
+    it scanned, up to the worker's daily cap (`release: false` or `0` turns that off, `release: N` sets the
+    cap to N). With `dry_run: true` it only counts and never releases (its own job). Returns at once."""
     request = body or DocsRequest()
     params: dict[str, Any] = {"dry_run": request.dry_run, "pull": request.pull}
     if request.release is not None:

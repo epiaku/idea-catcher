@@ -82,8 +82,9 @@ def parse_docs_params(params: dict[str, Any]) -> DocsParams:
 
 
 def handle_backfill_docs(ctx: HandlerContext, job: Job) -> HandlerResult:
-    """Pull the docs repo (unless `pull` is false or `dry_run`), store the new links as pending and, with
-    `release`, release up to that daily cap. A failed pull is `Fail(git's message)` and stores nothing."""
+    """Pull the docs repo (unless `pull` is false or `dry_run`), store the new links as pending and, by
+    default, release the pending ones it scanned, up to that daily cap (`release` false or 0 releases
+    nothing). A failed pull is `Fail(git's message)` and stores nothing."""
     try:
         params = parse_docs_params(dict(job.params or {}))
     except ValueError as e:
@@ -123,6 +124,8 @@ def handle_backfill_docs(ctx: HandlerContext, job: Job) -> HandlerResult:
                     len(released),
                     len(repaired),
                 )
+    # Result semantics: `allowance` is None for a dry run and 0 when release is false or 0; `known` counts
+    # every scanned video that was already known, including videos that are already pending.
     result = asdict(imported)
     del result["new_ids"], result["found_ids"]
     result.update(
