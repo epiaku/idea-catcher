@@ -135,3 +135,13 @@ def test_release_within_after_a_listing_releases_the_first_listed(session, tmp_p
 def test_docs_scan_order_is_unchanged(session) -> None:
     store.add_pending(session, {"c": ("docs", "x"), "a": ("docs", "x"), "b": ("docs", "x")}, NOW)
     assert [row.video_id for row in store.pending(session)] == ["a", "b", "c"]
+
+
+def test_store_listing_keeps_the_found_at_of_an_earlier_pending_video(session, tmp_path) -> None:
+    a, b = "aaaaaaaaaa1", "bbbbbbbbbb1"
+    _store(session, tmp_path, [a])
+    store_listing(session, [b, a], URL, tmp_path / "ideas", tmp_path / "docs", NOW + timedelta(hours=1))
+    row = session.get(BackfillVideo, a)
+    assert row is not None
+    assert row.found_at == NOW
+    assert [r.video_id for r in store.pending(session)] == [a, b]

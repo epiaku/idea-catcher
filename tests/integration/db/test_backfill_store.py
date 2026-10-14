@@ -79,3 +79,14 @@ def test_add_pending_default_keeps_one_found_at(session):
     store.add_pending(session, {"z": ("docs", "x"), "a": ("docs", "x"), "m": ("docs", "x")}, NOW)
     assert [row.found_at for row in store.pending(session)] == [NOW, NOW, NOW]
     assert [row.video_id for row in store.pending(session)] == ["a", "m", "z"]
+
+
+def test_add_pending_ordered_keeps_the_found_at_of_an_earlier_row(session):
+    store.add_pending(session, {"a": ("channel", "U")}, NOW, ordered=True)
+    later = NOW + timedelta(hours=1)
+    assert (
+        store.add_pending(session, {"b": ("channel", "U"), "a": ("channel", "U")}, later, ordered=True) == 1
+    )
+    rows = {row.video_id: row.found_at for row in store.pending(session)}
+    assert rows == {"a": NOW, "b": later}
+    assert [row.video_id for row in store.pending(session)] == ["a", "b"]
