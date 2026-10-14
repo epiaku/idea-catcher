@@ -11,6 +11,7 @@ from catcher.modules.pipeline.process import Services, default_services
 from catcher.modules.queue.states import ItemStates
 from catcher.modules.worker.blocks import BackendBlocks
 from catcher.modules.worker.handlers import Handler, HandlerContext, frontmatter_mirror
+from catcher.modules.worker.handlers_backfill import handle_backfill_docs, parse_docs_params
 from catcher.modules.worker.handlers_pipeline import (
     handle_ideas_pull,
     handle_llm_reason,
@@ -39,6 +40,7 @@ def build_handlers() -> dict[str, Handler]:
         "llm.reason": handle_llm_reason,
         "pipeline.publish": handle_pipeline_publish,
         "ideas.pull": handle_ideas_pull,
+        "backfill.docs": handle_backfill_docs,
     }
     handlers.update(EXTRA_HANDLERS)
     return handlers
@@ -52,6 +54,7 @@ PARAM_CHECKS: dict[str, Callable[[dict[str, Any]], object]] = {
     "llm.reason": parse_reason_params,
     "pipeline.publish": parse_publish_params,
     "ideas.pull": parse_pull_params,
+    "backfill.docs": parse_docs_params,
 }
 
 
