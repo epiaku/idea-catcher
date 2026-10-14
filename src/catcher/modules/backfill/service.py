@@ -1,5 +1,6 @@
 """The backfill steps the CLI and the worker share. No printing and no exits: the callers word the output."""
 
+from collections.abc import Collection
 from datetime import datetime
 from pathlib import Path
 
@@ -39,7 +40,10 @@ def store_listing(
     return len(ids) - len(fresh), added
 
 
-def release_within(session: Session, ideas: Path, cap: int, now: datetime) -> tuple[int, ReleaseResult]:
-    """Release what the rolling 24 h `cap` allows; `(allowance, result)`; 0 releases nothing."""
+def release_within(
+    session: Session, ideas: Path, cap: int, now: datetime, only: Collection[str] | None = None
+) -> tuple[int, ReleaseResult]:
+    """Release what the rolling 24 h `cap` allows (only among `only`, when given); `(allowance, result)`; 0
+    releases nothing."""
     allowance = daily_allowance(session, cap, now)
-    return allowance, release(session, ideas, allowance, now)
+    return allowance, release(session, ideas, allowance, now, only)

@@ -19,6 +19,7 @@ class ImportResult:
     pending: int  # pending in all, after the new ones
     unreadable: int
     new_ids: list[str] = field(default_factory=list)  # the new ones, sorted (as the backlog orders them)
+    found_ids: list[str] = field(default_factory=list)  # every video id the scan found, sorted
 
 
 def run_import(session: Session, ideas: Path, docs: Path, now: datetime, *, dry_run: bool) -> ImportResult:
@@ -36,4 +37,5 @@ def run_import(session: Session, ideas: Path, docs: Path, now: datetime, *, dry_
         pending=pending,
         unreadable=scanned.unreadable,
         new_ids=sorted(fresh),
+        found_ids=sorted(scanned.found),
     )

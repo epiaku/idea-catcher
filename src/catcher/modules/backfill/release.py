@@ -13,6 +13,7 @@ import errno
 import logging
 import os
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -74,13 +75,16 @@ def _write_new(path: Path, text: str) -> None:
         temp.unlink(missing_ok=True)
 
 
-def release(session: Session, ideas_repo: Path, limit: int, now: datetime) -> ReleaseResult:
-    """Release up to `limit` of the oldest `pending` videos (the caller passes the allowance left)."""
+def release(
+    session: Session, ideas_repo: Path, limit: int, now: datetime, only: Collection[str] | None = None
+) -> ReleaseResult:
+    """Release up to `limit` of the oldest `pending` videos (the caller passes the allowance left). With
+    `only`, just the pending ones among those video ids; an empty `only` releases nothing."""
     require_aware(now)
     result = ReleaseResult()
     if limit <= 0:
         return result
-    rows = store.pending(session, limit)
+    rows = store.pending(session, limit, only)
     if not rows:
         return result
     clips = clip_ids(ideas_repo)

@@ -1,6 +1,6 @@
 """The backfill backlog: which YouTube videos were found in the old links and which are released."""
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime
 
 from sqlalchemy import func, select, update
@@ -29,12 +29,19 @@ def add_pending(session: Session, found: Mapping[str, tuple[str, str]], now: dat
     return len(session.execute(statement).all())
 
 
-def pending(session: Session, limit: int | None = None) -> list[BackfillVideo]:
+def pending(
+    session: Session, limit: int | None = None, only: Collection[str] | None = None
+) -> list[BackfillVideo]:
+    """The `pending` rows, oldest first. `only` keeps just those video ids (empty: none), before the limit."""
     statement = (
         select(BackfillVideo)
         .where(BackfillVideo.status == "pending")
         .order_by(BackfillVideo.found_at, BackfillVideo.video_id)
     )
+    if only is not None:
+        if not only:
+            return []
+        statement = statement.where(BackfillVideo.video_id.in_(list(only)))
     if limit is not None:
         statement = statement.limit(limit)
     return list(session.scalars(statement))

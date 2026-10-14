@@ -253,3 +253,66 @@ def test_release_without_limit_uses_BACKFILL_DAILY_LIMIT(runner, engine, repos, 
     assert result.exit_code == 0, result.output
     assert "released 1 video(s) into inbox/clippings/ (2 still pending)" in result.output
     assert _clips(ideas) == [_note(ideas, A).name]
+
+
+def test_release_only_takes_the_given_ids(session, tmp_path) -> None:
+    ideas = tmp_path / "ideas"
+    _add(session, A, B, C, D, E)
+
+    result = release(session, ideas, 10, NOW, only={B, D})
+
+    assert result.released == [B, D]
+    assert [_status(session, v) for v in (A, B, C, D, E)] == [
+        "pending",
+        "released",
+        "pending",
+        "released",
+        "pending",
+    ]
+    assert not _note(ideas, A).exists()
+
+
+def test_release_only_respects_the_limit_and_order(session, tmp_path) -> None:
+    ideas = tmp_path / "ideas"
+    _add(session, A, B, C, D, E)
+
+    result = release(session, ideas, 2, NOW, only=[E, D, C, B])
+
+    assert result.released == [B, C]
+    assert [_status(session, v) for v in (A, B, C, D, E)] == [
+        "pending",
+        "released",
+        "released",
+        "pending",
+        "pending",
+    ]
+
+
+def test_release_only_ignores_ids_that_are_not_pending(session, tmp_path) -> None:
+    ideas = tmp_path / "ideas"
+    _add(session, A, B)
+    store.mark_released(session, A, NOW - timedelta(hours=1))
+
+    result = release(session, ideas, 5, NOW, only={A, "zzzzzzzzzz9"})
+
+    assert result == ReleaseResult()
+    assert _status(session, B) == "pending"
+    assert not (ideas / "inbox" / "clippings").exists()
+
+
+def test_release_only_empty_means_no_candidates(session, tmp_path) -> None:
+    ideas = tmp_path / "ideas"
+    _add(session, A)
+
+    assert release(session, ideas, 5, NOW, only=set()) == ReleaseResult()
+    assert _status(session, A) == "pending"
+
+
+def test_release_without_only_is_unchanged(session, tmp_path) -> None:
+    ideas = tmp_path / "ideas"
+    _add(session, A, B, C)
+
+    result = release(session, ideas, 2, NOW)
+
+    assert result.released == [A, B]
+    assert _status(session, C) == "pending"

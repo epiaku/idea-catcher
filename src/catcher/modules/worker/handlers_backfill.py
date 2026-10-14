@@ -102,7 +102,7 @@ def handle_backfill_docs(ctx: HandlerContext, job: Job) -> HandlerResult:
                 "%s: allowance %d, released %d, repaired %d", tag, allowance, len(released), len(repaired)
             )
     result = asdict(imported)
-    del result["new_ids"]
+    del result["new_ids"], result["found_ids"]
     result.update(
         dry_run=params.dry_run,
         released=released,

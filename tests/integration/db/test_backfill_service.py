@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from catcher.modules.backfill import store
+from catcher.modules.backfill.importer import run_import
 from catcher.modules.backfill.service import release_within, store_listing
 from catcher.modules.queue.models import BackfillVideo, JobItem
 
@@ -67,3 +68,32 @@ def test_release_within_zero_cap_releases_nothing(session, tmp_path) -> None:
     assert allowance == 0
     assert result.released == []
     assert not (ideas / "inbox" / "clippings").exists()
+
+
+def test_release_within_only_respects_the_rolling_cap(session, tmp_path) -> None:
+    ideas = tmp_path / "ideas"
+    ids = _pending(session, 8)
+    for vid in ids[:3]:
+        store.mark_released(session, vid, NOW - timedelta(hours=1))
+    wanted = ids[3:7]  # four pending ones asked for, the cap leaves room for two
+
+    allowance, result = release_within(session, ideas, 5, NOW, only=wanted)
+
+    assert allowance == 2
+    assert result.released == wanted[:2]
+    assert store.counts(session) == {"pending": 3, "released": 5}
+
+
+def test_run_import_result_has_found_ids(session, tmp_path) -> None:
+    docs, ideas = tmp_path / "docs", tmp_path / "ideas"
+    docs.mkdir()
+    ids = ["aaaaaaaaaa1", "bbbbbbbbbb1", "cccccccccc1"]
+    (docs / "a.md").write_text(
+        "".join(f"https://www.youtube.com/watch?v={v}\n" for v in ids), encoding="utf-8"
+    )
+    store.add_pending(session, {ids[1]: ("docs", "old.md")}, NOW)
+
+    result = run_import(session, ideas, docs, NOW, dry_run=False)
+
+    assert result.found_ids == ids
+    assert result.new_ids == [ids[0], ids[2]]
